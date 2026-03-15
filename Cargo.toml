@@ -40,6 +40,9 @@ zeroize = "1.7"
 # Crypto (for implementation)
 ring = "0.17"
 
+# AES block cipher for CTR mode
+aes = "0.8"
+
 # Constant-time operations
 subtle = "2.5"
 
@@ -55,6 +58,9 @@ rand = "0.8"
 
 # Lazy static initialization
 lazy_static = "1.4"
+
+# GenericArray for AES
+generic-array = "0.14"
 
 [dev-dependencies]
 # Testing utilities

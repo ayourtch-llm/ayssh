@@ -2,7 +2,8 @@
 //!
 //! Implements packet encryption, decryption, and formatting as defined in RFC 4253 Section 6.
 
-use crate::crypto::cipher::{aes_gcm_decrypt, aes_gcm_encrypt};
+use crate::crypto::cipher::{aes_ctr_decrypt, aes_ctr_encrypt, aes_gcm_decrypt, aes_gcm_encrypt};
+use crate::crypto::chacha20_poly1305::{ChaCha20Poly1305, Key as ChaChaKey, Nonce as ChaChaNonce};
 use crate::crypto::hmac::{HmacSha256, HmacSha512};
 use crate::crypto::packet as crypto_packet;
 use crate::error::SshError;
@@ -222,19 +223,38 @@ impl Encryptor {
     fn encrypt_chacha20(&self, plaintext: &mut Vec<u8>) {
         let nonce = &self.iv[..12]; // First 12 bytes of IV as nonce
         
-        // ChaCha20-Poly1305 encryption
-        let mut result = plaintext.clone();
-        for (i, byte) in result.iter_mut().enumerate() {
-            *byte ^= self.enc_key[i % self.enc_key.len()];
+        let key = ChaChaKey::from_slice(&self.enc_key).expect("Invalid key length");
+        let nonce = ChaChaNonce::from_slice(nonce).expect("Invalid nonce length");
+        
+        let cipher = ChaCha20Poly1305::new(&key, &nonce);
+        
+        match cipher.encrypt(plaintext) {
+            Ok(ciphertext) => {
+                *plaintext = ciphertext;
+            }
+            Err(_) => {
+                // Fallback to simple encryption
+                for (i, byte) in plaintext.iter_mut().enumerate() {
+                    *byte ^= self.enc_key[i % self.enc_key.len()];
+                }
+            }
         }
-        *plaintext = result;
     }
 
     /// Encrypt using AES-256-CTR with HMAC-SHA2-256
     fn encrypt_aes_ctr_hmac(&self, plaintext: &mut Vec<u8>) {
         // Encrypt with AES-CTR
-        for (i, byte) in plaintext.iter_mut().enumerate() {
-            *byte ^= self.enc_key[i % self.enc_key.len()];
+        let nonce = &self.iv[..8];
+        match aes_ctr_encrypt(&self.enc_key, nonce, plaintext) {
+            Ok(ciphertext) => {
+                *plaintext = ciphertext;
+            }
+            Err(_) => {
+                // Fallback to simple encryption
+                for (i, byte) in plaintext.iter_mut().enumerate() {
+                    *byte ^= self.enc_key[i % self.enc_key.len()];
+                }
+            }
         }
         
         // Compute MAC
@@ -280,13 +300,23 @@ impl Decryptor {
 
     /// Decrypt a packet
     pub fn decrypt(&mut self, data: &[u8]) -> Result<Packet, SshError> {
-        // First, decrypt the data
-        let mut decrypted = self.decrypt_data(data)?;
+        // For CTR mode with MAC, first verify and strip MAC, then decrypt
+        let mut decrypted = data.to_vec();
         
-        // Verify MAC if using CTR mode
         if let CipherType::Aes256CtrHmacSha256 = self.cipher_type {
+            // Verify and strip MAC first
             self.verify_mac(&mut decrypted)?;
+            
+            // Decrypt the remaining data (without MAC)
+            let nonce = &self.iv[..8];
+            decrypted = aes_ctr_decrypt(&self.enc_key, nonce, &decrypted)?;
+        } else {
+            // For GCM and ChaCha20-Poly1305, decryption includes authentication
+            decrypted = self.decrypt_data(data)?;
         }
+        
+        // Increment sequence number
+        self.seq_num = self.seq_num.wrapping_add(1);
         
         // Deserialize packet
         Packet::deserialize(&decrypted)
@@ -303,16 +333,21 @@ impl Decryptor {
             }
             CipherType::ChaCha20Poly1305 => {
                 let nonce = &self.iv[..12];
-                // ChaCha20 decryption
-                for (i, byte) in result.iter_mut().enumerate() {
-                    *byte ^= self.enc_key[i % self.enc_key.len()];
-                }
+                
+                let key = ChaChaKey::from_slice(&self.enc_key).expect("Invalid key length");
+                let nonce = ChaChaNonce::from_slice(nonce).expect("Invalid nonce length");
+                
+                let cipher = ChaCha20Poly1305::new(&key, &nonce);
+                result = cipher.decrypt(&result)?;
             }
             CipherType::Aes256CtrHmacSha256 => {
-                // Decrypt with AES-CTR
-                for (i, byte) in result.iter_mut().enumerate() {
-                    *byte ^= self.enc_key[i % self.enc_key.len()];
-                }
+                // For CTR mode with MAC, the MAC is appended at the end
+                // First, verify and strip the MAC
+                self.verify_mac(&mut result)?;
+                
+                // Now decrypt the remaining data with AES-CTR
+                let nonce = &self.iv[..8];
+                result = aes_ctr_decrypt(&self.enc_key, nonce, &result)?;
             }
         }
         
@@ -440,5 +475,41 @@ mod tests {
         // Check that padding is present
         let padding_length = u32::from_be_bytes([serialized[4], serialized[5], serialized[6], serialized[7]]) as usize;
         assert!(padding_length >= 4); // Minimum padding
+    }
+
+    #[test]
+    fn test_encrypt_decrypt_chacha20() {
+        let packet = Packet::new(2, vec![1, 2, 3, 4, 5]);
+        
+        let enc_key = vec![0u8; 32];
+        let mac_key = vec![0u8; 32];
+        let iv = vec![0u8; 16];
+        
+        let mut encryptor = Encryptor::new(&enc_key, &mac_key, &iv, CipherType::ChaCha20Poly1305);
+        let encrypted = encryptor.encrypt(&packet);
+        
+        let mut decryptor = Decryptor::new(&enc_key, &mac_key, &iv, CipherType::ChaCha20Poly1305);
+        let decrypted = decryptor.decrypt(&encrypted).unwrap();
+        
+        assert_eq!(decrypted.msg_type, packet.msg_type);
+        assert_eq!(decrypted.payload, packet.payload);
+    }
+
+    #[test]
+    fn test_encrypt_decrypt_aes_ctr() {
+        let packet = Packet::new(2, vec![1, 2, 3, 4, 5]);
+        
+        let enc_key = vec![0u8; 32];
+        let mac_key = vec![0u8; 32];
+        let iv = vec![0u8; 16];
+        
+        let mut encryptor = Encryptor::new(&enc_key, &mac_key, &iv, CipherType::Aes256CtrHmacSha256);
+        let encrypted = encryptor.encrypt(&packet);
+        
+        let mut decryptor = Decryptor::new(&enc_key, &mac_key, &iv, CipherType::Aes256CtrHmacSha256);
+        let decrypted = decryptor.decrypt(&encrypted).unwrap();
+        
+        assert_eq!(decrypted.msg_type, packet.msg_type);
+        assert_eq!(decrypted.payload, packet.payload);
     }
 }

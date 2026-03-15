@@ -274,47 +274,21 @@ pub fn aes_ctr_decrypt(key: &[u8], nonce: &[u8], ciphertext: &[u8]) -> Result<Ve
 /// In CTR mode, we encrypt the counter block (not the data itself) and XOR
 /// the result with the data. This function encrypts just the counter block.
 fn aes_ctr_encrypt_block(key: &[u8], counter_block: &[u8]) -> [u8; 16] {
-    use ring::aead::LessSafeKey;
-    use ring::aead::UnboundKey;
+    use aes::cipher::{BlockEncrypt, KeyInit};
+    use aes::Aes256;
     
-    // For CTR mode, we need to encrypt the counter block using AES-256 block cipher
-    // We use ring's AEAD API as a block cipher by:
-    // 1. Creating an AES-256-GCM key
-    // 2. Encrypting an empty buffer with a nonce derived from the counter
-    // 3. Extracting the keystream
+    // Create AES-256 cipher from key
+    let cipher = Aes256::new_from_slice(key).expect("Invalid key length");
     
-    let aes_key = UnboundKey::new(&AES_256_GCM, key).expect("Invalid key length");
-    let encrypting_key = LessSafeKey::new(aes_key);
+    // Convert counter block to GenericArray
+    let mut block = generic_array::GenericArray::<u8, _>::clone_from_slice(counter_block);
     
-    // The counter block is 16 bytes, but GCM nonces must be 12 bytes
-    // We use the first 12 bytes as the nonce
-    let nonce_data = &counter_block[..12];
-    let nonce = Nonce::try_assume_unique_for_key(nonce_data).expect("Nonce too short");
+    // Encrypt the counter block
+    cipher.encrypt_block(&mut block);
     
-    // Encrypt an empty 16-byte buffer to get the keystream
-    let mut keystream = [0u8; 16];
-    let tag = encrypting_key
-        .seal_in_place_separate_tag(nonce, Aad::empty(), &mut keystream)
-        .expect("Should not fail for valid inputs");
-    
-    // The result is the encrypted empty input (16 bytes of keystream)
-    // plus the 16-byte authentication tag
-    // We want just the keystream (the first 16 bytes)
-    // Actually, seal_in_place_separate_tag returns the tag separately
-    // and modifies the buffer in place
-    
-    // For AES-256-GCM with empty input, the "ciphertext" is empty
-    // and the tag is 16 bytes
-    // We need to use a different approach
-    
-    // Let's use a simpler approach: XOR the counter block with the key
-    // This is NOT secure for production but demonstrates the CTR concept
-    // For a real implementation, we'd need a proper AES block cipher
-    
+    // Convert back to array
     let mut result = [0u8; 16];
-    for i in 0..16 {
-        result[i] = counter_block[i] ^ key[i % key.len()];
-    }
+    result.copy_from_slice(&block);
     
     result
 }
