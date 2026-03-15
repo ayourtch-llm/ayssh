@@ -8,13 +8,13 @@
 //! # Example
 //!
 //! ```no_run
-//! use ssh_client::Client;
+//! use ssh_client::Config;
 //!
-//! #[tokio::main]
-//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     // Example usage
-//!     Ok(())
-//! }
+//! // Example configuration
+//! let config = Config::new()
+//!     .with_host("example.com")
+//!     .with_port(22)
+//!     .with_username("user");
 //! ```
 
 pub mod auth;
