@@ -34,21 +34,25 @@ impl SshSignature {
     }
 
     /// Encode signature as SSH string (string + data)
+    /// SSH strings are encoded as: [4-byte length][data]
     pub fn encode(&self) -> Vec<u8> {
         let mut buf = BytesMut::new();
-        buf.put_u8(self.algorithm.len() as u8);
+        // Algorithm string (4-byte length prefix)
+        buf.put_u32(self.algorithm.len() as u32);
         buf.put_slice(self.algorithm.as_bytes());
-        buf.put_u8(self.data.len() as u8);
+        // Signature data string (4-byte length prefix)
+        buf.put_u32(self.data.len() as u32);
         buf.put_slice(&self.data);
         buf.to_vec()
     }
 
     /// Decode signature from SSH-encoded bytes
+    /// SSH strings are encoded as: [4-byte length][data]
     pub fn decode(encoded: &[u8]) -> Result<Self, SshError> {
         let mut buf = BytesMut::from(encoded);
         
-        // Read algorithm string
-        let algo_len = buf.get_u8() as usize;
+        // Read algorithm string (4-byte length prefix)
+        let algo_len = buf.get_u32() as usize;
         if algo_len == 0 || algo_len > 256 {
             return Err(SshError::ProtocolError(
                 "Invalid algorithm string length".into()
@@ -57,8 +61,8 @@ impl SshSignature {
         let algorithm = String::from_utf8(buf.copy_to_bytes(algo_len).to_vec())
             .map_err(|_| SshError::ProtocolError("Invalid algorithm string".into()))?;
         
-        // Read signature data string
-        let sig_len = buf.get_u8() as usize;
+        // Read signature data string (4-byte length prefix)
+        let sig_len = buf.get_u32() as usize;
         if sig_len == 0 || sig_len > 65535 {
             return Err(SshError::ProtocolError(
                 "Invalid signature string length".into()
@@ -95,19 +99,19 @@ impl RsaSignatureEncoder {
         // mpint s (signature)
         let mut buf = BytesMut::new();
         
-        // Algorithm name
-        buf.put_u8(SSH_SIG_ALGORITHM_RSA.len() as u8);
+        // Algorithm name (4-byte length prefix)
+        buf.put_u32(SSH_SIG_ALGORITHM_RSA.len() as u32);
         buf.put_slice(SSH_SIG_ALGORITHM_RSA.as_bytes());
         
-        // Public exponent (65537 = 0x010001)
+        // Public exponent (65537 = 0x010001) as mpint
         let e = vec![0x01, 0x00, 0x01];
-        buf.put_u8(e.len() as u8);
+        buf.put_u32(e.len() as u32);
         buf.put_slice(&e);
         
-        // Signature (convert to positive mpint - big-endian)
+        // Signature (convert to positive mpint - big-endian) as mpint
         let signature_bytes = signature.to_bytes();
         let s = Self::to_positive_mpint(signature_bytes.as_ref());
-        buf.put_u8(s.len() as u8);
+        buf.put_u32(s.len() as u32);
         buf.put_slice(&s);
         
         Ok(SshSignature::new(SSH_SIG_ALGORITHM_RSA, buf.to_vec()))
@@ -155,15 +159,15 @@ impl EcdsaSignatureEncoder {
         
         let mut buf = BytesMut::new();
         
-        // Algorithm name
-        buf.put_u8(SSH_SIG_ALGORITHM_ECDSA_NISTP256.len() as u8);
+        // Algorithm name (4-byte length prefix)
+        buf.put_u32(SSH_SIG_ALGORITHM_ECDSA_NISTP256.len() as u32);
         buf.put_slice(SSH_SIG_ALGORITHM_ECDSA_NISTP256.as_bytes());
         
-        // Curve name + r || s
+        // Curve name + r || s as a single string
         let curve_name = b"nistp256";
-        buf.put_u8(curve_name.len() as u8);
+        buf.put_u32(curve_name.len() as u32);
         buf.put_slice(curve_name);
-        buf.put_u8(rs.len() as u8);
+        buf.put_u32(rs.len() as u32);
         buf.put_slice(&rs);
         
         Ok(SshSignature::new(SSH_SIG_ALGORITHM_ECDSA_NISTP256, buf.to_vec()))
@@ -189,15 +193,15 @@ impl EcdsaSignatureEncoder {
         
         let mut buf = BytesMut::new();
         
-        // Algorithm name
-        buf.put_u8(SSH_SIG_ALGORITHM_ECDSA_NISTP384.len() as u8);
+        // Algorithm name (4-byte length prefix)
+        buf.put_u32(SSH_SIG_ALGORITHM_ECDSA_NISTP384.len() as u32);
         buf.put_slice(SSH_SIG_ALGORITHM_ECDSA_NISTP384.as_bytes());
         
-        // Curve name + r || s
+        // Curve name + r || s as a single string
         let curve_name = b"nistp384";
-        buf.put_u8(curve_name.len() as u8);
+        buf.put_u32(curve_name.len() as u32);
         buf.put_slice(curve_name);
-        buf.put_u8(rs.len() as u8);
+        buf.put_u32(rs.len() as u32);
         buf.put_slice(&rs);
         
         Ok(SshSignature::new(SSH_SIG_ALGORITHM_ECDSA_NISTP384, buf.to_vec()))
@@ -223,15 +227,15 @@ impl EcdsaSignatureEncoder {
         
         let mut buf = BytesMut::new();
         
-        // Algorithm name
-        buf.put_u8(SSH_SIG_ALGORITHM_ECDSA_NISTP521.len() as u8);
+        // Algorithm name (4-byte length prefix)
+        buf.put_u32(SSH_SIG_ALGORITHM_ECDSA_NISTP521.len() as u32);
         buf.put_slice(SSH_SIG_ALGORITHM_ECDSA_NISTP521.as_bytes());
         
-        // Curve name + r || s
+        // Curve name + r || s as a single string
         let curve_name = b"nistp521";
-        buf.put_u8(curve_name.len() as u8);
+        buf.put_u32(curve_name.len() as u32);
         buf.put_slice(curve_name);
-        buf.put_u8(rs.len() as u8);
+        buf.put_u32(rs.len() as u32);
         buf.put_slice(&rs);
         
         Ok(SshSignature::new(SSH_SIG_ALGORITHM_ECDSA_NISTP521, buf.to_vec()))
@@ -255,13 +259,13 @@ impl Ed25519SignatureEncoder {
         
         let mut buf = BytesMut::new();
         
-        // Algorithm name
-        buf.put_u8(SSH_SIG_ALGORITHM_ED25519.len() as u8);
+        // Algorithm name (4-byte length prefix)
+        buf.put_u32(SSH_SIG_ALGORITHM_ED25519.len() as u32);
         buf.put_slice(SSH_SIG_ALGORITHM_ED25519.as_bytes());
         
-        // Signature (64 bytes)
+        // Signature (64 bytes) as a string
         let sig_bytes = signature.to_bytes();
-        buf.put_u8(sig_bytes.len() as u8);
+        buf.put_u32(sig_bytes.len() as u32);
         buf.put_slice(&sig_bytes);
         
         Ok(SshSignature::new(SSH_SIG_ALGORITHM_ED25519, buf.to_vec()))
@@ -333,9 +337,11 @@ mod tests {
         assert_eq!(signature.algorithm, SSH_SIG_ALGORITHM_RSA);
         assert!(!signature.data.is_empty());
         
-        // Test round-trip
-        let decoded = SshSignature::decode(&signature.data).unwrap();
-        assert_eq!(decoded.algorithm, SSH_SIG_ALGORITHM_RSA);
+        // Test round-trip - encode the signature and decode it
+        let encoded = signature.encode();
+        let decoded = SshSignature::decode(&encoded).unwrap();
+        
+        assert_eq!(decoded.algorithm, signature.algorithm);
         assert_eq!(decoded.data, signature.data);
     }
     
@@ -352,9 +358,11 @@ mod tests {
         assert_eq!(signature.algorithm, SSH_SIG_ALGORITHM_ECDSA_NISTP256);
         assert!(!signature.data.is_empty());
         
-        // Test round-trip
-        let decoded = SshSignature::decode(&signature.data).unwrap();
-        assert_eq!(decoded.algorithm, SSH_SIG_ALGORITHM_ECDSA_NISTP256);
+        // Test round-trip - encode the signature and decode it
+        let encoded = signature.encode();
+        let decoded = SshSignature::decode(&encoded).unwrap();
+        
+        assert_eq!(decoded.algorithm, signature.algorithm);
         assert_eq!(decoded.data, signature.data);
     }
     
@@ -374,9 +382,11 @@ mod tests {
         assert_eq!(signature.algorithm, SSH_SIG_ALGORITHM_ED25519);
         assert!(!signature.data.is_empty());
         
-        // Test round-trip
-        let decoded = SshSignature::decode(&signature.data).unwrap();
-        assert_eq!(decoded.algorithm, SSH_SIG_ALGORITHM_ED25519);
+        // Test round-trip - encode the signature and decode it
+        let encoded = signature.encode();
+        let decoded = SshSignature::decode(&encoded).unwrap();
+        
+        assert_eq!(decoded.algorithm, signature.algorithm);
         assert_eq!(decoded.data, signature.data);
     }
     
@@ -400,6 +410,6 @@ mod tests {
             &public_key_blob,
         );
         
-        assert_eq!(sig_data.len(), 60); // SHA-256 hash
+        assert_eq!(sig_data.len(), 32); // SHA-256 hash is always 32 bytes
     }
 }
