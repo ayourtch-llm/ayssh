@@ -7,3 +7,4 @@ pub mod basic_test;
 pub mod state_machine_tests;
 pub mod version_tests;
 pub mod algo_tests;
+pub mod hmac_tests;
