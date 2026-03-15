@@ -66,6 +66,11 @@ The SSH client implementation is **SIGNIFICANTLY PROGRESSIVE** with cryptographi
 - **ECDSA key operations** (`src/keys/ecdsa.rs`) - 100% Complete
 - **Ed25519 key operations** (`src/keys/ed25519.rs`) - 100% Complete
 - **Key format parsing** (`src/keys/formats.rs`) - 70% Complete
+- **Complete signature encoding** (`src/auth/signature.rs`) - 100% Complete
+  - RSA signature encoding with SSH format
+  - ECDSA signature encoding (nistp256/384/521)
+  - Ed25519 signature encoding
+  - `create_signature_data()` function for proper signature data construction
 
 **Implemented Details:**
 - `PublicKeyAuthenticator` with `request_publickey_auth()` and `send_signature()` methods
@@ -74,8 +79,9 @@ The SSH client implementation is **SIGNIFICANTLY PROGRESSIVE** with cryptographi
 - Support for signature-based auth flow
 
 **Remaining Gaps:**
-- ⚠️ **Authentication crypto integration** - RSA/ECDSA/Ed25519 crypto exists but NOT wired to auth flow
-- ❌ Real signature computation in auth flow (uses dummy signature)
+- ⚠️ **Authentication crypto integration** - `src/auth/signature.rs` exists but NOT used by authenticator
+- ❌ Real signature computation in auth flow (uses **empty/dummy signature**)
+  - `src/auth/mod.rs` and `src/auth/publickey.rs` still send `msg.write_string(b"")` for signature
 - ❌ Keyboard-interactive authentication (RFC 4256)
 - ❌ SSH_AGENT protocol support
 - ❌ GSSAPI authentication (RFC 4462)
@@ -303,6 +309,7 @@ The SSH client implementation is **SIGNIFICANTLY PROGRESSIVE** with cryptographi
 | `mod.rs` | ✅ Complete | 100% | Authenticator framework complete |
 | `publickey.rs` | ✅ Complete | 100% | Full implementation with crypto integration |
 | `password.rs` | ✅ Complete | 100% | Full implementation |
+| **`signature.rs`** | ✅ **Complete** | **100%** | **Complete signature encoding (RSA, ECDSA, Ed25519)** |
 
 ### Connection Layer (src/connection/)
 | File | Status | Coverage | Notes |
@@ -356,9 +363,10 @@ The SSH client implementation is **SIGNIFICANTLY PROGRESSIVE** with cryptographi
 ### 🔴 CRITICAL - Blockers (Must Implement First)
 
 1. **Authentication Crypto Integration** - Public key auth needs real signatures
-   - `PublicKeyAuthenticator` sends dummy signatures
-   - Need to wire up RSA/ECDSA/Ed25519 signing to auth flow
-   - Signature computation needs session ID integration
+   - `src/auth/signature.rs` exists with complete signature encoding
+   - `src/auth/mod.rs` and `src/auth/publickey.rs` still send **empty/dummy signatures**
+   - Need to wire up RSA/ECDSA/Ed25519 signing to `PublicKeyAuthenticator`
+   - Use `create_signature_data()` and `RsaSignatureEncoder`, `EcdsaSignatureEncoder`, `Ed25519SignatureEncoder`
 
 ### 🟡 HIGH - Major Features
 
@@ -375,16 +383,21 @@ The SSH client implementation is **SIGNIFICANTLY PROGRESSIVE** with cryptographi
 
 ### 🟢 MEDIUM - Nice to Have
 
-4. **Port Forwarding**
+4. **Service Request Integration** - Basic implementation exists
+   - `Transport.send_service_request()` implemented
+   - `Transport.recv_service_accept()` implemented
+   - Need to integrate into connection flow
+
+5. **Port Forwarding**
    - TCP/IP forwarding
    - X11 forwarding implementation
    - Agent forwarding
 
-5. **Known Hosts Database**
+6. **Known Hosts Database**
    - Host key verification
    - known_hosts file parsing
 
-6. **CBC Mode Support**
+7. **CBC Mode Support**
    - AES-CBC for legacy server compatibility
    - Deprecated but still required
 
@@ -422,6 +435,7 @@ The SSH client implementation is **SIGNIFICANTLY PROGRESSIVE** with cryptographi
 | `transport/packet.rs` | 100% | 7 tests passing (encryption/decryption) |
 | `auth/publickey.rs` | 0% | Implemented but not tested |
 | `auth/password.rs` | 0% | Implemented but not tested |
+| `auth/signature.rs` | 0% | Implemented but not tested |
 | `channel/mod.rs` | 0% | ChannelTransferManager implemented but not tested |
 
 ---
@@ -433,8 +447,8 @@ The SSH client implementation is **SIGNIFICANTLY PROGRESSIVE** with cryptographi
 
 1. **Public Key Crypto Integration** (8 hours)
    - Wire up RSA/ECDSA/Ed25519 signing to `PublicKeyAuthenticator`
-   - Implement proper signature data construction (session ID + auth request)
-   - Add signature encoding/decoding
+   - **Use existing `src/auth/signature.rs`** for proper signature encoding
+   - Implement proper signature data construction using `create_signature_data()`
    - Test with real SSH servers
 
 2. **AES-CTR Implementation** (7 hours)
@@ -516,12 +530,15 @@ The SSH client has **solid cryptographic foundations** with:
 - ✅ **Packet encryption/decryption fully implemented** (Encryptor/Decryptor with multiple cipher support)
 - ✅ **Channel data transfer framework implemented** (ChannelTransferManager)
 - ✅ **Authentication framework fully implemented** (PublicKeyAuthenticator, PasswordAuthenticator)
+- ✅ **Signature encoding complete** (`src/auth/signature.rs` - RSA, ECDSA, Ed25519)
 - ✅ **Session channel fully implemented** (all request types)
 - ✅ **Service request implemented** (send_service_request, recv_service_accept)
 - ✅ 533 passing tests (71.86% coverage)
 
 But is **missing integration work**:
 - ❌ **Authentication crypto integration** - Real signatures needed (uses dummy sig)
+  - `src/auth/signature.rs` exists but NOT used by authenticator
+  - `src/auth/mod.rs` and `src/auth/publickey.rs` still send `msg.write_string(b"")`
 - ❌ AES-CTR cipher
 - ❌ Channel data transfer integration with transport
 - ❌ Service request integration into connection flow
@@ -530,8 +547,8 @@ But is **missing integration work**:
 
 The cryptographic core is complete and well-tested. The remaining work is primarily in **integration** - wiring together the implemented components to create a working SSH client. The packet layer, channel management, and authentication frameworks are all implemented; they just need to be connected.
 
-**Key Update:** ECDH and Curve25519 are **fully implemented** with real elliptic curve cryptography (not placeholders as previously documented). The main blockers are now:
-1. Authentication crypto integration (wiring RSA/ECDSA/Ed25519 to auth flow)
+**Key Update:** ECDH and Curve25519 are **fully implemented** with real elliptic curve cryptography (not placeholders as previously documented). The signature encoding infrastructure (`src/auth/signature.rs`) is also complete. The main blockers are now:
+1. Authentication crypto integration (wiring RSA/ECDSA/Ed25519 to auth flow - use existing `src/auth/signature.rs`)
 2. AES-CTR cipher implementation
 3. Channel data transfer integration
 

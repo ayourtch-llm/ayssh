@@ -228,7 +228,7 @@
 
 ### 12. Authentication Integration - ⚠️ **60% Complete**
 
-**Files:** `src/auth/publickey.rs`, `src/auth/password.rs` (Implemented)
+**Files:** `src/auth/publickey.rs`, `src/auth/password.rs`, `src/auth/signature.rs` (Implemented)
 
 **Implemented:**
 - ✅ `PublicKeyAuthenticator` with full message encoding
@@ -236,14 +236,19 @@
 - ✅ Signature request handling
 - ✅ Authentication state machine
 - ✅ Method negotiation
+- ✅ **Complete signature encoding** (`src/auth/signature.rs`)
+  - RSA signature encoding with SSH format
+  - ECDSA signature encoding (nistp256/384/521)
+  - Ed25519 signature encoding
+  - `create_signature_data()` function for proper signature data construction
 
 **Missing:**
-- [ ] **Real signature computation** - Uses **dummy signature**
-- [ ] **RSA/ECDSA/Ed25519 integration** - Crypto exists but NOT wired to auth
+- [ ] **Real signature computation in auth flow** - `src/auth/mod.rs` and `src/auth/publickey.rs` still send **dummy/empty signatures**
+- [ ] **RSA/ECDSA/Ed25519 integration in auth flow** - Crypto exists but NOT wired to `PublicKeyAuthenticator.send_signature()`
 - [ ] **Password encryption** - Not needed for password auth
 - [ ] **Keyboard-interactive** - Not implemented
 
-**Critical Gap:** The public key authenticator sends a dummy signature instead of computing a real signature using the RSA/ECDSA/Ed25519 crypto primitives. This is the main blocker for functional authentication.
+**Critical Gap:** The public key authenticator sends a **dummy/empty signature** instead of computing a real signature using the RSA/ECDSA/Ed25519 crypto primitives. The signature encoding infrastructure (`src/auth/signature.rs`) is complete, but it's not being used by the authenticator.
 
 ---
 
@@ -254,8 +259,8 @@
 
 1. **Public Key Crypto Integration** (8 hours)
    - Wire up RSA/ECDSA/Ed25519 signing to `PublicKeyAuthenticator`
-   - Implement proper signature data construction (session_id || user || service || "publickey" || "publickey")
-   - Add signature encoding/decoding
+   - Use existing `src/auth/signature.rs` for proper signature encoding
+   - Implement proper signature data construction using `create_signature_data()`
    - Test with real SSH servers
 
 2. **AES-CTR Implementation** (7 hours)
@@ -370,6 +375,7 @@
 ### Immediate (This Week)
 1. **Authentication Crypto Integration** - 8 hours
    - Wire RSA/ECDSA/Ed25519 to `PublicKeyAuthenticator`
+   - Use existing `src/auth/signature.rs` for proper signature encoding
    - Implement proper signature data construction
    - Test with real SSH servers
 
@@ -420,6 +426,7 @@
 - State machines (transport, auth, connection, channel)
 - Cryptographic primitives (DH, KDF, HMAC, AES-GCM, ChaCha20, RSA, ECDSA, Ed25519)
 - **ECDH & Curve25519 fully implemented** (NOT placeholders!)
+- **Signature encoding complete** (`src/auth/signature.rs` - RSA, ECDSA, Ed25519)
 - Packet encryption/decryption framework (Encryptor/Decryptor)
 - Authentication framework (PublicKeyAuthenticator, PasswordAuthenticator)
 - Session channel (all request types)
@@ -430,6 +437,8 @@
 ### What's Missing ❌
 - **AES-CTR cipher** - NOT implemented
 - **Authentication crypto integration** - Real signatures needed (uses dummy sig)
+  - `src/auth/signature.rs` exists but NOT used by authenticator
+  - `src/auth/mod.rs` and `src/auth/publickey.rs` still send empty signatures
 - Channel data transfer integration with transport
 - Port forwarding
 - Known hosts database
@@ -437,11 +446,11 @@
 
 ### Estimated Completion: 30-40% remaining
 
-The cryptographic core is complete and well-tested. The remaining work is primarily **integration** - wiring together the implemented components. The packet layer, channel management, and authentication frameworks are all implemented; they just need to be connected to create a working SSH client.
+The cryptographic core is complete and well-tested. The remaining work is primarily **integration** - wiring together the implemented components. The packet layer, channel management, and authentication frameworks are all implemented; they just need to be connected.
 
-**Key Update:** ECDH and Curve25519 are **fully implemented** with real elliptic curve cryptography (not placeholders as previously documented). The main blockers are now:
+**Key Update:** ECDH and Curve25519 are **fully implemented** with real elliptic curve cryptography (not placeholders as previously documented). The signature encoding infrastructure (`src/auth/signature.rs`) is also complete. The main blockers are now:
 1. AES-CTR cipher implementation
-2. Authentication crypto integration (wiring RSA/ECDSA/Ed25519 to auth flow)
+2. Authentication crypto integration (wiring RSA/ECDSA/Ed25519 to auth flow - use existing `src/auth/signature.rs`)
 3. Channel data transfer integration
 
 ---
