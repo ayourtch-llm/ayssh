@@ -6,6 +6,9 @@ use crate::config::Config;
 use crate::error::SshError;
 use tokio::net::TcpStream;
 
+// Connection state machine
+pub mod state;
+
 // Note: These modules will be implemented in later tasks
 // pub mod channels;
 // pub mod session;
@@ -24,6 +27,7 @@ pub struct Connection {
 
 /// Re-export commonly used items
 pub use crate::transport::Transport;
+pub use state::ConnectionStateMachine;
 
 impl Connection {
     /// Creates a new connection with the given configuration

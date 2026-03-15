@@ -15,3 +15,4 @@ pub mod handshake_tests;
 pub mod chacha20_tests;
 pub mod packet_tests;
 pub mod encrypted_transport_tests;
+pub mod connection_tests;
