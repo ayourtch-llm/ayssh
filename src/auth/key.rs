@@ -66,22 +66,99 @@ impl PrivateKey {
 
     /// Load private key from bytes (PEM format)
     pub fn parse_pem(pem_content: &str) -> Result<Self, SshError> {
+        eprintln!("=== parse_pem called ===");
+        let preview = pem_content.chars().take(100).collect::<String>();
+        eprintln!("PEM content starts with: {}", preview);
+        
         // Try PKCS#8 first (most common)
-        if let Ok(key) = Self::parse_pkcs8(pem_content) {
+        eprintln!("\n--- Trying PKCS#8 ---");
+        let pkcs8_result = Self::parse_pkcs8(pem_content);
+        if let Ok(key) = pkcs8_result {
+            eprintln!("✓ PKCS#8 succeeded");
             return Ok(key);
+        }
+        
+        // If parse_pkcs8 failed, check if it was a PEM parsing error or a tag mismatch
+        if let Err(e) = pkcs8_result {
+            // Check if PEM parsing itself failed
+            if let SshError::CryptoError(msg) = e {
+                if msg == "Invalid PEM format" {
+                    eprintln!("✗ PKCS#8 failed: Invalid PEM format");
+                    return Err(SshError::CryptoError(format!(
+                        "Invalid PEM format: {}",
+                        msg
+                    )));
+                }
+                // Tag mismatch - this is expected for non-PKCS#8 keys
+                eprintln!("✗ PKCS#8 failed: tag mismatch (expected PRIVATE KEY)");
+            } else {
+                eprintln!("✗ PKCS#8 failed: {:?}", e);
+                return Err(e);
+            }
         }
 
         // Try PKCS#1 (RSA only)
-        if let Ok(key) = Self::parse_pkcs1(pem_content) {
+        eprintln!("\n--- Trying PKCS#1 ---");
+        let pkcs1_result = Self::parse_pkcs1(pem_content);
+        if let Ok(key) = pkcs1_result {
+            eprintln!("✓ PKCS#1 succeeded");
             return Ok(key);
+        }
+        if let Err(e) = pkcs1_result {
+            if let SshError::CryptoError(msg) = e {
+                if msg == "Invalid PEM format" {
+                    eprintln!("✗ PKCS#1 failed: Invalid PEM format");
+                    return Err(SshError::CryptoError(format!(
+                        "Invalid PEM format: {}",
+                        msg
+                    )));
+                }
+                // Tag mismatch - expected for non-PKCS#1 keys
+                eprintln!("✗ PKCS#1 failed: tag mismatch (expected RSA PRIVATE KEY)");
+            } else {
+                eprintln!("✗ PKCS#1 failed: {:?}", e);
+                return Err(e);
+            }
         }
 
         // Try SSH format (OpenSSH)
-        if let Ok(key) = Self::parse_openssh(pem_content) {
+        eprintln!("\n--- Trying OpenSSH ---");
+        let openssh_result = Self::parse_openssh(pem_content);
+        if let Ok(key) = openssh_result {
+            eprintln!("✓ OpenSSH succeeded");
             return Ok(key);
         }
-
-        Err(SshError::CryptoError("Failed to parse private key".into()))
+        
+        // All formats failed - provide detailed diagnostic
+        let mut error_info = String::from("Failed to parse private key. Tried: ");
+        
+        // Check PEM format
+        if pem::parse(pem_content).is_err() {
+            error_info.push_str("PEM parsing failed; ");
+        } else {
+            // Get the tag for better diagnostics
+            if let Ok(pem) = pem::parse(pem_content) {
+                let tag = pem.tag();
+                error_info.push_str(&format!("tag='{}', ", tag));
+            }
+        }
+        
+        // Check if it's an OpenSSH format
+        if pem_content.contains("BEGIN OPENSSH PRIVATE KEY") {
+            error_info.push_str("OpenSSH format detected; ");
+        }
+        
+        // Add OpenSSH error if available
+        if let Err(e) = openssh_result {
+            if let SshError::CryptoError(ref msg) = e {
+                error_info.push_str(&format!("OpenSSH error: '{}', ", msg));
+            }
+        }
+        
+        error_info.push_str("all formats failed");
+        
+        eprintln!("✗ All formats failed: {}", error_info);
+        Err(SshError::CryptoError(error_info))
     }
 
     /// Parse PKCS#8 PEM format
@@ -181,15 +258,17 @@ impl PrivateKey {
             return Err(SshError::CryptoError("Not an OpenSSH key".into()));
         }
 
-        // Extract base64 content
-        let start = pem_content.find("-----BEGIN OPENSSH PRIVATE KEY-----")
-            .ok_or_else(|| SshError::CryptoError("Invalid OpenSSH key format".into()))?;
-        let end = pem_content.find("-----END OPENSSH PRIVATE KEY-----")
-            .ok_or_else(|| SshError::CryptoError("Invalid OpenSSH key format".into()))?;
-
-        let base64 = &pem_content[start + 38..end];
-        let der = base64::decode(base64)
-            .map_err(|_| SshError::CryptoError("Invalid base64 encoding".into()))?;
+        // Extract base64 content using the rsa crate pattern
+        let der_encoded = pem_content
+            .lines()
+            .filter(|line| !line.starts_with("-"))
+            .fold(String::new(), |mut data, line| {
+                data.push_str(&line);
+                data
+            });
+        
+        let der = base64::decode(&der_encoded)
+            .map_err(|e| SshError::CryptoError(format!("Invalid base64 encoding: {}", e)))?;
 
         Self::parse_openssh_der(&der)
     }
@@ -204,80 +283,104 @@ impl PrivateKey {
         // Read magic: "openssh-key-v1\0"
         let mut magic = [0u8; 15];
         cursor.read_exact(&mut magic)
-            .map_err(|_| SshError::CryptoError("Invalid OpenSSH format".into()))?;
+            .map_err(|_| SshError::CryptoError("Invalid OpenSSH format: cannot read magic bytes".into()))?;
         
         if &magic != b"openssh-key-v1\0" {
-            return Err(SshError::CryptoError("Invalid OpenSSH magic".into()));
+            return Err(SshError::CryptoError(format!(
+                "Invalid OpenSSH magic: expected 'openssh-key-v1\\0', got {:02x?}",
+                &magic[..magic.len().min(15)]
+            )));
         }
 
         // Read cipher name
         let mut cipher_len_buf = [0u8; 4];
         cursor.read_exact(&mut cipher_len_buf)
-            .map_err(|_| SshError::CryptoError("Invalid cipher name".into()))?;
+            .map_err(|_| SshError::CryptoError("Invalid cipher name: cannot read length".into()))?;
         let cipher_len = u32::from_be_bytes(cipher_len_buf) as usize;
         let mut cipher = vec![0u8; cipher_len];
         cursor.read_exact(&mut cipher)
-            .map_err(|_| SshError::CryptoError("Invalid cipher name".into()))?;
+            .map_err(|_| SshError::CryptoError(format!(
+                "Invalid cipher name: cannot read cipher name (len={})",
+                cipher_len
+            )))?;
 
         // Read kdf name
         let mut kdf_len_buf = [0u8; 4];
         cursor.read_exact(&mut kdf_len_buf)
-            .map_err(|_| SshError::CryptoError("Invalid kdf name".into()))?;
+            .map_err(|_| SshError::CryptoError("Invalid kdf name: cannot read length".into()))?;
         let kdf_len = u32::from_be_bytes(kdf_len_buf) as usize;
         let mut kdf = vec![0u8; kdf_len];
         cursor.read_exact(&mut kdf)
-            .map_err(|_| SshError::CryptoError("Invalid kdf name".into()))?;
+            .map_err(|_| SshError::CryptoError(format!(
+                "Invalid kdf name: cannot read kdf name (len={})",
+                kdf_len
+            )))?;
 
         // Read kdf options
         let mut kdf_opts_len_buf = [0u8; 4];
         cursor.read_exact(&mut kdf_opts_len_buf)
-            .map_err(|_| SshError::CryptoError("Invalid kdf options".into()))?;
+            .map_err(|_| SshError::CryptoError("Invalid kdf options: cannot read length".into()))?;
         let kdf_opts_len = u32::from_be_bytes(kdf_opts_len_buf) as usize;
         let mut kdf_opts = vec![0u8; kdf_opts_len];
         cursor.read_exact(&mut kdf_opts)
-            .map_err(|_| SshError::CryptoError("Invalid kdf options".into()))?;
+            .map_err(|_| SshError::CryptoError(format!(
+                "Invalid kdf options: cannot read kdf options (len={})",
+                kdf_opts_len
+            )))?;
 
         // Read number of keys
         let mut nkeys_buf = [0u8; 4];
         cursor.read_exact(&mut nkeys_buf)
-            .map_err(|_| SshError::CryptoError("Invalid key count".into()))?;
+            .map_err(|_| SshError::CryptoError("Invalid key count: cannot read length".into()))?;
         let nkeys = u32::from_be_bytes(nkeys_buf) as usize;
 
         if nkeys != 1 {
-            return Err(SshError::CryptoError("Only single-key OpenSSH files supported".into()));
+            return Err(SshError::CryptoError(format!(
+                "Only single-key OpenSSH files supported, found {} keys",
+                nkeys
+            )));
         }
 
         // Read public key
         let mut pub_key_len_buf = [0u8; 4];
         cursor.read_exact(&mut pub_key_len_buf)
-            .map_err(|_| SshError::CryptoError("Invalid public key".into()))?;
+            .map_err(|_| SshError::CryptoError("Invalid public key: cannot read length".into()))?;
         let pub_key_len = u32::from_be_bytes(pub_key_len_buf) as usize;
         let mut pub_key = vec![0u8; pub_key_len];
         cursor.read_exact(&mut pub_key)
-            .map_err(|_| SshError::CryptoError("Invalid public key".into()))?;
+            .map_err(|_| SshError::CryptoError(format!(
+                "Invalid public key: cannot read public key blob (len={})",
+                pub_key_len
+            )))?;
 
         // Read private key blob
         let mut priv_key_len_buf = [0u8; 4];
         cursor.read_exact(&mut priv_key_len_buf)
-            .map_err(|_| SshError::CryptoError("Invalid private key".into()))?;
+            .map_err(|_| SshError::CryptoError("Invalid private key: cannot read length".into()))?;
         let priv_key_len = u32::from_be_bytes(priv_key_len_buf) as usize;
         let mut priv_key_blob = vec![0u8; priv_key_len];
         cursor.read_exact(&mut priv_key_blob)
-            .map_err(|_| SshError::CryptoError("Invalid private key".into()))?;
+            .map_err(|_| SshError::CryptoError(format!(
+                "Invalid private key: cannot read private key blob (len={})",
+                priv_key_len
+            )))?;
 
         // Parse based on key type (from public key)
         let mut pub_cursor = Cursor::new(&pub_key);
         
         let mut algo_len_buf = [0u8; 4];
         pub_cursor.read_exact(&mut algo_len_buf)
-            .map_err(|_| SshError::CryptoError("Invalid algorithm".into()))?;
+            .map_err(|_| SshError::CryptoError("Invalid algorithm: cannot read length".into()))?;
         let algo_len = u32::from_be_bytes(algo_len_buf) as usize;
         let mut algo = vec![0u8; algo_len];
         pub_cursor.read_exact(&mut algo)
-            .map_err(|_| SshError::CryptoError("Invalid algorithm".into()))?;
+            .map_err(|_| SshError::CryptoError(format!(
+                "Invalid algorithm: cannot read algorithm string (len={})",
+                algo_len
+            )))?;
 
         let algorithm = String::from_utf8(algo)
-            .map_err(|_| SshError::CryptoError("Invalid algorithm string".into()))?;
+            .map_err(|_| SshError::CryptoError("Invalid algorithm string: not valid UTF-8".into()))?;
 
         match algorithm.as_str() {
             "ssh-rsa" => {
@@ -294,7 +397,10 @@ impl PrivateKey {
                     let signing_key = ed25519_dalek::SigningKey::from_bytes(&key_bytes);
                     Ok(PrivateKey::Ed25519(signing_key))
                 } else {
-                    Err(SshError::CryptoError("Invalid Ed25519 key length".into()))
+                    Err(SshError::CryptoError(format!(
+                        "Invalid Ed25519 key length: expected >= 64 bytes, got {}",
+                        priv_key_blob.len()
+                    )))
                 }
             }
             "ecdsa-sha2-nistp256" | "ecdsa-sha2-nistp384" | "ecdsa-sha2-nistp521" => {
@@ -303,34 +409,61 @@ impl PrivateKey {
                 let mut ec_cursor = Cursor::new(&priv_key_blob[32..]); // Skip 32-byte public key
                 let mut curve_len_buf = [0u8; 4];
                 ec_cursor.read_exact(&mut curve_len_buf)
-                    .map_err(|_| SshError::CryptoError("Invalid curve name".into()))?;
+                    .map_err(|_| SshError::CryptoError("Invalid curve name: cannot read length".into()))?;
                 let curve_len = u32::from_be_bytes(curve_len_buf) as usize;
                 let mut curve_name = vec![0u8; curve_len];
                 ec_cursor.read_exact(&mut curve_name)
-                    .map_err(|_| SshError::CryptoError("Invalid curve name".into()))?;
+                    .map_err(|_| SshError::CryptoError(format!(
+                        "Invalid curve name: cannot read curve name (len={})",
+                        curve_len
+                    )))?;
 
                 let curve = match curve_name.as_slice() {
                     b"nistp256" => EcdsaCurve::Nistp256,
                     b"nistp384" => EcdsaCurve::Nistp384,
                     b"nistp521" => EcdsaCurve::Nistp521,
-                    _ => return Err(SshError::CryptoError("Unsupported ECDSA curve".into())),
+                    _ => return Err(SshError::CryptoError(format!(
+                        "Unsupported ECDSA curve: {}",
+                        String::from_utf8_lossy(&curve_name)
+                    ))),
                 };
 
                 let mut scalar_len_buf = [0u8; 4];
                 ec_cursor.read_exact(&mut scalar_len_buf)
-                    .map_err(|_| SshError::CryptoError("Invalid scalar".into()))?;
+                    .map_err(|_| SshError::CryptoError("Invalid scalar: cannot read length".into()))?;
                 let scalar_len = u32::from_be_bytes(scalar_len_buf) as usize;
                 let mut scalar = vec![0u8; scalar_len];
                 ec_cursor.read_exact(&mut scalar)
-                    .map_err(|_| SshError::CryptoError("Invalid scalar".into()))?;
+                    .map_err(|_| SshError::CryptoError(format!(
+                        "Invalid scalar: cannot read scalar (len={})",
+                        scalar_len
+                    )))?;
 
                 Ok(PrivateKey::Ecdsa(curve, scalar))
             }
-            _ => Err(SshError::CryptoError("Unsupported key type".into())),
+            _ => Err(SshError::CryptoError(format!(
+                "Unsupported key type: {}",
+                algorithm
+            ))),
         }
     }
 
     /// Parse OpenSSH RSA private key
+    /// 
+    /// OpenSSH RSA format in private key blob (RFC4253):
+    /// - checkint (4 bytes)
+    /// - checkint (4 bytes) - must match
+    /// - algorithm string "ssh-rsa" (variable length)
+    /// - modulus n (mpint)
+    /// - public exponent e (mpint)
+    /// - private exponent d (mpint)
+    /// - prime1 p (mpint)
+    /// - prime2 q (mpint)
+    /// - exponent1 (mpint)
+    /// - exponent2 (mpint)
+    /// - coefficient (optional, mpint) - inverse of q mod p
+    /// - comment (optional, string)
+    /// - padding (optional, bytes)
     fn parse_openssh_rsa(private_key_blob: &[u8]) -> Result<rsa::RsaPrivateKey, SshError> {
         use std::io::Cursor;
         use std::io::Read;
@@ -352,23 +485,60 @@ impl PrivateKey {
             return Err(SshError::CryptoError("RSA checkint mismatch".into()));
         }
 
-        // Read public exponent
+        // Read public key algorithm string (ssh-rsa)
+        let mut algo_len_buf = [0u8; 4];
+        cursor.read_exact(&mut algo_len_buf)
+            .map_err(|_| SshError::CryptoError("Invalid algorithm string length".into()))?;
+        let algo_len = u32::from_be_bytes(algo_len_buf) as usize;
+        let mut algo = vec![0u8; algo_len];
+        cursor.read_exact(&mut algo)
+            .map_err(|_| SshError::CryptoError("Invalid algorithm string".into()))?;
+        
+        let algorithm = String::from_utf8(algo)
+            .map_err(|_| SshError::CryptoError("Invalid algorithm string encoding".into()))?;
+        
+        if algorithm != "ssh-rsa" {
+            return Err(SshError::CryptoError(format!(
+                "Expected 'ssh-rsa' algorithm, got '{}'",
+                algorithm
+            )));
+        }
+
+        // Read modulus (n)
+        let mut n_len_buf = [0u8; 4];
+        cursor.read_exact(&mut n_len_buf)
+            .map_err(|_| SshError::CryptoError("Invalid modulus".into()))?;
+        let n_len = u32::from_be_bytes(n_len_buf) as usize;
+        let mut n = vec![0u8; n_len];
+        cursor.read_exact(&mut n)
+            .map_err(|_| SshError::CryptoError("Invalid modulus".into()))?;
+
+        // Read public exponent (e)
         let mut e_len_buf = [0u8; 4];
         cursor.read_exact(&mut e_len_buf)
-            .map_err(|_| SshError::CryptoError("Invalid exponent".into()))?;
+            .map_err(|_| SshError::CryptoError("Invalid public exponent".into()))?;
         let e_len = u32::from_be_bytes(e_len_buf) as usize;
         let mut e = vec![0u8; e_len];
         cursor.read_exact(&mut e)
-            .map_err(|_| SshError::CryptoError("Invalid exponent".into()))?;
+            .map_err(|_| SshError::CryptoError("Invalid public exponent".into()))?;
 
-        // Read private exponent
+        // Read private exponent (d)
         let mut d_len_buf = [0u8; 4];
         cursor.read_exact(&mut d_len_buf)
-            .map_err(|_| SshError::CryptoError("Invalid exponent".into()))?;
+            .map_err(|_| SshError::CryptoError("Invalid private exponent".into()))?;
         let d_len = u32::from_be_bytes(d_len_buf) as usize;
         let mut d = vec![0u8; d_len];
         cursor.read_exact(&mut d)
-            .map_err(|_| SshError::CryptoError("Invalid exponent".into()))?;
+            .map_err(|_| SshError::CryptoError("Invalid private exponent".into()))?;
+
+        // Read coefficient (iqmp = q^(-1) mod p) - comes BEFORE p and q in OpenSSH format
+        let mut coef_len_buf = [0u8; 4];
+        cursor.read_exact(&mut coef_len_buf)
+            .map_err(|_| SshError::CryptoError("Invalid coefficient".into()))?;
+        let coef_len = u32::from_be_bytes(coef_len_buf) as usize;
+        let mut coef = vec![0u8; coef_len];
+        cursor.read_exact(&mut coef)
+            .map_err(|_| SshError::CryptoError("Invalid coefficient".into()))?;
 
         // Read prime1 (p)
         let mut p_len_buf = [0u8; 4];
@@ -388,50 +558,111 @@ impl PrivateKey {
         cursor.read_exact(&mut q)
             .map_err(|_| SshError::CryptoError("Invalid prime q".into()))?;
 
-        // Read exponent1 (d mod p-1)
-        let mut exp1_len_buf = [0u8; 4];
-        cursor.read_exact(&mut exp1_len_buf)
-            .map_err(|_| SshError::CryptoError("Invalid exponent1".into()))?;
-        let exp1_len = u32::from_be_bytes(exp1_len_buf) as usize;
-        let mut exp1 = vec![0u8; exp1_len];
-        cursor.read_exact(&mut exp1)
-            .map_err(|_| SshError::CryptoError("Invalid exponent1".into()))?;
+        // Read exponent1 (d mod p-1) - optional in some OpenSSH versions
+        // Check if there's enough data for a length field
+        let bytes_remaining = private_key_blob.len() - cursor.position() as usize;
+        if bytes_remaining >= 4 {
+            let mut exp1_len_buf = [0u8; 4];
+            if cursor.read_exact(&mut exp1_len_buf).is_ok() {
+                let exp1_len = u32::from_be_bytes(exp1_len_buf) as usize;
+                if bytes_remaining >= 4 + exp1_len {
+                    let mut exp1 = vec![0u8; exp1_len];
+                    cursor.read_exact(&mut exp1)
+                        .map_err(|_| SshError::CryptoError("Invalid exponent1".into()))?;
+                    // exp1 is optional, we can ignore it
+                    drop(exp1);
+                } else {
+                    // Not enough bytes for exponent1, this is likely padding
+                    // Rewind the length bytes
+                    cursor.set_position(cursor.position() - 4);
+                }
+            }
+        }
 
-        // Read exponent2 (d mod q-1)
-        let mut exp2_len_buf = [0u8; 4];
-        cursor.read_exact(&mut exp2_len_buf)
-            .map_err(|_| SshError::CryptoError("Invalid exponent2".into()))?;
-        let exp2_len = u32::from_be_bytes(exp2_len_buf) as usize;
-        let mut exp2 = vec![0u8; exp2_len];
-        cursor.read_exact(&mut exp2)
-            .map_err(|_| SshError::CryptoError("Invalid exponent2".into()))?;
-
-        // Read coefficient (inverse of q mod p)
-        let mut coef_len_buf = [0u8; 4];
-        cursor.read_exact(&mut coef_len_buf)
-            .map_err(|_| SshError::CryptoError("Invalid coefficient".into()))?;
-        let coef_len = u32::from_be_bytes(coef_len_buf) as usize;
-        let mut coef = vec![0u8; coef_len];
-        cursor.read_exact(&mut coef)
-            .map_err(|_| SshError::CryptoError("Invalid coefficient".into()))?;
+        // Read exponent2 (d mod q-1) - optional in some OpenSSH versions
+        let bytes_remaining = private_key_blob.len() - cursor.position() as usize;
+        if bytes_remaining >= 4 {
+            let mut exp2_len_buf = [0u8; 4];
+            if cursor.read_exact(&mut exp2_len_buf).is_ok() {
+                let exp2_len = u32::from_be_bytes(exp2_len_buf) as usize;
+                if bytes_remaining >= 4 + exp2_len {
+                    let mut exp2 = vec![0u8; exp2_len];
+                    cursor.read_exact(&mut exp2)
+                        .map_err(|_| SshError::CryptoError("Invalid exponent2".into()))?;
+                    // exp2 is optional, we can ignore it
+                    drop(exp2);
+                } else {
+                    // Not enough bytes for exponent2, this is likely padding
+                    // Rewind the length bytes
+                    cursor.set_position(cursor.position() - 4);
+                }
+            }
+        }
 
         // Construct RSA private key from components
-        let n = rsa::BigUint::from_bytes_be(&p);
-        let e = rsa::BigUint::from_bytes_be(&e);
-        let d = rsa::BigUint::from_bytes_be(&d);
-        let p_big = rsa::BigUint::from_bytes_be(&p);
-        let q_big = rsa::BigUint::from_bytes_be(&q);
+        // OpenSSH uses mpint encoding which adds a leading 0x00 byte to prevent
+        // the MSB from being interpreted as a sign bit. We need to strip it.
+        let n_bytes = if n.len() > 1 && n[0] == 0x00 && (n[1] & 0x80) != 0 {
+            &n[1..]
+        } else {
+            &n[..]
+        };
+        let e_bytes = if e.len() > 1 && e[0] == 0x00 && (e[1] & 0x80) != 0 {
+            &e[1..]
+        } else {
+            &e[..]
+        };
+        let d_bytes = if d.len() > 1 && d[0] == 0x00 && (d[1] & 0x80) != 0 {
+            &d[1..]
+        } else {
+            &d[..]
+        };
+        let p_bytes = if p.len() > 1 && p[0] == 0x00 && (p[1] & 0x80) != 0 {
+            &p[1..]
+        } else {
+            &p[..]
+        };
+        let q_bytes = if q.len() > 1 && q[0] == 0x00 && (q[1] & 0x80) != 0 {
+            &q[1..]
+        } else {
+            &q[..]
+        };
+        
+        let n_big = rsa::BigUint::from_bytes_be(n_bytes);
+        let e_big = rsa::BigUint::from_bytes_be(e_bytes);
+        let d_big = rsa::BigUint::from_bytes_be(d_bytes);
+        let p_big = rsa::BigUint::from_bytes_be(p_bytes);
+        let q_big = rsa::BigUint::from_bytes_be(q_bytes);
         
         // Use from_components which is the correct API in rsa 0.9
         let key = rsa::RsaPrivateKey::from_components(
-            n,
-            e,
-            d,
-            vec![p_big.clone(), q_big.clone()], // primes
+            n_big,
+            e_big,
+            d_big,
+            vec![p_big, q_big], // primes
         )
-        .map_err(|_| SshError::CryptoError("Invalid RSA key".into()))?;
+        .map_err(|e| SshError::CryptoError(format!("Invalid RSA key: {}", e)))?;
 
         Ok(key)
+    }
+
+    /// Strip leading 0x00 byte from mpint encoding
+    /// 
+    /// OpenSSH uses mpint format for integers, which adds a leading 0x00 byte
+    /// to prevent the MSB from being interpreted as a sign bit. We need to
+    /// strip this byte when converting to BigUint.
+    fn strip_mpint_leading_zero(bytes: &[u8]) -> Vec<u8> {
+        if bytes.len() > 1 && bytes[0] == 0x00 {
+            // Check if the second byte has MSB set (would be interpreted as negative)
+            if bytes[1] & 0x80 != 0 {
+                // Strip the leading zero
+                bytes[1..].to_vec()
+            } else {
+                bytes.to_vec()
+            }
+        } else {
+            bytes.to_vec()
+        }
     }
 
     /// Get key type
