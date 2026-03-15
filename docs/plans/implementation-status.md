@@ -130,7 +130,13 @@ The SSH client implementation is **SIGNIFICANTLY PROGRESSIVE** with cryptographi
 - MAC verification for CTR mode packets
 
 **Remaining Gaps:**
-- ⚠️ **AES-CTR** (RFC 4344) - Placeholder implementation exists
+- ✅ **AES-CTR cipher COMPLETE** (2026-03-15)
+  - `src/crypto/cipher.rs` has real AES-CTR implementation
+  - Uses `aes` crate from RustCrypto
+  - Proper counter mode with 8-byte nonce
+  - Tested with 7 passing unit tests
+  - Integrated into `src/transport/packet.rs` Encryptor/Decryptor
+  - Full encrypt/decrypt cycle working with HMAC-SHA2-256
 - ❌ **AES-CBC** (RFC 4470, deprecated) - Not implemented
 - ❌ **ETM variants** - HMAC-SHA2-256-ETM@openssh.com missing
 - ⚠️ **Sequence number handling** - Implemented in Encryptor/Decryptor but not fully integrated
@@ -192,11 +198,18 @@ The SSH client implementation is **SIGNIFICANTLY PROGRESSIVE** with cryptographi
 
 ---
 
-### ❌ RFC 4344: AES in SSH (Partially Implemented)
-**Status:** AES-CTR cipher not fully implemented
+### ✅ RFC 4344: AES in SSH (COMPLETE)
+**Status:** AES-CTR cipher fully implemented
 
-**Remaining Gaps:**
-- ❌ **AES-CTR** - Placeholder implementation needs real AES-CTR
+**Implemented:**
+- ✅ **AES-256-CTR** (RFC 4344) - Full implementation using `aes` crate
+  - Real AES-CTR encryption/decryption
+  - 8-byte counter nonce
+  - Proper block-wise XOR encryption
+  - Used with HMAC-SHA2-256/512 for integrity
+  - Integrated into `src/transport/packet.rs` Encryptor/Decryptor
+  - 7 passing unit tests
+  - Full encrypt/decrypt cycle verified
 
 ---
 
@@ -374,20 +387,16 @@ The SSH client implementation is **SIGNIFICANTLY PROGRESSIVE** with cryptographi
 
 ### 🔴 CRITICAL - Blockers (Must Implement First)
 
-1. **Authentication Crypto Integration** - Public key auth needs real signatures
-   - `src/auth/signature.rs` exists with complete signature encoding
-   - `src/auth/mod.rs` and `src/auth/publickey.rs` still send **empty/dummy signatures**
-   - Need to wire up RSA/ECDSA/Ed25519 signing to `PublicKeyAuthenticator`
-   - Use `create_signature_data()` and `RsaSignatureEncoder`, `EcdsaSignatureEncoder`, `Ed25519SignatureEncoder`
+1. **Authentication Crypto Integration** - ✅ **COMPLETE** (2026-03-15)
+   - `src/auth/signature.rs` has complete signature encoding
+   - `src/auth/mod.rs` and `src/auth/publickey.rs` now use **real signatures**
+   - RSA, ECDSA (P-256, P-384, P-521), and Ed25519 all integrated
+   - Uses `create_signature_data()` and proper signature encoders
+   - 4 comprehensive auth flow tests passing
 
 ### 🟡 HIGH - Major Features
 
-2. **AES-CTR Support** - Required for backward compatibility
-   - Many servers still support AES-CTR
-   - RFC 4344 requires AES-CTR
-   - Placeholder exists but needs real AES-CTR implementation
-
-3. **Channel Data Transfer Integration** - Methods exist but not wired
+2. **Channel Data Transfer Integration** - Methods exist but not wired
    - `ChannelTransferManager.send_data()` exists
    - `Session.request_exec()` exists
    - Need to wire channel data to transport layer
@@ -395,12 +404,12 @@ The SSH client implementation is **SIGNIFICANTLY PROGRESSIVE** with cryptographi
 
 ### 🟢 MEDIUM - Nice to Have
 
-4. **Service Request Integration** - Basic implementation exists
+3. **Service Request Integration** - Basic implementation exists
    - `Transport.send_service_request()` implemented
    - `Transport.recv_service_accept()` implemented
    - Need to integrate into connection flow
 
-5. **Port Forwarding**
+4. **Port Forwarding**
    - TCP/IP forwarding
    - X11 forwarding implementation
    - Agent forwarding
@@ -457,16 +466,19 @@ The SSH client implementation is **SIGNIFICANTLY PROGRESSIVE** with cryptographi
 ### Phase 1: Authentication Integration (Priority: CRITICAL)
 **Estimated Effort:** 10-15 hours
 
-1. **Public Key Crypto Integration** (8 hours)
-   - Wire up RSA/ECDSA/Ed25519 signing to `PublicKeyAuthenticator`
-   - **Use existing `src/auth/signature.rs`** for proper signature encoding
-   - Implement proper signature data construction using `create_signature_data()`
-   - Test with real SSH servers
+1. **Public Key Crypto Integration** (8 hours) - ✅ **COMPLETE** (2026-03-15)
+   - ✅ RSA/ECDSA (P-256, P-384, P-521)/Ed25519 signing wired to `PublicKeyAuthenticator`
+   - ✅ Used existing `src/auth/signature.rs` for proper signature encoding
+   - ✅ Implemented proper signature data construction using `create_signature_data()`
+   - ✅ 4 comprehensive auth flow tests passing
+   - ✅ Real signatures sent instead of empty/dummy signatures
 
-2. **AES-CTR Implementation** (7 hours)
-   - Add AES-CTR cipher using aes crate
-   - Integrate into packet layer
-   - Add tests
+2. **Channel Data Transfer Integration** (12 hours)
+   - Wire `ChannelTransferManager` to `Transport`
+   - Implement channel open message handling
+   - Handle incoming channel data
+   - Implement EOF/close handling
+   - Add window adjust support
 
 **Expected Outcome:** Functional authentication with modern key types
 
@@ -545,26 +557,30 @@ The SSH client has **solid cryptographic foundations** with:
 - ✅ **Signature encoding complete** (`src/auth/signature.rs` - RSA, ECDSA, Ed25519)
 - ✅ **Session channel fully implemented** (all request types)
 - ✅ **Service request implemented** (send_service_request, recv_service_accept)
-- ✅ 533 passing tests (71.86% coverage)
+- ✅ **AES-CTR cipher fully implemented** (RFC 4344) - 7 passing tests
+- ✅ **Real authentication crypto integration** (2026-03-15)
+  - RSA, ECDSA (P-256, P-384, P-521), Ed25519 all use real signatures
+  - `src/auth/signature.rs` IS NOW USED by authenticator
+  - 4 comprehensive auth flow tests passing
+- ✅ 243 passing tests
 
 But is **missing integration work**:
-- ❌ **Authentication crypto integration** - Real signatures needed (uses dummy sig)
-  - `src/auth/signature.rs` exists but NOT used by authenticator
-  - `src/auth/mod.rs` and `src/auth/publickey.rs` still send `msg.write_string(b"")`
-- ❌ AES-CTR cipher
 - ❌ Channel data transfer integration with transport
 - ❌ Service request integration into connection flow
 
-**Estimated Completion:** 30-40% of implementation remains for a functional SSH client.
+**Estimated Completion:** 25-35% of implementation remains for a functional SSH client.
 
 The cryptographic core is complete and well-tested. The remaining work is primarily in **integration** - wiring together the implemented components to create a working SSH client. The packet layer, channel management, and authentication frameworks are all implemented; they just need to be connected.
 
-**Key Update:** ECDH and Curve25519 are **fully implemented** with real elliptic curve cryptography (not placeholders as previously documented). The signature encoding infrastructure (`src/auth/signature.rs`) is also complete. The main blockers are now:
-1. Authentication crypto integration (wiring RSA/ECDSA/Ed25519 to auth flow - use existing `src/auth/signature.rs`)
-2. AES-CTR cipher implementation
-3. Channel data transfer integration
+**Key Update:** ECDH and Curve25519 are **fully implemented** with real elliptic curve cryptography (not placeholders as previously documented). The signature encoding infrastructure (`src/auth/signature.rs`) is also complete. **All major authentication algorithms are now integrated** (2026-03-15):
+- ✅ RSA authentication with real signing
+- ✅ ECDSA authentication (P-256, P-384, P-521) with real signing
+- ✅ Ed25519 authentication with real signing
+- ✅ AES-CTR cipher fully implemented (RFC 4344)
 
----
+The main blockers are now:
+1. Channel data transfer integration (wiring channel manager to transport)
+2. Service request integration (connection flow)
 
 **Report Generated:** 2026-03-15  
 **Analysis Method:** Gap analysis against RFC specifications  
