@@ -288,6 +288,28 @@ impl fmt::Display for NegotiatedAlgorithms {
     }
 }
 
+/// Supported hash algorithms for DH key exchange
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HashAlgorithm {
+    /// SHA-256
+    Sha256,
+    /// SHA-384
+    Sha384,
+    /// SHA-512
+    Sha512,
+}
+
+impl HashAlgorithm {
+    /// Get the hash output size in bytes
+    pub const fn output_size(&self) -> usize {
+        match self {
+            HashAlgorithm::Sha256 => 32,
+            HashAlgorithm::Sha384 => 48,
+            HashAlgorithm::Sha512 => 64,
+        }
+    }
+}
+
 /// Supported key exchange algorithms
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KexAlgorithm {

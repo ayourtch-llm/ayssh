@@ -43,6 +43,19 @@ ring = "0.17"
 # Constant-time operations
 subtle = "2.5"
 
+# Large integer arithmetic for DH
+num-bigint = "0.4"
+num-traits = "0.2"
+
+# SHA-2 hash functions
+sha2 = "0.10"
+
+# Random number generation
+rand = "0.8"
+
+# Lazy static initialization
+lazy_static = "1.4"
+
 [dev-dependencies]
 # Testing utilities
 tokio-test = "0.4"
