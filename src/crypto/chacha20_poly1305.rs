@@ -67,6 +67,11 @@ impl Nonce {
         Self { bytes }
     }
 
+    /// Create a default (zero) nonce
+    pub fn default() -> Self {
+        Self { bytes: [0u8; NONCE_SIZE] }
+    }
+
     /// Get the nonce bytes
     pub fn as_slice(&self) -> &[u8] {
         &self.bytes

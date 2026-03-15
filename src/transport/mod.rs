@@ -4,6 +4,7 @@
 //! packet encryption, and session state management.
 
 pub mod cipher;
+pub mod encrypted;
 pub mod handshake;
 pub mod kex;
 pub mod packet;
@@ -12,6 +13,7 @@ pub mod state;
 pub mod version;
 
 pub use cipher::*;
+pub use encrypted::*;
 pub use handshake::*;
 pub use kex::*;
 pub use packet::*;
