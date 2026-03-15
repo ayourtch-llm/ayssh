@@ -17,3 +17,4 @@ pub mod packet_tests;
 pub mod encrypted_transport_tests;
 pub mod connection_tests;
 pub mod password_auth_tests;
+pub mod channel_tests;
