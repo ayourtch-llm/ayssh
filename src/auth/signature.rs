@@ -6,6 +6,7 @@
 use crate::error::SshError;
 use bytes::{Buf, BufMut, BytesMut};
 use sha2::{Digest, Sha256};
+use signature::SignatureEncoding;
 
 /// SSH signature algorithm identifiers
 pub const SSH_SIG_ALGORITHM_RSA: &str = "ssh-rsa";
@@ -80,11 +81,10 @@ impl RsaSignatureEncoder {
         private_key: &rsa::RsaPrivateKey,
         data: &[u8],
     ) -> Result<SshSignature, SshError> {
-        use rsa::pkcs1v15::SigningKey;
         use signature::Signer;
         
-        // Create signing key
-        let signing_key = SigningKey::new(private_key.clone());
+        // Create signing key with empty prefix (unprefixed signatures)
+        let signing_key = rsa::pkcs1v15::SigningKey::<sha2::Sha256>::new_unprefixed(private_key.clone());
         
         // Sign the data
         let signature = signing_key.sign(data);
@@ -105,7 +105,8 @@ impl RsaSignatureEncoder {
         buf.put_slice(&e);
         
         // Signature (convert to positive mpint - big-endian)
-        let s = Self::to_positive_mpint(&signature);
+        let signature_bytes = signature.to_bytes();
+        let s = Self::to_positive_mpint(signature_bytes.as_ref());
         buf.put_u8(s.len() as u8);
         buf.put_slice(&s);
         
@@ -360,9 +361,12 @@ mod tests {
     #[test]
     fn test_ed25519_signature_encoding() {
         use ed25519_dalek::SigningKey;
+        use rand::Rng;
         
         let mut rng = OsRng;
-        let private_key = SigningKey::generate(&mut rng);
+        let mut seed = [0u8; 32];
+        rng.fill(&mut seed);
+        let private_key = SigningKey::from_bytes(&seed);
         
         let data = b"test signature data for Ed25519";
         let signature = Ed25519SignatureEncoder::encode(&private_key, data).unwrap();

@@ -5,14 +5,23 @@
 //! - Public key authentication
 //! - Authentication state machine
 
+pub mod key;
 pub mod methods;
 pub mod password;
 pub mod publickey;
+pub mod signature;
 pub mod state;
 
+pub use key::PrivateKey;
 pub use methods::{AuthMethod, AuthMethodManager};
 pub use password::PasswordAuthenticator;
 pub use publickey::PublicKeyAuthenticator;
+pub use signature::{
+    create_signature_data, Ed25519SignatureEncoder, EcdsaSignatureEncoder,
+    RsaSignatureEncoder, SshSignature, SSH_SIG_ALGORITHM_ED25519,
+    SSH_SIG_ALGORITHM_ECDSA_NISTP256, SSH_SIG_ALGORITHM_ECDSA_NISTP384,
+    SSH_SIG_ALGORITHM_ECDSA_NISTP521, SSH_SIG_ALGORITHM_RSA,
+};
 pub use state::AuthState;
 
 use crate::error::SshError;

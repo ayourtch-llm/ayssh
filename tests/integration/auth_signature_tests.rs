@@ -1,6 +1,6 @@
 //! Authentication tests using real SSH keys
 
-use ayssh::auth::{
+use ssh_client::auth::{
     create_signature_data, Ed25519SignatureEncoder, EcdsaSignatureEncoder,
     PrivateKey, PublicKeyAuthenticator, RsaSignatureEncoder, SSH_SIG_ALGORITHM_ED25519,
     SSH_SIG_ALGORITHM_RSA,
@@ -12,11 +12,12 @@ use sha2::{Digest, Sha256};
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::message::Message;
-    use crate::protocol::messages::MessageType;
-    use crate::transport::Transport;
+    use ssh_client::protocol::message::Message;
+    use ssh_client::protocol::messages::MessageType;
+    use ssh_client::transport::Transport;
     use bytes::BytesMut;
     use std::io::Cursor;
+    use ssh_client::auth::key::KeyType;
 
     #[test]
     fn test_ed25519_key_parsing() {
@@ -29,7 +30,7 @@ n9p8mt+gFq/ph2hiSlTQAAAADnRlc3RAbG9jYWxob3N0AQIDBAUGBw==
 -----END OPENSSH PRIVATE KEY-----"#;
 
         let key = PrivateKey::parse_pem(pem_content).unwrap();
-        assert_eq!(key.key_type(), crate::auth::key::KeyType::Ed25519);
+        assert_eq!(key.key_type(), KeyType::Ed25519);
     }
 
     #[test]
@@ -63,7 +64,7 @@ IZOdthyU9ISB5NAvqQAAAA50ZXN0QGxvY2FsaG9zdAECAw==
 -----END OPENSSH PRIVATE KEY-----"#;
 
         let key = PrivateKey::parse_pem(pem_content).unwrap();
-        assert_eq!(key.key_type(), crate::auth::key::KeyType::Rsa);
+        assert_eq!(key.key_type(), KeyType::Rsa);
     }
 
     #[test]
@@ -88,7 +89,10 @@ n9p8mt+gFq/ph2hiSlTQAAAADnRlc3RAbG9jYWxob3N0AQIDBAUGBw==
             // Verify signature
             let public_key = key.verifying_key();
             let sig_bytes = signature.data[33..].to_vec(); // Skip algorithm string
-            let sig = ed25519_dalek::Signature::from_bytes(&sig_bytes);
+            let mut sig_array = [0u8; 64];
+            sig_array.copy_from_slice(&sig_bytes);
+            let sig = ed25519_dalek::Signature::from_bytes(&sig_array);
+            use ed25519_dalek::Verifier;
             public_key.verify(data, &sig).unwrap();
         } else {
             panic!("Expected Ed25519 key");
@@ -277,7 +281,7 @@ IZOdthyU9ISB5NAvqQAAAA50ZXN0QGxvY2FsaG9zdAECAw==
         let private_key = PrivateKey::parse_pem(pem_content).unwrap();
         
         if let PrivateKey::Rsa(key) = private_key {
-            let public_key = key.to_public_key().unwrap();
+            let public_key = key.to_public_key().expect("Failed to get public key");
             let sig_data = create_signature_data(
                 &session_id,
                 username,

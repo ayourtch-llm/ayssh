@@ -8,6 +8,7 @@
 
 use crate::error::SshError;
 use pem::Pem;
+use rsa::pkcs8::DecodePrivateKey;
 use sha2::{Digest, Sha256};
 use std::fs;
 
@@ -85,13 +86,15 @@ impl PrivateKey {
 
     /// Parse PKCS#8 PEM format
     fn parse_pkcs8(pem_content: &str) -> Result<Self, SshError> {
-        let (tag, der) = pem::parse(pem_content)
+        let pem = pem::parse(pem_content)
             .map_err(|_| SshError::CryptoError("Invalid PEM format".into()))?;
+        let tag = pem.tag();
+        let der = pem.contents();
 
-        match tag.as_str() {
+        match tag {
             "PRIVATE KEY" => {
                 // Generic PKCS#8 - detect key type from OID
-                Self::parse_generic_pkcs8(&der)
+                Self::parse_generic_pkcs8(der)
             }
             "ENCRYPTED PRIVATE KEY" => {
                 Err(SshError::CryptoError("Encrypted keys not supported".into()))
@@ -102,12 +105,16 @@ impl PrivateKey {
 
     /// Parse PKCS#1 RSA format
     fn parse_pkcs1(pem_content: &str) -> Result<Self, SshError> {
-        let (tag, der) = pem::parse(pem_content)
+        use rsa::pkcs1::DecodeRsaPrivateKey;
+        
+        let pem = pem::parse(pem_content)
             .map_err(|_| SshError::CryptoError("Invalid PEM format".into()))?;
+        let tag = pem.tag();
+        let der = pem.contents();
 
-        match tag.as_str() {
+        match tag {
             "RSA PRIVATE KEY" => {
-                let key = rsa::RsaPrivateKey::from_der(&der)
+                let key = rsa::RsaPrivateKey::from_pkcs1_der(&der)
                     .map_err(|_| SshError::CryptoError("Invalid RSA key".into()))?;
                 Ok(PrivateKey::Rsa(key))
             }
@@ -117,27 +124,51 @@ impl PrivateKey {
 
     /// Parse generic PKCS#8 (detect key type)
     fn parse_generic_pkcs8(der: &[u8]) -> Result<Self, SshError> {
-        // Try Ed25519 first - simplest
-        if let Ok(key) = ed25519_dalek::SigningKey::from_pkcs8_der(der) {
+        // Try Ed25519 first - simplest (32-byte seed)
+        if der.len() == 32 {
+            let mut key_array = [0u8; 32];
+            key_array.copy_from_slice(der);
+            let key = ed25519_dalek::SigningKey::from_bytes(&key_array);
             return Ok(PrivateKey::Ed25519(key));
         }
 
-        // Try ECDSA P-256
-        if let Ok(key) = k256::ecdsa::SigningKey::from_pkcs8_der(der) {
+        // Try ECDSA P-256 (32-byte seed)
+        if der.len() == 32 {
+            let mut bytes = [0u8; 32];
+            bytes.copy_from_slice(der);
+            let key = k256::ecdsa::SigningKey::from_bytes(&bytes.into())
+                .map_err(|_| SshError::CryptoError("Invalid ECDSA P-256 key".into()))?;
             return Ok(PrivateKey::Ecdsa(
                 EcdsaCurve::Nistp256,
                 key.to_bytes().to_vec(),
             ));
         }
 
+        // Try ECDSA P-384 (48-byte seed)
+        if der.len() == 48 {
+            let mut bytes = [0u8; 48];
+            bytes.copy_from_slice(der);
+            let key = p384::ecdsa::SigningKey::from_bytes(&bytes.into())
+                .map_err(|_| SshError::CryptoError("Invalid ECDSA P-384 key".into()))?;
+            return Ok(PrivateKey::Ecdsa(
+                EcdsaCurve::Nistp384,
+                key.to_bytes().to_vec(),
+            ));
+        }
+
+        // Try ECDSA P-521 (66-byte seed)
+        if der.len() == 66 {
+            let key = p521::ecdsa::SigningKey::from_slice(der)
+                .map_err(|_| SshError::CryptoError("Invalid ECDSA P-521 key".into()))?;
+            return Ok(PrivateKey::Ecdsa(
+                EcdsaCurve::Nistp521,
+                key.to_bytes().to_vec(),
+            ));
+        }
+
         // Try RSA - use pkcs8 crate
-        // First check if it's RSA by looking at the OID
-        if der.len() > 15 && &der[7..12] == &[0x2A, 0x86, 0x48, 0x86, 0xF7] {
-            // This looks like RSA OID
-            // Try to parse using pkcs8
-            if let Ok(key) = rsa::RsaPrivateKey::from_pkcs8_der(der) {
-                return Ok(PrivateKey::Rsa(key));
-            }
+        if let Ok(key) = rsa::RsaPrivateKey::from_pkcs8_der(der) {
+            return Ok(PrivateKey::Rsa(key));
         }
 
         Err(SshError::CryptoError("Unsupported key type".into()))
@@ -384,21 +415,21 @@ impl PrivateKey {
         cursor.read_exact(&mut coef)
             .map_err(|_| SshError::CryptoError("Invalid coefficient".into()))?;
 
-        // Construct RSA private key
-        let mut key = rsa::RsaPrivateKey::new_raw(
-            &rsa::BigUint::from_bytes_be(&p),
-            &rsa::BigUint::from_bytes_be(&q),
-            &rsa::BigUint::from_bytes_be(&e),
-            &rsa::BigUint::from_bytes_be(&d),
-            &rsa::BigUint::from_bytes_be(&exp1),
-            &rsa::BigUint::from_bytes_be(&exp2),
-            &rsa::BigUint::from_bytes_be(&coef),
+        // Construct RSA private key from components
+        let n = rsa::BigUint::from_bytes_be(&p);
+        let e = rsa::BigUint::from_bytes_be(&e);
+        let d = rsa::BigUint::from_bytes_be(&d);
+        let p_big = rsa::BigUint::from_bytes_be(&p);
+        let q_big = rsa::BigUint::from_bytes_be(&q);
+        
+        // Use from_components which is the correct API in rsa 0.9
+        let key = rsa::RsaPrivateKey::from_components(
+            n,
+            e,
+            d,
+            vec![p_big.clone(), q_big.clone()], // primes
         )
         .map_err(|_| SshError::CryptoError("Invalid RSA key".into()))?;
-
-        // Verify key
-        key.verify(rsa::Pkcs1v15Sign::new::<sha2::Sha256>(), &[], &[])
-            .map_err(|_| SshError::CryptoError("Invalid RSA key".into()))?;
 
         Ok(key)
     }
@@ -416,7 +447,11 @@ impl PrivateKey {
     pub fn to_public_key(&self) -> Result<PublicKey, SshError> {
         match self {
             PrivateKey::Rsa(key) => {
-                let (e, n) = key.public_key().n().to_bytes_be();
+                use bytes::BufMut;
+                use rsa::traits::PublicKeyParts;
+                
+                let n = key.n();
+                let e = key.e();
                 let mut blob = Vec::new();
                 
                 // Algorithm name
@@ -424,7 +459,7 @@ impl PrivateKey {
                 blob.put_slice(SSH_RSA.as_bytes());
                 
                 // Public exponent
-                let mut e_bytes = e;
+                let mut e_bytes = e.to_bytes_be();
                 if e_bytes[0] & 0x80 != 0 {
                     e_bytes.insert(0, 0x00);
                 }
@@ -432,7 +467,7 @@ impl PrivateKey {
                 blob.put_slice(&e_bytes);
                 
                 // Modulus
-                let mut n_bytes = n;
+                let mut n_bytes = n.to_bytes_be();
                 if n_bytes[0] & 0x80 != 0 {
                     n_bytes.insert(0, 0x00);
                 }
@@ -446,6 +481,8 @@ impl PrivateKey {
                 })
             }
             PrivateKey::Ecdsa(curve, _) => {
+                use bytes::BufMut;
+                
                 let mut blob = Vec::new();
                 
                 // Algorithm name
@@ -478,6 +515,8 @@ impl PrivateKey {
                 })
             }
             PrivateKey::Ed25519(key) => {
+                use bytes::BufMut;
+                
                 let mut blob = Vec::new();
                 
                 // Algorithm name
@@ -503,7 +542,7 @@ impl PrivateKey {
         let public_key = self.to_public_key()?;
         let mut hasher = Sha256::new();
         hasher.update(&public_key.blob);
-        hasher.finalize().to_vec()
+        Ok(hasher.finalize().to_vec())
     }
 }
 

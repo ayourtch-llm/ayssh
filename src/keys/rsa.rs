@@ -26,7 +26,7 @@ pub enum RsaError {
 #[derive(Debug)]
 pub struct RsaKeyPair {
     /// Private key
-    private_key: RsaPrivateKey,
+    pub private_key: rsa::RsaPrivateKey,
 }
 
 impl RsaKeyPair {

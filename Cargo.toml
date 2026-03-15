@@ -62,11 +62,24 @@ lazy_static = "1.4"
 # GenericArray for AES
 generic-array = "0.14"
 
+# Base64 encoding for OpenSSH keys
+base64 = "0.22"
+
 # Elliptic curve cryptography
 x25519-dalek = { version = "2.0", features = ["static_secrets"] }
+ed25519-dalek = { version = "2.1", features = ["std"] }
 k256 = "0.13"
 p384 = "0.13"
 p521 = "0.13"
+
+# RSA cryptography
+rsa = "0.9"
+
+# Signature trait
+signature = "2.2"
+
+# PEM parsing
+pem = "3.0"
 
 [dev-dependencies]
 # Testing utilities

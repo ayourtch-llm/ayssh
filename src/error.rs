@@ -61,6 +61,12 @@ impl From<anyhow::Error> for SshError {
     }
 }
 
+impl From<rsa::Error> for SshError {
+    fn from(err: rsa::Error) -> Self {
+        SshError::CryptoError(err.to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
