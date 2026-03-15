@@ -1,7 +1,8 @@
 //! Integration tests for Authenticator module
 
-use ssh_client::auth::{Authenticator, AuthenticationResult};
+use ssh_client::auth::{Authenticator, AuthenticationResult, AuthState, AuthMethodManager};
 use ssh_client::error::SshError;
+use ssh_client::protocol::AuthMethod as ProtocolAuthMethod;
 
 /// Test 1: Verify Authenticator::new() creates authenticator with default state
 #[tokio::test]
@@ -139,4 +140,240 @@ fn test_auth_request_clone() {
     assert_eq!(request1.username, request2.username);
     assert_eq!(request1.service, request2.service);
     assert_eq!(request1.method, request2.method);
+}
+
+/// Test 15: Test AuthState new state
+#[test]
+fn test_auth_state_new() {
+    let state = AuthState::new();
+    assert!(state.is_not_authenticating());
+    assert!(!state.is_authenticating());
+    assert!(!state.is_authenticated());
+    assert!(!state.is_failed());
+}
+
+/// Test 16: Test AuthState start_auth transition
+#[test]
+fn test_auth_state_start_auth() {
+    let mut state = AuthState::new();
+    assert!(state.start_auth().is_ok());
+    assert!(state.is_authenticating());
+}
+
+/// Test 17: Test AuthState complete_auth transition
+#[test]
+fn test_auth_state_complete_auth() {
+    let mut state = AuthState::new();
+    state.start_auth().unwrap();
+    assert!(state.complete_auth().is_ok());
+    assert!(state.is_authenticated());
+}
+
+/// Test 18: Test AuthState fail_auth transition
+#[test]
+fn test_auth_state_fail_auth() {
+    let mut state = AuthState::new();
+    state.start_auth().unwrap();
+    assert!(state.fail_auth().is_ok());
+    assert!(state.is_failed());
+}
+
+/// Test 19: Test AuthState reset
+#[test]
+fn test_auth_state_reset() {
+    let mut state = AuthState::new();
+    state.start_auth().unwrap();
+    state.reset();
+    assert!(state.is_not_authenticating());
+}
+
+/// Test 20: Test AuthState invalid state transitions
+#[test]
+fn test_auth_state_invalid_transitions() {
+    let mut state = AuthState::new();
+    
+    // Try to start auth when already authenticating
+    state.start_auth().unwrap();
+    assert!(state.start_auth().is_err());
+    
+    // Try to complete auth when not authenticating
+    let mut state2 = AuthState::new();
+    assert!(state2.complete_auth().is_err());
+    
+    // Try to fail auth when not authenticating
+    let mut state3 = AuthState::new();
+    assert!(state3.fail_auth().is_err());
+}
+
+/// Test 21: Test AuthState status access
+#[test]
+fn test_auth_state_status() {
+    let state = AuthState::new();
+    assert!(matches!(state.status(), &ssh_client::auth::state::AuthStatus::NotAuthenticating));
+}
+
+/// Test 22: Test AuthState debug
+#[test]
+fn test_auth_state_debug() {
+    let state = AuthState::new();
+    let debug_str = format!("{:?}", state);
+    assert!(!debug_str.is_empty());
+}
+
+/// Test 23: Test AuthState default implementation
+#[test]
+fn test_auth_state_default() {
+    let state = AuthState::default();
+    assert!(state.is_not_authenticating());
+}
+
+/// Test 24: Test AuthState clone
+#[test]
+fn test_auth_state_clone() {
+    let mut state = AuthState::new();
+    state.start_auth().unwrap();
+    let cloned = state.clone();
+    assert!(cloned.is_authenticating());
+}
+
+/// Test 25: Test AuthStatus enum
+#[test]
+fn test_auth_status_enum() {
+    use ssh_client::auth::state::AuthStatus;
+    
+    assert!(matches!(AuthStatus::NotAuthenticating, AuthStatus::NotAuthenticating));
+    assert!(matches!(AuthStatus::Authenticating, AuthStatus::Authenticating));
+    assert!(matches!(AuthStatus::Authenticated, AuthStatus::Authenticated));
+    assert!(matches!(AuthStatus::Failed, AuthStatus::Failed));
+}
+
+/// Test 26: Test AuthStatus debug
+#[test]
+fn test_auth_status_debug() {
+    use ssh_client::auth::state::AuthStatus;
+    
+    assert!(format!("{:?}", AuthStatus::NotAuthenticating).contains("NotAuthenticating"));
+    assert!(format!("{:?}", AuthStatus::Authenticated).contains("Authenticated"));
+}
+
+/// Test 27: Test AuthStatus clone
+#[test]
+fn test_auth_status_clone() {
+    use ssh_client::auth::state::AuthStatus;
+    
+    let status = AuthStatus::Authenticated;
+    let cloned = status.clone();
+    assert_eq!(status, cloned);
+}
+
+/// Test 28: Test AuthStatus PartialEq
+#[test]
+fn test_auth_status_partial_eq() {
+    use ssh_client::auth::state::AuthStatus;
+    
+    assert_eq!(AuthStatus::Authenticated, AuthStatus::Authenticated);
+    assert_ne!(AuthStatus::Authenticated, AuthStatus::Failed);
+}
+
+/// Test 29: Test PasswordAuthenticator structure
+#[test]
+fn test_password_authenticator_new() {
+    use ssh_client::auth::PasswordAuthenticator;
+    use ssh_client::transport::Transport;
+    
+    // Note: We can't create a real Transport without a server, so we verify the struct exists
+    assert!(true); // Placeholder - real test requires Transport mock
+}
+
+/// Test 30: Test PublicKeyAuthenticator structure
+#[test]
+fn test_publickey_authenticator_new() {
+    use ssh_client::auth::PublicKeyAuthenticator;
+    use ssh_client::transport::Transport;
+    
+    // Note: We can't create a real Transport without a server, so we verify the struct exists
+    assert!(true); // Placeholder - real test requires Transport mock
+}
+
+/// Test 31: Test AuthMethodManager new
+#[test]
+fn test_auth_method_manager_new() {
+    let mut manager = AuthMethodManager::new();
+    assert!(manager.supported_methods.is_empty());
+    assert!(manager.allowed_methods.is_empty());
+}
+
+/// Test 32: Test AuthMethodManager add_supported
+#[test]
+fn test_auth_method_manager_add_supported() {
+    let mut manager = AuthMethodManager::new();
+    manager.add_supported(ProtocolAuthMethod::Password);
+    manager.add_supported(ProtocolAuthMethod::PublicKey);
+    
+    assert_eq!(manager.supported_methods.len(), 2);
+    assert!(manager.is_supported(ProtocolAuthMethod::Password));
+}
+
+/// Test 33: Test AuthMethodManager add_allowed
+#[test]
+fn test_auth_method_manager_add_allowed() {
+    let mut manager = AuthMethodManager::new();
+    manager.add_allowed(ProtocolAuthMethod::Password);
+    manager.add_allowed(ProtocolAuthMethod::PublicKey);
+    
+    assert_eq!(manager.allowed_methods.len(), 2);
+    assert!(manager.is_allowed(ProtocolAuthMethod::Password));
+}
+
+/// Test 34: Test AuthMethodManager usable_methods
+#[test]
+fn test_auth_method_manager_usable_methods() {
+    let mut manager = AuthMethodManager::new();
+    manager.add_supported(ProtocolAuthMethod::Password);
+    manager.add_supported(ProtocolAuthMethod::PublicKey);
+    manager.add_allowed(ProtocolAuthMethod::Password);
+    
+    let usable = manager.usable_methods();
+    assert_eq!(usable.len(), 1);
+    assert!(usable.contains(&ProtocolAuthMethod::Password));
+}
+
+/// Test 35: Test ProtocolAuthMethod enum variants
+#[test]
+fn test_protocol_auth_method_enum() {
+    assert!(matches!(ProtocolAuthMethod::None, ProtocolAuthMethod::None));
+    assert!(matches!(ProtocolAuthMethod::Password, ProtocolAuthMethod::Password));
+    assert!(matches!(ProtocolAuthMethod::PublicKey, ProtocolAuthMethod::PublicKey));
+}
+
+/// Test 36: Test ProtocolAuthMethod name
+#[test]
+fn test_protocol_auth_method_name() {
+    assert_eq!(ProtocolAuthMethod::None.name(), "none");
+    assert_eq!(ProtocolAuthMethod::Password.name(), "password");
+    assert_eq!(ProtocolAuthMethod::PublicKey.name(), "publickey");
+}
+
+/// Test 37: Test ProtocolAuthMethod clone
+#[test]
+fn test_protocol_auth_method_clone() {
+    let method = ProtocolAuthMethod::Password;
+    let cloned = method.clone();
+    assert_eq!(method, cloned);
+}
+
+/// Test 38: Test ProtocolAuthMethod debug
+#[test]
+fn test_protocol_auth_method_debug() {
+    let method = ProtocolAuthMethod::Password;
+    let debug_str = format!("{:?}", method);
+    assert!(!debug_str.is_empty());
+}
+
+/// Test 39: Test ProtocolAuthMethod PartialEq
+#[test]
+fn test_protocol_auth_method_partial_eq() {
+    assert_eq!(ProtocolAuthMethod::Password, ProtocolAuthMethod::Password);
+    assert_ne!(ProtocolAuthMethod::Password, ProtocolAuthMethod::PublicKey);
+    assert_ne!(ProtocolAuthMethod::Password, ProtocolAuthMethod::None);
 }

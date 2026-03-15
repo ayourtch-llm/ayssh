@@ -16,7 +16,7 @@ pub enum AuthStatus {
 }
 
 /// Authentication state machine
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct AuthState {
     status: AuthStatus,
 }
