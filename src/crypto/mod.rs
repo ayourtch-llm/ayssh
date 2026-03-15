@@ -5,12 +5,10 @@
 
 pub mod hmac;
 pub mod kdf;
-
-// Note: Other modules will be implemented in later tasks
-// pub mod cipher;
-// pub mod hash;
+pub mod cipher;
 
 // Re-export commonly used items
 pub use hmac::*;
 pub use kdf::*;
+pub use cipher::*;
 
