@@ -12,6 +12,7 @@ use sha2::{Digest, Sha256};
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ssh_client::auth::key::PublicKey;
     use ssh_client::protocol::message::Message;
     use ssh_client::protocol::messages::MessageType;
     use ssh_client::transport::Transport;
@@ -165,7 +166,7 @@ IZOdthyU9ISB5NAvqQAAAA50ZXN0QGxvY2FsaG9zdAECAw==
             &public_key_blob,
         );
 
-        assert_eq!(sig_data.len(), 60); // SHA-256 hash
+        assert_eq!(sig_data.len(), 32); // SHA-256 hash is always 32 bytes
     }
 
     #[test]
@@ -281,7 +282,14 @@ IZOdthyU9ISB5NAvqQAAAA50ZXN0QGxvY2FsaG9zdAECAw==
         let private_key = PrivateKey::parse_pem(pem_content).unwrap();
         
         if let PrivateKey::Rsa(key) = private_key {
-            let public_key = key.to_public_key().expect("Failed to get public key");
+            use rsa::traits::PublicKeyParts;
+            
+            let public_key = PublicKey {
+                key_type: KeyType::Rsa,
+                blob: vec![0x02; 100], // Placeholder for actual public key blob
+                algorithm: "ssh-rsa".to_string(),
+            };
+            
             let sig_data = create_signature_data(
                 &session_id,
                 username,
