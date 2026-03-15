@@ -8,6 +8,7 @@ pub mod chacha20_poly1305;
 pub mod dh;
 pub mod hmac;
 pub mod kdf;
+pub mod packet;
 
 // Re-export commonly used items
 pub use cipher::*;
@@ -15,4 +16,5 @@ pub use chacha20_poly1305::*;
 pub use dh::*;
 pub use hmac::*;
 pub use kdf::*;
+pub use packet::*;
 

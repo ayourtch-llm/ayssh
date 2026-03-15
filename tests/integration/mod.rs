@@ -13,3 +13,4 @@ pub mod cipher_tests;
 pub mod encryption_tests;
 pub mod handshake_tests;
 pub mod chacha20_tests;
+pub mod packet_tests;
