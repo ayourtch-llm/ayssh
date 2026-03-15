@@ -35,10 +35,13 @@ async fn test_client_connect_fails_without_server() {
 /// Test 5: Verify Client::connect_with_auth() returns error (no server)
 #[tokio::test]
 async fn test_client_connect_with_auth_fails_without_server() {
-    use ssh_client::protocol::AuthMethod;
+    use ssh_client::auth::AuthMethod;
     
     let client = SshClient::new("localhost".to_string(), 22);
-    let result = client.connect_with_auth(AuthMethod::Password).await;
+    let result = client.connect_with_auth(AuthMethod::Password {
+        username: "test".to_string(),
+        password: "test".to_string(),
+    }).await;
     assert!(result.is_err());
 }
 

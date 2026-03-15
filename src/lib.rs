@@ -33,9 +33,16 @@ pub mod utils;
 // Re-export commonly used items
 pub use auth::AuthMethod;
 pub use auth::AuthMethodManager;
+pub use auth::Authenticator;
+pub use auth::AuthenticationResult;
+pub use auth::AuthState;
+pub use auth::PasswordAuthenticator;
+pub use auth::PublicKeyAuthenticator;
 pub use channel::Channel;
 pub use channel::ChannelId;
 pub use channel::ChannelType;
+pub use channel::ChannelManager;
+pub use client::SshClient;
 pub use config::Config;
 pub use connection::Connection;
 pub use error::SshError;

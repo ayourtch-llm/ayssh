@@ -1,7 +1,7 @@
 //! Integration tests for Client authentication integration
 
 use ssh_client::client::SshClient;
-use ssh_client::protocol::AuthMethod;
+use ssh_client::auth::AuthMethod;
 
 /// Test 1: Test Client with password authentication configuration
 #[tokio::test]
@@ -25,7 +25,10 @@ async fn test_client_with_publickey_auth() {
 #[tokio::test]
 async fn test_client_auth_flow_integration() {
     let client = SshClient::new("localhost".to_string(), 22);
-    let result = client.connect_with_auth(AuthMethod::Password).await;
+    let result = client.connect_with_auth(AuthMethod::Password {
+        username: "test".to_string(),
+        password: "test".to_string(),
+    }).await;
     assert!(result.is_err()); // Should fail without server
 }
 
@@ -60,8 +63,14 @@ async fn test_client_multiple_auth_methods() {
     let client = SshClient::new("localhost".to_string(), 22);
     
     // Try different auth methods - all should fail without server
-    let result1 = client.connect_with_auth(AuthMethod::Password).await;
-    let result2 = client.connect_with_auth(AuthMethod::PublicKey).await;
+    let result1 = client.connect_with_auth(AuthMethod::Password {
+        username: "test".to_string(),
+        password: "test".to_string(),
+    }).await;
+    let result2 = client.connect_with_auth(AuthMethod::PublicKey {
+        username: "test".to_string(),
+        private_key: b"key".to_vec(),
+    }).await;
     
     assert!(result1.is_err());
     assert!(result2.is_err());
@@ -77,6 +86,27 @@ async fn test_client_auth_result_parsing() {
     assert!(result.is_err());
     
     // The error should be a SessionError or similar
-    let err_msg = format!("{:?}", result);
-    assert!(err_msg.contains("Session") || err_msg.contains("Error"));
+    let err_msg = result.err().unwrap().to_string();
+    assert!(err_msg.contains("Session") || err_msg.contains("connection"));
+}
+
+/// Test 9: Test Client with username and password
+#[tokio::test]
+async fn test_client_with_username_password() {
+    let client = SshClient::new("localhost".to_string(), 22)
+        .with_password_auth("alice".to_string(), "secret".to_string());
+    
+    assert_eq!(client.username(), Some("alice"));
+    assert!(client.has_password());
+}
+
+/// Test 10: Test Client with public key
+#[tokio::test]
+async fn test_client_with_publickey() {
+    let key = b"-----BEGIN OPENSSH PRIVATE KEY-----\nfake_key\n-----END OPENSSH PRIVATE KEY-----".to_vec();
+    let client = SshClient::new("localhost".to_string(), 22)
+        .with_publickey_auth("alice".to_string(), key.clone());
+    
+    assert_eq!(client.username(), Some("alice"));
+    assert!(client.has_publickey());
 }

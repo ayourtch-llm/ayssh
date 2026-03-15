@@ -319,7 +319,11 @@ async fn test_client_connect_with_auth_uses_configuration() {
     assert_eq!(client.port(), 8888);
     
     // Connect with auth should use the configured host and port
-    let result = client.connect_with_auth(AuthMethod::Password).await;
+    use ssh_client::auth::AuthMethod;
+    let result = client.connect_with_auth(AuthMethod::Password {
+        username: "test".to_string(),
+        password: "test".to_string(),
+    }).await;
     assert!(result.is_err()); // Expected to fail as there's no server
 }
 

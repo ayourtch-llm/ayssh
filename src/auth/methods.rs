@@ -1,8 +1,9 @@
-//! Authentication methods
+//! Authentication methods for SSH
 
 use crate::protocol::AuthMethod as ProtocolAuthMethod;
 
 /// Authentication method manager
+#[derive(Debug, Clone)]
 pub struct AuthMethodManager {
     /// Supported authentication methods
     pub supported_methods: Vec<ProtocolAuthMethod>,
@@ -59,5 +60,32 @@ impl Default for AuthMethodManager {
     }
 }
 
-/// Re-export the protocol AuthMethod
-pub use crate::protocol::AuthMethod;
+/// Authentication methods supported by the SSH client
+#[derive(Debug, Clone)]
+pub enum AuthMethod {
+    /// Password-based authentication
+    Password {
+        username: String,
+        password: String,
+    },
+    /// Public key authentication
+    PublicKey {
+        username: String,
+        private_key: Vec<u8>,
+    },
+}
+
+impl AuthMethod {
+    /// Create a password authentication method
+    pub fn password(username: String, password: String) -> Self {
+        Self::Password { username, password }
+    }
+
+    /// Create a public key authentication method
+    pub fn public_key(username: String, private_key: Vec<u8>) -> Self {
+        Self::PublicKey {
+            username,
+            private_key,
+        }
+    }
+}

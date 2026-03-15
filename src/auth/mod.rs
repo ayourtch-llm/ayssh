@@ -10,7 +10,7 @@ pub mod password;
 pub mod publickey;
 pub mod state;
 
-pub use methods::{AuthMethodManager, AuthMethod};
+pub use methods::{AuthMethod, AuthMethodManager};
 pub use password::PasswordAuthenticator;
 pub use publickey::PublicKeyAuthenticator;
 pub use state::AuthState;
@@ -21,6 +21,10 @@ use crate::protocol::messages::MessageType;
 use crate::transport::Transport;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
+
+// Constants for authentication methods
+const SSH_AUTH_METHOD_PASSWORD: &str = "password";
+const SSH_AUTH_METHOD_PUBLICKEY: &str = "publickey";
 
 /// Represents an authentication attempt
 #[derive(Debug, Clone)]
