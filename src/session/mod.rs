@@ -356,10 +356,11 @@ impl Session {
     pub fn request_env(&self, name: &str, value: &str) -> Message {
         let name_len = name.len();
         let value_len = value.len();
+        let request_name_len = 3; // "env".len()
         let mut buf = BytesMut::with_capacity(1 + 4 + 4 + 1 + 4 + name_len + 4 + value_len);
         buf.put_u8(MessageType::ChannelRequest.value());
         buf.put_u32(self.channel_id);
-        buf.put_u32(4); // "env".len()
+        buf.put_u32(request_name_len as u32);
         buf.put_slice(b"env");
         buf.put_u8(0); // want_reply = false
         buf.put_u32(name_len as u32);
