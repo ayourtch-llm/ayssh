@@ -4,12 +4,14 @@
 //! All implementations follow RFC 4253 and related specifications.
 
 pub mod cipher;
+pub mod chacha20_poly1305;
 pub mod dh;
 pub mod hmac;
 pub mod kdf;
 
 // Re-export commonly used items
 pub use cipher::*;
+pub use chacha20_poly1305::*;
 pub use dh::*;
 pub use hmac::*;
 pub use kdf::*;
