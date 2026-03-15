@@ -282,7 +282,7 @@ fn test_exec_message_round_trip() {
 
 /// Test shell handle exists
 #[test]
-fn test_session_has_shell_handle() {
+fn test_session_has_interactive_shell() {
     let channel = Channel::new(
         ChannelId::new(1),
         ChannelId::new(100),
@@ -293,8 +293,51 @@ fn test_session_has_shell_handle() {
 
     let session = Session::new(channel);
 
-    // Session should have shell handle
-    assert!(session.shell_handle().is_some());
+    // Session can create interactive shell
+    let term = "xterm-256color".to_string();
+    let dims = WindowDimensions::new(80, 24);
+    let modes = TerminalModes::raw();
+    let interactive_shell = session.create_interactive_shell(term, dims, modes);
+    
+    assert_eq!(interactive_shell.term(), "xterm-256color");
+    assert_eq!(interactive_shell.dimensions().width_chars, 80);
+    assert_eq!(interactive_shell.dimensions().height_chars, 24);
+}
+
+/// Test interactive shell methods
+#[test]
+fn test_interactive_shell_methods() {
+    let channel = Channel::new(
+        ChannelId::new(1),
+        ChannelId::new(100),
+        ChannelType::Session,
+        65536,
+        32768,
+    );
+
+    let session = Session::new_without_shell(channel);
+    let term = "xterm-256color".to_string();
+    let dims = WindowDimensions::new(80, 24);
+    let modes = TerminalModes::raw();
+    let interactive_shell = session.create_interactive_shell(term.clone(), dims.clone(), modes.clone());
+
+    // Test terminal type
+    assert_eq!(interactive_shell.term(), "xterm-256color");
+    
+    // Test dimensions
+    assert_eq!(interactive_shell.dimensions().width_chars, 80);
+    assert_eq!(interactive_shell.dimensions().height_chars, 24);
+    
+    // Test terminal modes
+    assert_eq!(interactive_shell.terminal_modes().modes[2], 1); // RAW flag
+    
+    // Test window change notification
+    let window_msg = interactive_shell.notify_window_change();
+    assert_eq!(window_msg.msg_type(), Some(MessageType::ChannelRequest));
+    
+    // Test signal sending
+    let signal_msg = interactive_shell.send_signal("SIGINT");
+    assert_eq!(signal_msg.msg_type(), Some(MessageType::ChannelRequest));
 }
 
 /// Test shell handle without shell
@@ -310,18 +353,18 @@ fn test_session_no_shell_handle() {
 
     let session = Session::new_without_shell(channel);
 
-    // Session should not have shell handle
-    assert!(session.shell_handle().is_none());
+    // Session should not have interactive shell
+    assert!(session.interactive_shell().is_none());
 }
 
 /// Test shell handle creation and methods
 #[test]
 fn test_shell_handle_methods_exist() {
     // This is a compile-time check to ensure methods exist
-    let _ = ssh_client::session::ShellHandle::write;
-    let _ = ssh_client::session::ShellHandle::read_stdout;
-    let _ = ssh_client::session::ShellHandle::read_stderr;
-    let _ = ssh_client::session::ShellHandle::close;
+    let _ = ssh_client::session::InteractiveShell::write;
+    let _ = ssh_client::session::InteractiveShell::read_stdout;
+    let _ = ssh_client::session::InteractiveShell::read_stderr;
+    let _ = ssh_client::session::InteractiveShell::close;
 }
 
 /// Test shell state management

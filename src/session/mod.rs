@@ -221,23 +221,29 @@ pub enum SessionState {
     Closed,
 }
 
-/// Shell handle for interactive communication
+/// Interactive shell handle for full TTY support
 #[derive(Debug)]
-pub struct ShellHandle {
+pub struct InteractiveShell {
     channel_id: u32,
     stdin_write: tokio::sync::mpsc::Sender<Vec<u8>>,
     stdout_rx: tokio::sync::mpsc::Receiver<Vec<u8>>,
     stderr_rx: tokio::sync::mpsc::Receiver<Vec<u8>>,
     closed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Terminal type (e.g., "xterm-256color")
+    pub term: String,
+    /// Window dimensions
+    pub dimensions: WindowDimensions,
+    /// Terminal modes
+    pub terminal_modes: TerminalModes,
 }
 
-impl ShellHandle {
+impl InteractiveShell {
     /// Write data to shell stdin
     pub async fn write(&mut self, data: &[u8]) -> Result<(), crate::error::SshError> {
         self.stdin_write.send(data.to_vec()).await.map_err(|_| {
             crate::error::SshError::IoError(std::io::Error::new(
                 std::io::ErrorKind::BrokenPipe,
-                "Shell stdin closed",
+                "Interactive shell stdin closed",
             ))
         })?;
         Ok(())
@@ -253,7 +259,7 @@ impl ShellHandle {
         Ok(self.stderr_rx.recv().await)
     }
 
-    /// Close the shell handle
+    /// Close the interactive shell
     pub async fn close(&mut self) -> Result<(), crate::error::SshError> {
         self.closed.store(true, std::sync::atomic::Ordering::SeqCst);
         Ok(())
@@ -262,6 +268,53 @@ impl ShellHandle {
     /// Check if shell is closed
     pub fn is_closed(&self) -> bool {
         self.closed.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Change window size (sends window-change request)
+    pub fn notify_window_change(&self) -> Message {
+        let request_name = b"window-change";
+        let mut buf = BytesMut::with_capacity(1 + 4 + 4 + request_name.len() + 1 + 4 + 4 + 4 + 4);
+        buf.put_u8(MessageType::ChannelRequest.value());
+        buf.put_u32(self.channel_id);
+        buf.put_u32(request_name.len() as u32);
+        buf.put_slice(request_name);
+        buf.put_u8(0); // want_reply = false
+        buf.put_u32(self.dimensions.width_chars);
+        buf.put_u32(self.dimensions.height_chars);
+        buf.put_u32(self.dimensions.width_pixels);
+        buf.put_u32(self.dimensions.height_pixels);
+
+        Message::from_bytes(buf.to_vec())
+    }
+
+    /// Send signal to shell (e.g., SIGINT, SIGTERM)
+    pub fn send_signal(&self, signal: &str) -> Message {
+        let signal_len = signal.len();
+        let mut buf = BytesMut::with_capacity(1 + 4 + 6 + 1 + 4 + signal_len);
+        buf.put_u8(MessageType::ChannelRequest.value());
+        buf.put_u32(self.channel_id);
+        buf.put_u32(6); // "signal".len()
+        buf.put_slice(b"signal");
+        buf.put_u8(0); // want_reply = false
+        buf.put_u32(signal_len as u32);
+        buf.put_slice(signal.as_bytes());
+
+        Message::from_bytes(buf.to_vec())
+    }
+
+    /// Get terminal type
+    pub fn term(&self) -> &str {
+        &self.term
+    }
+
+    /// Get window dimensions
+    pub fn dimensions(&self) -> &WindowDimensions {
+        &self.dimensions
+    }
+
+    /// Get terminal modes
+    pub fn terminal_modes(&self) -> &TerminalModes {
+        &self.terminal_modes
     }
 }
 
@@ -282,8 +335,8 @@ pub struct Session {
     pub environment: HashMap<String, String>,
     /// Exit status
     pub exit_status: Option<u32>,
-    /// Shell handle (if shell is active)
-    shell_handle: Option<ShellHandle>,
+    /// Interactive shell handle (if shell is active)
+    interactive_shell: Option<InteractiveShell>,
     /// Senders for stdout/stderr (used when processing channel data)
     _stdout_tx: Option<tokio::sync::mpsc::Sender<Vec<u8>>>,
     _stderr_tx: Option<tokio::sync::mpsc::Sender<Vec<u8>>>,
@@ -309,13 +362,7 @@ impl Session {
             terminal_modes: TerminalModes::default(),
             environment: HashMap::new(),
             exit_status: None,
-            shell_handle: Some(ShellHandle {
-                channel_id: channel.local_id.to_u32(),
-                stdin_write,
-                stdout_rx,
-                stderr_rx,
-                closed,
-            }),
+            interactive_shell: None,
             // Store senders for use when processing data
             _stdout_tx: Some(stdout_tx),
             _stderr_tx: Some(stderr_tx),
@@ -332,7 +379,7 @@ impl Session {
             terminal_modes: TerminalModes::default(),
             environment: HashMap::new(),
             exit_status: None,
-            shell_handle: None,
+            interactive_shell: None,
             _stdout_tx: None,
             _stderr_tx: None,
         }
@@ -405,13 +452,13 @@ impl Session {
     }
 
     /// Get shell handle if shell is active
-    pub fn shell_handle(&self) -> Option<&ShellHandle> {
-        self.shell_handle.as_ref()
+    pub fn interactive_shell(&self) -> Option<&InteractiveShell> {
+        self.interactive_shell.as_ref()
     }
 
-    /// Set shell handle
-    pub fn set_shell_handle(&mut self, handle: ShellHandle) {
-        self.shell_handle = Some(handle);
+    /// Set interactive shell
+    pub fn set_interactive_shell(&mut self, shell: InteractiveShell) {
+        self.interactive_shell = Some(shell);
     }
 
     /// Start shell session
@@ -428,15 +475,16 @@ impl Session {
 
     /// Request PTY allocation
     pub fn request_pty(&self, term: &str, dims: WindowDimensions, modes: TerminalModes) -> Message {
+        let term_bytes = term.as_bytes();
         let mut buf = BytesMut::with_capacity(
-            1 + 4 + 7 + 1 + term.len() + 1 + 4 + 4 + 4 + 4 + 37
+            1 + 4 + 7 + 1 + term_bytes.len() + 1 + 4 + 4 + 4 + 4 + 37
         );
         buf.put_u8(MessageType::ChannelRequest.value());
         buf.put_u32(self.channel_id);
         buf.put_u32(7); // "pty-req\0".len()
         buf.put_slice(b"pty-req\0");
         buf.put_u8(1); // want_reply = true
-        buf.put_slice(term.as_bytes());
+        buf.put_slice(term_bytes);
         buf.put_u8(0); // null terminator
         buf.put_u32(dims.width_chars);
         buf.put_u32(dims.height_chars);
@@ -445,6 +493,29 @@ impl Session {
         buf.put_slice(&modes.modes);
 
         Message::from_bytes(buf.to_vec())
+    }
+
+    /// Create interactive shell with PTY allocation
+    pub fn create_interactive_shell(
+        &self,
+        term: String,
+        dimensions: WindowDimensions,
+        terminal_modes: TerminalModes,
+    ) -> InteractiveShell {
+        let (stdin_write, _) = tokio::sync::mpsc::channel::<Vec<u8>>(100);
+        let (_, stdout_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(100);
+        let (_, stderr_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(100);
+        
+        InteractiveShell {
+            channel_id: self.channel_id,
+            stdin_write,
+            stdout_rx,
+            stderr_rx,
+            closed: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            term,
+            dimensions,
+            terminal_modes,
+        }
     }
 
     /// Request shell
@@ -619,7 +690,7 @@ impl Session {
     pub fn handle_channel_data(&mut self, data: &[u8]) -> Option<Vec<u8>> {
         // For now, just return the data to be displayed
         // In a full implementation, this would send to stdout
-        if let Some(ref mut handle) = self.shell_handle {
+        if let Some(ref mut shell) = self.interactive_shell {
             // This would need access to stdout_rx, which requires refactoring
             // For now, return data for display
             Some(data.to_vec())
@@ -632,7 +703,7 @@ impl Session {
     pub fn handle_extended_data(&mut self, data: &[u8]) -> Option<Vec<u8>> {
         // For now, just return the data to be displayed
         // In a full implementation, this would send to stderr
-        if let Some(ref mut handle) = self.shell_handle {
+        if let Some(ref mut shell) = self.interactive_shell {
             // This would need access to stderr_rx, which requires refactoring
             // For now, return data for display
             Some(data.to_vec())
