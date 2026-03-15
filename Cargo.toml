@@ -1,0 +1,42 @@
+[package]
+name = "ssh_client"
+version = "0.1.0"
+edition = "2021"
+authors = ["SSH Client Team"]
+description = "A Rust SSH client library and binary"
+license = "MIT"
+keywords = ["ssh", "async", "network", "client"]
+categories = ["network-programming", "command-line-utilities"]
+readme = "README.md"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["full"] }
+
+# Async trait support
+async-trait = "0.1"
+
+# Error handling
+thiserror = "1.0"
+
+# Logging framework
+log = "0.4"
+
+# Logging initialization
+env_logger = "0.10"
+
+# Hex encoding for debugging
+hex = "0.4"
+
+[dev-dependencies]
+# Testing utilities
+tokio-test = "0.4"
+
+[lib]
+name = "ssh_client"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ssh_client"
+path = "src/main.rs"

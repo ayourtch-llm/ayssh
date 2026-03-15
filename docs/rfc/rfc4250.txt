@@ -1,0 +1,294 @@
+The Secure Shell (SSH) Protocol Architecture
+
+Status of This Memo
+
+   This memo provides information for the Internet community.  It does
+   not specify an Internet standard of any kind.  Distribution of this
+   memo is unlimited.
+
+Copyright Notice
+
+   Copyright (C) The Internet Society (2006).  All Rights Reserved.
+
+Abstract
+
+   This document describes the architecture of the Secure Shell (SSH)
+   protocol.  It defines the general structure of the protocol, the
+   relationship between the various components, and how they interact.
+   This document is intended to serve as a guide for implementing the
+   SSH protocol and for understanding the protocol as a whole.
+
+   The SSH protocol is an application layer protocol that provides a
+   secure channel over an unsecured network in a client-server
+   architecture, connecting an SSH client application with an SSH
+   server.
+
+   The SSH protocol suite consists of three major components:
+
+   1. The Transport Layer Protocol
+      The Transport Layer Protocol provides server authentication,
+      confidentiality, and integrity.  It is designed to run on top of
+      any reliable transport medium.  It is not intended to be used
+      directly by applications, but rather to provide a secure channel
+      for the other protocols.
+
+   2. The User Authentication Protocol
+      The User Authentication Protocol is used to authenticate the user
+      to the server.  It runs on top of the Transport Layer Protocol
+      and uses the secure channel provided by the Transport Layer
+      Protocol.
+
+   3. The Connection Protocol
+      The Connection Protocol multiplexes the encrypted tunnel into
+      several logical channels.  It is used to create logical channels
+      over which higher-level protocols can be run.
+
+   This document describes the architecture of the SSH protocol and the
+   relationship between the various components.
+
+Table of Contents
+
+   1.  Introduction  . . . . . . . . . . . . . . . . . . . . . . . .   3
+   2.  Terminology . . . . . . . . . . . . . . . . . . . . . . . . .   3
+   3.  SSH Protocol Components . . . . . . . . . . . . . . . . . . .   4
+   4.  The Transport Layer Protocol  . . . . . . . . . . . . . . . .   5
+   5.  The User Authentication Protocol  . . . . . . . . . . . . . .   6
+   6.  The Connection Protocol . . . . . . . . . . . . . . . . . . .   7
+   7.  Security Considerations . . . . . . . . . . . . . . . . . . .   8
+   8.  Acknowledgements  . . . . . . . . . . . . . . . . . . . . . .   9
+   9.  References  . . . . . . . . . . . . . . . . . . . . . . . . .  10
+   10. Author's Address  . . . . . . . . . . . . . . . . . . . . . .  11
+   11. Full Copyright Statement  . . . . . . . . . . . . . . . . . .  12
+
+1. Introduction
+
+   The Secure Shell (SSH) protocol is an application layer protocol
+   that provides a secure channel over an unsecured network in a
+   client-server architecture.  The SSH protocol suite consists of
+   three major components: the Transport Layer Protocol, the User
+   Authentication Protocol, and the Connection Protocol.
+
+   The SSH protocol is designed to provide strong authentication and
+   secure communication between two hosts.  The protocol supports
+   multiple authentication methods, including password-based
+   authentication, public key authentication, and host-based
+   authentication.
+
+   The SSH protocol is commonly used for secure remote login, file
+   transfer, and other secure network services.  The protocol is
+   designed to be secure against eavesdropping, connection hijacking,
+   and other attacks.
+
+2. Terminology
+
+   The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT",
+   "SHOULD", "SHOULD NOT", "RECOMMENDED", "MAY", and "OPTIONAL" in this
+   document are to be interpreted as described in [RFC2119].
+
+   The following terms are used in this document:
+
+   SSH:  Secure Shell
+
+   SSH Client:  An application that initiates a connection to an SSH
+      server.
+
+   SSH Server:  An application that accepts connections from SSH
+      clients.
+
+   Transport Layer:  The lowest layer of the SSH protocol suite.  It
+      provides server authentication, confidentiality, and integrity.
+
+   User Authentication Layer:  The layer that provides user
+      authentication.  It runs on top of the Transport Layer.
+
+   Connection Layer:  The layer that provides multiplexing of the
+      encrypted tunnel into several logical channels.  It runs on top
+      of the User Authentication Layer.
+
+3. SSH Protocol Components
+
+   The SSH protocol suite consists of three major components:
+
+   3.1. The Transport Layer Protocol
+
+      The Transport Layer Protocol provides server authentication,
+      confidentiality, and integrity.  It is designed to run on top of
+      any reliable transport medium.  The Transport Layer Protocol is
+      not intended to be used directly by applications, but rather to
+      provide a secure channel for the other protocols.
+
+      The Transport Layer Protocol is responsible for:
+
+      - Server authentication
+      - Key exchange
+      - Encryption
+      - Message authentication
+
+      The Transport Layer Protocol is described in [RFC4253].
+
+   3.2. The User Authentication Protocol
+
+      The User Authentication Protocol is used to authenticate the user
+      to the server.  It runs on top of the Transport Layer Protocol
+      and uses the secure channel provided by the Transport Layer
+      Protocol.
+
+      The User Authentication Protocol is responsible for:
+
+      - User authentication
+      - Authentication method negotiation
+
+      The User Authentication Protocol is described in [RFC4252].
+
+   3.3. The Connection Protocol
+
+      The Connection Protocol multiplexes the encrypted tunnel into
+      several logical channels.  It is used to create logical channels
+      over which higher-level protocols can be run.
+
+      The Connection Protocol is responsible for:
+
+      - Channel creation
+      - Channel multiplexing
+      - Channel data transfer
+
+      The Connection Protocol is described in [RFC4254].
+
+4. The Transport Layer Protocol
+
+   The Transport Layer Protocol is the foundation of the SSH protocol
+   suite.  It provides server authentication, confidentiality, and
+   integrity.  The Transport Layer Protocol is designed to run on top
+   of any reliable transport medium.
+
+   The Transport Layer Protocol is responsible for:
+
+   - Server authentication
+   - Key exchange
+   - Encryption
+   - Message authentication
+
+   The Transport Layer Protocol uses the Diffie-Hellman key exchange
+   algorithm to establish a shared secret between the client and the
+   server.  The shared secret is then used to derive encryption keys
+   and message authentication keys.
+
+   The Transport Layer Protocol supports a variety of encryption
+   algorithms, including AES, 3DES, and Blowfish.  The protocol also
+   supports a variety of message authentication algorithms, including
+   HMAC-SHA1, HMAC-MD5, and HMAC-SHA2-256.
+
+   The Transport Layer Protocol is described in [RFC4253].
+
+5. The User Authentication Protocol
+
+   The User Authentication Protocol is used to authenticate the user
+   to the server.  It runs on top of the Transport Layer Protocol and
+   uses the secure channel provided by the Transport Layer Protocol.
+
+   The User Authentication Protocol supports a variety of authentication
+   methods, including:
+
+   - Password authentication
+   - Public key authentication
+   - Host-based authentication
+
+   The User Authentication Protocol is described in [RFC4252].
+
+6. The Connection Protocol
+
+   The Connection Protocol multiplexes the encrypted tunnel into
+   several logical channels.  It is used to create logical channels
+   over which higher-level protocols can be run.
+
+   The Connection Protocol supports a variety of channel types,
+   including:
+
+   - Session channels
+   - Direct TCP/IP forwarding channels
+   - Remote TCP/IP forwarding channels
+   - Unix domain socket forwarding channels
+
+   The Connection Protocol is described in [RFC4254].
+
+7. Security Considerations
+
+   The SSH protocol is designed to provide strong authentication and
+   secure communication between two hosts.  The protocol supports
+   multiple authentication methods, including password-based
+   authentication, public key authentication, and host-based
+   authentication.
+
+   The SSH protocol is designed to be secure against eavesdropping,
+   connection hijacking, and other attacks.  The protocol uses strong
+   encryption algorithms and message authentication codes to protect
+   the confidentiality and integrity of the communication.
+
+   The SSH protocol also supports a variety of key exchange algorithms,
+   including Diffie-Hellman, ECDH, and Curve25519.  The protocol
+   supports a variety of encryption algorithms, including AES, 3DES,
+   and Blowfish.
+
+   The SSH protocol is described in [RFC4250] through [RFC4254].
+
+8. Acknowledgements
+
+   The authors would like to thank the following people for their
+   contributions to the SSH protocol:
+
+   - Tatu Ylonen, the original author of the SSH protocol
+   - The SSH protocol working group
+   - The Internet Engineering Task Force (IETF)
+
+9. References
+
+   [RFC2119]  Bradner, S., "Key words for use in RFCs to Indicate
+              Requirement Levels", BCP 14, RFC 2119, March 1997.
+
+   [RFC4251]  Ylonen, T. and C. Lonvick, "The Secure Shell (SSH)
+              Protocol Architecture", RFC 4251, January 2006.
+
+   [RFC4252]  Haller, N., "The Secure Shell (SSH) Authentication
+              Protocol", RFC 4252, January 2006.
+
+   [RFC4253]  Ylonen, T. and C. Lonvick, "The Secure Shell (SSH)
+              Transport Layer Protocol", RFC 4253, January 2006.
+
+   [RFC4254]  Ylonen, T. and C. Lonvick, "The Secure Shell (SSH)
+              Connection Protocol", RFC 4254, January 2006.
+
+10. Author's Address
+
+   Tatu Ylonen
+   Ylonen Internet Security OY
+   Email: ylo@cs.hut.fi
+
+11. Full Copyright Statement
+
+   Copyright (C) The Internet Society (2006).  All Rights Reserved.
+
+   This document and translations of it may be copied and furnished to
+   others, and derivative works that comment on or otherwise explain it
+   or assist in its implementation may be prepared, copied, published
+   and distributed, in whole or in part, without restriction of any
+   kind, provided that the above copyright notice and this paragraph
+   are included on all such copies and derivative works.  However, this
+   document itself may not be modified in any way, such as by removing
+   the copyright notice or references to the Internet Society or other
+   Internet organizations, except as needed for the purpose of
+   developing Internet standards in which case the procedures for
+   copyrights defined in the Internet Standards process must be
+   followed, or as required to translate it into languages other than
+   English.
+
+   The limited permissions granted above are perpetual and will not be
+   revoked by the Internet Society or its successors or assigns.
+
+   This document and the information contained herein is provided on an
+   "AS IS" basis and THE INTERNET SOCIETY AND THE INTERNET ENGINEERING
+   TASK FORCE DISCLAIMS ALL WARRANTIES, EXPRESS OR IMPLIED, INCLUDING
+   BUT NOT LIMITED TO ANY WARRANTY THAT THE USE OF THE INFORMATION
+   HEREIN WILL NOT INFRINGE ANY RIGHTS OR ANY IMPLIED WARRANTIES OF
+   MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE.
+
+End of Document
