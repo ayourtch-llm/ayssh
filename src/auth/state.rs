@@ -2,102 +2,116 @@
 
 use crate::error::SshError;
 
-/// Authentication state
+/// Authentication status
 #[derive(Debug, Clone, PartialEq)]
-pub enum AuthenticationState {
-    /// Initial state, no authentication started
-    Initial,
-    /// Authentication in progress
-    InProgress,
-    /// Authentication successful
-    Success,
+pub enum AuthStatus {
+    /// Initial state, not authenticating
+    NotAuthenticating,
+    /// Currently authenticating
+    Authenticating,
+    /// Successfully authenticated
+    Authenticated,
     /// Authentication failed
     Failed,
 }
 
 /// Authentication state machine
 #[derive(Debug)]
-pub struct AuthenticationStateMachine {
-    state: AuthenticationState,
+pub struct AuthState {
+    status: AuthStatus,
 }
 
-impl AuthenticationStateMachine {
-    /// Creates a new authentication state machine
+impl AuthState {
+    /// Creates a new authentication state with initial status `NotAuthenticating`
     pub fn new() -> Self {
         Self {
-            state: AuthenticationState::Initial,
+            status: AuthStatus::NotAuthenticating,
         }
     }
 
-    /// Returns current state
-    pub fn state(&self) -> &AuthenticationState {
-        &self.state
+    /// Returns current status
+    pub fn status(&self) -> &AuthStatus {
+        &self.status
     }
 
-    /// Transitions to InProgress state
-    pub fn transition_to_authentication(&mut self) -> Result<(), SshError> {
-        match self.state {
-            AuthenticationState::Initial => {
-                self.state = AuthenticationState::InProgress;
+    /// Starts authentication process, transitioning to `Authenticating`
+    /// 
+    /// # Errors
+    /// Returns `SshError::ProtocolError` if already in `Authenticating`, `Authenticated`, or `Failed` state
+    pub fn start_auth(&mut self) -> Result<(), SshError> {
+        match self.status {
+            AuthStatus::NotAuthenticating => {
+                self.status = AuthStatus::Authenticating;
                 Ok(())
             }
             _ => Err(SshError::ProtocolError(format!(
-                "Invalid state transition: {:?} -> InProgress",
-                self.state
+                "Invalid state transition: {:?} -> Authenticating",
+                self.status
             ))),
         }
     }
 
-    /// Transitions to Success state
-    pub fn transition_to_success(&mut self) -> Result<(), SshError> {
-        match self.state {
-            AuthenticationState::InProgress => {
-                self.state = AuthenticationState::Success;
+    /// Completes authentication successfully, transitioning to `Authenticated`
+    /// 
+    /// # Errors
+    /// Returns `SshError::ProtocolError` if not in `Authenticating` state
+    pub fn complete_auth(&mut self) -> Result<(), SshError> {
+        match self.status {
+            AuthStatus::Authenticating => {
+                self.status = AuthStatus::Authenticated;
                 Ok(())
             }
             _ => Err(SshError::ProtocolError(format!(
-                "Invalid state transition: {:?} -> Success",
-                self.state
+                "Invalid state transition: {:?} -> Authenticated",
+                self.status
             ))),
         }
     }
 
-    /// Transitions to Failed state
-    pub fn transition_to_failed(&mut self) -> Result<(), SshError> {
-        match self.state {
-            AuthenticationState::InProgress => {
-                self.state = AuthenticationState::Failed;
+    /// Marks authentication as failed, transitioning to `Failed`
+    /// 
+    /// # Errors
+    /// Returns `SshError::ProtocolError` if not in `Authenticating` state
+    pub fn fail_auth(&mut self) -> Result<(), SshError> {
+        match self.status {
+            AuthStatus::Authenticating => {
+                self.status = AuthStatus::Failed;
                 Ok(())
             }
             _ => Err(SshError::ProtocolError(format!(
                 "Invalid state transition: {:?} -> Failed",
-                self.state
+                self.status
             ))),
         }
     }
 
-    /// Resets state machine
+    /// Resets state to `NotAuthenticating`
     pub fn reset(&mut self) {
-        self.state = AuthenticationState::Initial;
+        self.status = AuthStatus::NotAuthenticating;
+    }
+
+    /// Checks if currently authenticating
+    pub fn is_authenticating(&self) -> bool {
+        self.status == AuthStatus::Authenticating
     }
 
     /// Checks if authentication is successful
-    pub fn is_success(&self) -> bool {
-        self.state == AuthenticationState::Success
-    }
-
-    /// Checks if authentication is in progress
-    pub fn is_in_progress(&self) -> bool {
-        self.state == AuthenticationState::InProgress
+    pub fn is_authenticated(&self) -> bool {
+        self.status == AuthStatus::Authenticated
     }
 
     /// Checks if authentication has failed
     pub fn is_failed(&self) -> bool {
-        self.state == AuthenticationState::Failed
+        self.status == AuthStatus::Failed
+    }
+
+    /// Checks if not authenticating (initial state)
+    pub fn is_not_authenticating(&self) -> bool {
+        self.status == AuthStatus::NotAuthenticating
     }
 }
 
-impl Default for AuthenticationStateMachine {
+impl Default for AuthState {
     fn default() -> Self {
         Self::new()
     }

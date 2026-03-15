@@ -13,7 +13,7 @@ pub mod state;
 pub use methods::{AuthMethodManager, AuthMethod};
 pub use password::PasswordAuthenticator;
 pub use publickey::PublicKeyAuthenticator;
-pub use state::AuthenticationStateMachine;
+pub use state::AuthState;
 
 use crate::error::SshError;
 use crate::protocol::message::Message;
@@ -52,7 +52,7 @@ pub struct Authenticator {
     /// Transport layer for sending messages
     transport: Transport,
     /// Authentication state machine
-    state: AuthenticationStateMachine,
+    state: AuthState,
     /// User credentials (for password auth)
     username: String,
     /// Password (for password auth)
@@ -68,7 +68,7 @@ impl Authenticator {
     pub fn new(transport: Transport, username: String) -> Self {
         Self {
             transport,
-            state: AuthenticationStateMachine::new(),
+            state: AuthState::new(),
             username,
             password: None,
             private_key: None,
@@ -96,7 +96,7 @@ impl Authenticator {
 
     /// Starts authentication process
     pub async fn authenticate(&mut self) -> Result<AuthenticationResult, SshError> {
-        self.state.transition_to_authentication()?;
+        self.state.start_auth()?;
         
         // Try available methods
         for method in self.available_methods.iter() {
