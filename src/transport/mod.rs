@@ -9,6 +9,7 @@ pub mod kex;
 pub mod packet;
 pub mod session_id;
 pub mod state;
+pub mod version;
 
 pub use cipher::*;
 pub use handshake::*;
@@ -16,6 +17,7 @@ pub use kex::*;
 pub use packet::*;
 pub use session_id::*;
 pub use state::*;
+pub use version::*;
 
 use tokio::net::TcpStream;
 
