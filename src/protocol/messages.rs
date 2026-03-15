@@ -29,6 +29,10 @@ pub enum MessageType {
     UserauthSuccess = 52,
     /// SSH_MSG_USERAUTH_BANNER
     UserauthBanner = 53,
+    /// SSH_MSG_USERAUTH_INFO_REQUEST
+    UserauthInfoRequest = 60,
+    /// SSH_MSG_USERAUTH_INFO_RESPONSE
+    UserauthInfoResponse = 61,
     /// SSH_MSG_GLOBAL_REQUEST
     GlobalRequest = 80,
     /// SSH_MSG_REQUEST_SUCCESS
@@ -75,6 +79,8 @@ impl MessageType {
             MessageType::UserauthFailure => 51,
             MessageType::UserauthSuccess => 52,
             MessageType::UserauthBanner => 53,
+            MessageType::UserauthInfoRequest => 60,
+            MessageType::UserauthInfoResponse => 61,
             MessageType::GlobalRequest => 80,
             MessageType::RequestSuccess => 81,
             MessageType::RequestFailure => 82,
@@ -107,6 +113,8 @@ impl MessageType {
             51 => Some(MessageType::UserauthFailure),
             52 => Some(MessageType::UserauthSuccess),
             53 => Some(MessageType::UserauthBanner),
+            60 => Some(MessageType::UserauthInfoRequest),
+            61 => Some(MessageType::UserauthInfoResponse),
             80 => Some(MessageType::GlobalRequest),
             81 => Some(MessageType::RequestSuccess),
             82 => Some(MessageType::RequestFailure),

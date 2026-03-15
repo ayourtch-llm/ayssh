@@ -6,6 +6,7 @@
 //! - Authentication state machine
 
 pub mod key;
+pub mod keyboard;
 pub mod methods;
 pub mod password;
 pub mod publickey;
@@ -13,6 +14,7 @@ pub mod signature;
 pub mod state;
 
 pub use key::PrivateKey;
+pub use keyboard::KeyboardInteractiveAuthenticator;
 pub use methods::{AuthMethod, AuthMethodManager};
 pub use password::PasswordAuthenticator;
 pub use publickey::PublicKeyAuthenticator;
@@ -34,6 +36,7 @@ use std::collections::HashSet;
 // Constants for authentication methods
 const SSH_AUTH_METHOD_PASSWORD: &str = "password";
 const SSH_AUTH_METHOD_PUBLICKEY: &str = "publickey";
+const SSH_AUTH_METHOD_KEYBOARD_INTERACTIVE: &str = "keyboard-interactive";
 
 /// Represents an authentication attempt
 #[derive(Debug, Clone)]
@@ -61,9 +64,9 @@ pub enum AuthenticationResult {
 }
 
 /// SSH authentication handler
-pub struct Authenticator {
+pub struct Authenticator<'a> {
     /// Transport layer for sending messages
-    transport: Transport,
+    transport: &'a mut Transport,
     /// Authentication state machine
     state: AuthState,
     /// User credentials (for password auth)
@@ -74,11 +77,13 @@ pub struct Authenticator {
     private_key: Option<Vec<u8>>,
     /// List of available authentication methods
     available_methods: HashSet<String>,
+    /// Keyboard-interactive responses handler
+    keyboard_interactive_handler: Option<Box<dyn Fn(&keyboard::Challenge) -> Result<Vec<String>, SshError> + Send>>,
 }
 
-impl Authenticator {
+impl<'a> Authenticator<'a> {
     /// Creates a new authenticator
-    pub fn new(transport: Transport, username: String) -> Self {
+    pub fn new(transport: &'a mut Transport, username: String) -> Self {
         Self {
             transport,
             state: AuthState::new(),
@@ -86,6 +91,7 @@ impl Authenticator {
             password: None,
             private_key: None,
             available_methods: HashSet::new(),
+            keyboard_interactive_handler: None,
         }
     }
 
@@ -107,6 +113,15 @@ impl Authenticator {
         self
     }
 
+    /// Sets the keyboard-interactive response handler
+    pub fn with_keyboard_interactive_handler<F>(mut self, handler: F) -> Self
+    where
+        F: Fn(&keyboard::Challenge) -> Result<Vec<String>, SshError> + Send + 'static,
+    {
+        self.keyboard_interactive_handler = Some(Box::new(handler));
+        self
+    }
+
     /// Starts authentication process
     pub async fn authenticate(&mut self) -> Result<AuthenticationResult, SshError> {
         self.state.start_auth()?;
@@ -116,12 +131,29 @@ impl Authenticator {
             match method.as_str() {
                 SSH_AUTH_METHOD_PASSWORD => {
                     if let Some(ref pwd) = self.password.clone() {
-                        return self.try_password_auth(&pwd).await;
+                        return self.try_password_auth(pwd).await;
                     }
                 }
                 SSH_AUTH_METHOD_PUBLICKEY => {
                     if let Some(ref key) = self.private_key.clone() {
-                        return self.try_publickey_auth(&key).await;
+                        return self.try_publickey_auth(key).await;
+                    }
+                }
+                SSH_AUTH_METHOD_KEYBOARD_INTERACTIVE => {
+                    if let Some(ref handler) = self.keyboard_interactive_handler {
+                        let mut ki_auth = keyboard::KeyboardInteractiveAuthenticator::new(
+                            self.transport,
+                            self.username.clone(),
+                        );
+                        
+                        match ki_auth.authenticate(handler).await {
+                            Ok(()) => return Ok(AuthenticationResult::Success),
+                            Err(e) => {
+                                // Continue to next method on failure
+                                eprintln!("Keyboard-interactive authentication failed: {:?}", e);
+                                continue;
+                            }
+                        }
                     }
                 }
                 _ => {}
