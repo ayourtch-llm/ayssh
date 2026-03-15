@@ -315,10 +315,16 @@ impl HashAlgorithm {
 pub enum KexAlgorithm {
     /// diffie-hellman-group14-sha256
     DiffieHellmanGroup14Sha256,
+    /// diffie-hellman-group14-sha384
+    DiffieHellmanGroup14Sha384,
+    /// diffie-hellman-group14-sha512
+    DiffieHellmanGroup14Sha512,
     /// diffie-hellman-group16-sha512
     DiffieHellmanGroup16Sha512,
     /// diffie-hellman-group18-sha512
     DiffieHellmanGroup18Sha512,
+    /// diffie-hellman-group-exchange-sha256
+    DiffieHellmanGroupExchangeSha256,
     /// curve25519-sha256
     Curve25519Sha256,
     /// ecdh-sha2-nistp256
@@ -334,8 +340,11 @@ impl KexAlgorithm {
     pub const fn name(&self) -> &'static str {
         match self {
             KexAlgorithm::DiffieHellmanGroup14Sha256 => "diffie-hellman-group14-sha256",
+            KexAlgorithm::DiffieHellmanGroup14Sha384 => "diffie-hellman-group14-sha384",
+            KexAlgorithm::DiffieHellmanGroup14Sha512 => "diffie-hellman-group14-sha512",
             KexAlgorithm::DiffieHellmanGroup16Sha512 => "diffie-hellman-group16-sha512",
             KexAlgorithm::DiffieHellmanGroup18Sha512 => "diffie-hellman-group18-sha512",
+            KexAlgorithm::DiffieHellmanGroupExchangeSha256 => "diffie-hellman-group-exchange-sha256",
             KexAlgorithm::Curve25519Sha256 => "curve25519-sha256",
             KexAlgorithm::EcdhSha2Nistp256 => "ecdh-sha2-nistp256",
             KexAlgorithm::EcdhSha2Nistp384 => "ecdh-sha2-nistp384",

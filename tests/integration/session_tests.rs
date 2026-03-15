@@ -1,26 +1,24 @@
 //! Session Management Integration Tests (RFC 4254)
 
-use ssh_client::session::types::{
-    Session, SessionRequest, TerminalMode, TerminalModes, WindowDimensions,
-};
+use ssh_client::session::Session;
 use ssh_client::channel::types::{Channel, ChannelId, ChannelType};
 
 #[test]
 fn test_window_dimensions_creation() {
     // Test default dimensions
-    let dims = WindowDimensions::default_terminal();
+    let dims = ssh_client::session::WindowDimensions::default_terminal();
     assert_eq!(dims.width_chars, 80);
     assert_eq!(dims.height_chars, 24);
     assert_eq!(dims.width_pixels, 0);
     assert_eq!(dims.height_pixels, 0);
 
     // Test custom dimensions
-    let dims = WindowDimensions::new(120, 40);
+    let dims = ssh_client::session::WindowDimensions::new(120, 40);
     assert_eq!(dims.width_chars, 120);
     assert_eq!(dims.height_chars, 40);
 
     // Test with pixels
-    let dims = WindowDimensions::with_pixels(120, 40, 960, 800);
+    let dims = ssh_client::session::WindowDimensions::with_pixels(120, 40, 960, 800);
     assert_eq!(dims.width_chars, 120);
     assert_eq!(dims.height_chars, 40);
     assert_eq!(dims.width_pixels, 960);
@@ -29,7 +27,7 @@ fn test_window_dimensions_creation() {
 
 #[test]
 fn test_window_dimensions_encode() {
-    let dims = WindowDimensions::new(120, 40);
+    let dims = ssh_client::session::WindowDimensions::new(120, 40);
     let msg = dims.encode();
 
     // Verify encoding
@@ -41,14 +39,14 @@ fn test_window_dimensions_encode() {
 
 #[test]
 fn test_terminal_modes_default() {
-    let modes = TerminalModes::default();
+    let modes = ssh_client::session::TerminalModes::default();
     assert_eq!(modes.modes.len(), 37);
     assert!(modes.modes.iter().all(|&m| m == 0));
 }
 
 #[test]
 fn test_terminal_modes_raw() {
-    let modes = TerminalModes::raw();
+    let modes = ssh_client::session::TerminalModes::raw();
     assert_eq!(modes.modes.len(), 37);
     // RAW flag is at index 2
     assert_eq!(modes.modes[2], 1);
@@ -56,7 +54,7 @@ fn test_terminal_modes_raw() {
 
 #[test]
 fn test_terminal_mode_struct() {
-    let mode = TerminalMode {
+    let mode = ssh_client::session::TerminalMode {
         term: 0,
         echo: 0,
         raw: 1,

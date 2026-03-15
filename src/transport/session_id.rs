@@ -121,12 +121,15 @@ pub fn compute_session_id(
 pub fn hash_algorithm_for_kex(kex_algorithm: KexAlgorithm) -> HashAlgorithm {
     match kex_algorithm {
         KexAlgorithm::DiffieHellmanGroup14Sha256
+        | KexAlgorithm::DiffieHellmanGroupExchangeSha256
         | KexAlgorithm::EcdhSha2Nistp256
         | KexAlgorithm::Curve25519Sha256 => HashAlgorithm::Sha256,
-        KexAlgorithm::DiffieHellmanGroup16Sha512
+        KexAlgorithm::DiffieHellmanGroup14Sha384
+        | KexAlgorithm::DiffieHellmanGroup16Sha512
         | KexAlgorithm::DiffieHellmanGroup18Sha512
         | KexAlgorithm::EcdhSha2Nistp384 => HashAlgorithm::Sha384,
-        KexAlgorithm::EcdhSha2Nistp521 => HashAlgorithm::Sha512,
+        KexAlgorithm::DiffieHellmanGroup14Sha512
+        | KexAlgorithm::EcdhSha2Nistp521 => HashAlgorithm::Sha512,
     }
 }
 

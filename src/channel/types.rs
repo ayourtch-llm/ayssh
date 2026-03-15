@@ -809,6 +809,17 @@ impl Channel {
         }
     }
     
+    /// Create a new session channel with default sizes
+    pub fn new_session(local_id: ChannelId, remote_id: ChannelId) -> Self {
+        Self {
+            local_id,
+            remote_id,
+            channel_type: ChannelType::Session,
+            window_size: 32768,
+            max_packet_size: 32768,
+        }
+    }
+    
     /// Get channel type as string
     pub fn channel_type_str(&self) -> &str {
         self.channel_type.as_str()

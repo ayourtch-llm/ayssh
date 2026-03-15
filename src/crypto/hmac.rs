@@ -1,6 +1,6 @@
-//! HMAC-SHA256 implementation for SSH
+//! HMAC-SHA256 and HMAC-SHA512 implementation for SSH
 //!
-//! This module implements HMAC-SHA256 as defined in RFC 2104 and used in SSH (RFC 4253).
+//! This module implements HMAC-SHA256 and HMAC-SHA512 as defined in RFC 2104 and used in SSH (RFC 4253).
 //! HMAC (Hash-based Message Authentication Code) is a mechanism for message authentication
 //! using cryptographic hash functions.
 
@@ -77,6 +77,34 @@ impl HmacSha256 {
     }
 }
 
+/// HMAC-SHA512 state machine for streaming computation
+pub struct HmacSha512 {
+    context: hmac::Context,
+}
+
+impl HmacSha512 {
+    /// Create a new HMAC-SHA512 instance with the given key
+    pub fn new(key: &[u8]) -> Self {
+        assert!(!key.is_empty(), "HMAC key must not be empty");
+        
+        let key = hmac::Key::new(hmac::HMAC_SHA512, key);
+        Self {
+            context: hmac::Context::with_key(&key),
+        }
+    }
+
+    /// Update the HMAC computation with additional data
+    pub fn update(&mut self, data: &[u8]) {
+        self.context.update(data);
+    }
+
+    /// Finalize the HMAC computation and return the result
+    pub fn finish(self) -> [u8; 64] {
+        let tag = self.context.sign();
+        tag.as_ref().try_into().expect("HMAC-SHA512 produces 64 bytes")
+    }
+}
+
 /// Compute HMAC-SHA256 for the given key and data
 ///
 /// This is a convenience function that creates a new `HmacSha256` instance,
@@ -102,6 +130,13 @@ impl HmacSha256 {
 /// ```
 pub fn compute(key: &[u8], data: &[u8]) -> [u8; 32] {
     let mut hmac = HmacSha256::new(key);
+    hmac.update(data);
+    hmac.finish()
+}
+
+/// Compute HMAC-SHA512 for the given key and data
+pub fn compute_sha512(key: &[u8], data: &[u8]) -> [u8; 64] {
+    let mut hmac = HmacSha512::new(key);
     hmac.update(data);
     hmac.finish()
 }
