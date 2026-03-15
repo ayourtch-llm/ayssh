@@ -390,15 +390,20 @@ impl PrivateKey {
                 Ok(PrivateKey::Rsa(rsa_key))
             }
             "ssh-ed25519" => {
-                // Ed25519: 32-byte private key + 32-byte public key + padding
-                if priv_key_blob.len() >= 64 {
-                    let mut key_bytes = [0u8; 32];
-                    key_bytes.copy_from_slice(&priv_key_blob[32..64]);
-                    let signing_key = ed25519_dalek::SigningKey::from_bytes(&key_bytes);
+                // Ed25519 format in private key blob:
+                // See ssh-ed25519.c:ssh_ed25519_deserialize_private
+                // Format: [32-byte public key][64-byte private key (seed + pubkey)]
+                if priv_key_blob.len() >= 96 {
+                    // Skip first 32 bytes (public key), take next 64 bytes (seed + pubkey)
+                    let private_data = &priv_key_blob[32..96];
+                    // First 32 bytes is the seed
+                    let mut seed = [0u8; 32];
+                    seed.copy_from_slice(&private_data[0..32]);
+                    let signing_key = ed25519_dalek::SigningKey::from_bytes(&seed);
                     Ok(PrivateKey::Ed25519(signing_key))
                 } else {
                     Err(SshError::CryptoError(format!(
-                        "Invalid Ed25519 key length: expected >= 64 bytes, got {}",
+                        "Invalid Ed25519 key length: expected >= 96 bytes, got {}",
                         priv_key_blob.len()
                     )))
                 }
