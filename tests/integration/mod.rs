@@ -25,3 +25,4 @@ pub mod auth_state_tests;
 pub mod authenticator_tests;
 pub mod client_tests;
 pub mod client_auth_tests;
+pub mod client_config_tests;
