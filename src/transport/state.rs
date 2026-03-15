@@ -5,8 +5,10 @@
 //! - KeyExchange: Key exchange in progress
 //! - Established: Secure channel established, encrypted communication
 
+use crate::crypto::cipher::CipherError;
 use crate::protocol::MessageType;
 use crate::error::SshError;
+use crate::transport::cipher::CipherState;
 
 /// Transport session states as defined in RFC 4253
 #[derive(Debug, Clone, PartialEq, Eq, Copy)]
@@ -43,6 +45,12 @@ pub enum MessageResult {
 pub struct TransportStateMachine {
     /// Current state of the transport session
     state: State,
+    /// Encryption cipher (optional, initialized after key exchange)
+    cipher: Option<CipherState>,
+    /// Encryption key
+    encryption_key: Vec<u8>,
+    /// MAC key
+    mac_key: Vec<u8>,
 }
 
 impl TransportStateMachine {
@@ -50,6 +58,9 @@ impl TransportStateMachine {
     pub fn new() -> Self {
         Self {
             state: State::default(),
+            cipher: None,
+            encryption_key: Vec::new(),
+            mac_key: Vec::new(),
         }
     }
 
@@ -76,6 +87,37 @@ impl TransportStateMachine {
     /// Check if the state machine is in the Disconnected state
     pub fn is_disconnected(&self) -> bool {
         self.state == State::Disconnected
+    }
+
+    /// Initialize the cipher after key exchange
+    pub fn initialize_cipher(
+        &mut self,
+        shared_secret: &[u8],
+        session_id: &[u8],
+        enc_key: &[u8],
+        mac_key: &[u8],
+    ) {
+        self.cipher = Some(CipherState::new(shared_secret, session_id, enc_key, mac_key));
+        self.encryption_key = enc_key.to_vec();
+        self.mac_key = mac_key.to_vec();
+    }
+
+    /// Encrypt a packet using the current cipher
+    pub fn encrypt_packet(&mut self, plaintext: &[u8]) -> Result<Vec<u8>, CipherError> {
+        if let Some(ref mut cipher) = self.cipher {
+            cipher.encrypt(plaintext)
+        } else {
+            Err(CipherError::CryptoError("Cipher not initialized".to_string()))
+        }
+    }
+
+    /// Decrypt a packet using the current cipher
+    pub fn decrypt_packet(&self, ciphertext: &[u8]) -> Result<Vec<u8>, CipherError> {
+        if let Some(ref cipher) = self.cipher {
+            cipher.decrypt(ciphertext)
+        } else {
+            Err(CipherError::CryptoError("Cipher not initialized".to_string()))
+        }
     }
 
     /// Process a message and return the result
