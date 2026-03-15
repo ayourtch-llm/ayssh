@@ -19,6 +19,7 @@ async-trait = "0.1"
 
 # Error handling
 thiserror = "1.0"
+anyhow = "1.0"
 
 # Logging framework
 log = "0.4"
@@ -29,9 +30,24 @@ env_logger = "0.10"
 # Hex encoding for debugging
 hex = "0.4"
 
+# Buffer operations for SSH protocol
+bytes = "1.5"
+
+# Secure memory zeroing
+zeroize = "1.7"
+
+# Crypto (for implementation)
+ring = "0.17"
+
+# Constant-time operations
+subtle = "2.5"
+
 [dev-dependencies]
 # Testing utilities
 tokio-test = "0.4"
+
+# Temp files for key testing
+tempfile = "3.9"
 
 [lib]
 name = "ssh_client"
