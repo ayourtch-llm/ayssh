@@ -5,12 +5,13 @@
 //! 1. Initial request with public key (no signature)
 //! 2. Signature request from server, then signature response
 
-use crate::auth::signature::{create_signature_data, RsaSignatureEncoder, SSH_SIG_ALGORITHM_RSA};
+use crate::auth::key::PrivateKey;
+use crate::auth::signature::{create_signature_data, Ed25519SignatureEncoder, EcdsaSignatureEncoder, RsaSignatureEncoder, SSH_SIG_ALGORITHM_ED25519, SSH_SIG_ALGORITHM_ECDSA_NISTP256, SSH_SIG_ALGORITHM_ECDSA_NISTP384, SSH_SIG_ALGORITHM_ECDSA_NISTP521, SSH_SIG_ALGORITHM_RSA};
 use crate::error::SshError;
 use crate::protocol::message::Message;
 use crate::protocol::messages::MessageType;
 use crate::transport::Transport;
-use rsa::RsaPrivateKey;
+use bytes::{BufMut, BytesMut};
 use sha2::{Digest, Sha256};
 
 /// Public key authenticator for SSH authentication
@@ -21,7 +22,9 @@ pub struct PublicKeyAuthenticator {
     username: String,
     /// Private key (OpenSSH format)
     private_key_pem: Vec<u8>,
-    /// Algorithm (e.g., "ssh-rsa")
+    /// Private key (parsed)
+    private_key: PrivateKey,
+    /// Algorithm (e.g., "ssh-rsa", "ecdsa-sha2-nistp256", "ssh-ed25519")
     algorithm: String,
     /// Session ID from key exchange (needed for signature)
     session_id: Vec<u8>,
@@ -35,14 +38,18 @@ impl PublicKeyAuthenticator {
         private_key_pem: Vec<u8>,
         algorithm: String,
         session_id: Vec<u8>,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, SshError> {
+        // Parse the private key immediately to validate it
+        let private_key = Self::parse_private_key(&private_key_pem)?;
+        
+        Ok(Self {
             transport,
             username,
             private_key_pem,
+            private_key,
             algorithm,
             session_id,
-        }
+        })
     }
 
     /// Request public key authentication
@@ -51,11 +58,8 @@ impl PublicKeyAuthenticator {
     /// 1. Send initial request with public key (no signature)
     /// 2. If server responds with UserauthRequest, send signature
     pub async fn request_publickey_auth(&mut self) -> Result<bool, SshError> {
-        // Parse the OpenSSH private key to get the RSA key
-        let private_key = self.parse_private_key()?;
-        
         // Extract public key blob from the private key
-        let public_key_blob = self.extract_public_key_blob(&private_key)?;
+        let public_key_blob = self.extract_public_key_blob()?;
 
         // Build SSH_MSG_USERAUTH_REQUEST message (first attempt, no signature)
         // Format (RFC 4252 Section 7):
@@ -99,7 +103,7 @@ impl PublicKeyAuthenticator {
             Some(MessageType::UserauthRequest) => {
                 // Server wants signature - this is the normal flow
                 // Construct signature data and sign it
-                self.send_signature(&private_key, &public_key_blob).await
+                self.send_signature(&public_key_blob).await
             }
             _ => Err(SshError::ProtocolError(format!(
                 "Unexpected authentication response: {:?}",
@@ -108,38 +112,33 @@ impl PublicKeyAuthenticator {
         }
     }
 
-    /// Parse OpenSSH private key to extract RSA private key
-    fn parse_private_key(&self) -> Result<RsaPrivateKey, SshError> {
-        use crate::auth::key::PrivateKey;
-        
+    /// Parse OpenSSH private key to extract the appropriate key type
+    fn parse_private_key(private_key_pem: &[u8]) -> Result<PrivateKey, SshError> {
         // Convert private key bytes to string for parsing
-        let pem_content = String::from_utf8_lossy(&self.private_key_pem);
+        let pem_content = String::from_utf8_lossy(private_key_pem);
         
-        // Try to parse as OpenSSH format
-        match PrivateKey::parse_pem(&pem_content.to_string()) {
-            Ok(key) => {
-                // Extract RSA private key from the parsed key
-                if let PrivateKey::Rsa(rsa_key) = key {
-                    Ok(rsa_key)
-                } else {
-                    Err(SshError::CryptoError(
-                        "Parsed key is not an RSA key".to_string()
-                    ))
-                }
+        // Parse using the key module
+        PrivateKey::parse_pem(&pem_content.to_string())
+    }
+
+    /// Extract public key blob from the private key
+    fn extract_public_key_blob(&self) -> Result<Vec<u8>, SshError> {
+        match &self.private_key {
+            PrivateKey::Rsa(rsa_key) => {
+                self.extract_rsa_public_key_blob(rsa_key)
             }
-            Err(e) => {
-                eprintln!("Failed to parse OpenSSH private key: {:?}", e);
-                Err(SshError::CryptoError(
-                    format!("Failed to parse private key: {:?}", e)
-                ))
+            PrivateKey::Ecdsa(curve, scalar) => {
+                self.extract_ecdsa_public_key_blob(curve, scalar)
+            }
+            PrivateKey::Ed25519(ed25519_key) => {
+                self.extract_ed25519_public_key_blob(ed25519_key)
             }
         }
     }
 
-    /// Extract public key blob from RSA private key
-    fn extract_public_key_blob(&self, private_key: &RsaPrivateKey) -> Result<Vec<u8>, SshError> {
+    /// Extract RSA public key blob
+    fn extract_rsa_public_key_blob(&self, private_key: &rsa::RsaPrivateKey) -> Result<Vec<u8>, SshError> {
         use rsa::traits::PublicKeyParts;
-        use bytes::{BufMut, BytesMut};
         
         let mut buf = BytesMut::new();
         
@@ -160,13 +159,79 @@ impl PublicKeyAuthenticator {
         Ok(buf.to_vec())
     }
 
+    /// Extract ECDSA public key blob
+    fn extract_ecdsa_public_key_blob(&self, curve: &crate::auth::key::EcdsaCurve, scalar: &[u8]) -> Result<Vec<u8>, SshError> {
+        let mut buf = BytesMut::new();
+        
+        // Public key algorithm string
+        buf.put_u32(self.algorithm.len() as u32);
+        buf.put_slice(self.algorithm.as_bytes());
+        
+        // Curve name
+        let (curve_name, public_key_bytes) = match curve {
+            crate::auth::key::EcdsaCurve::Nistp256 => {
+                use k256::SecretKey;
+                use k256::elliptic_curve::sec1::ToEncodedPoint;
+                use k256::ecdsa::SigningKey;
+                
+                let secret_key = SecretKey::from_slice(scalar)
+                    .map_err(|_| SshError::CryptoError("Invalid ECDSA P-256 key".into()))?;
+                let signing_key = SigningKey::from(secret_key);
+                let public_key = k256::ecdsa::VerifyingKey::from(&signing_key);
+                let encoded_point = public_key.to_encoded_point(false);
+                (b"nistp256", encoded_point.as_bytes().to_vec())
+            }
+            crate::auth::key::EcdsaCurve::Nistp384 => {
+                use p384::SecretKey;
+                use p384::elliptic_curve::sec1::ToEncodedPoint;
+                use p384::ecdsa::SigningKey;
+                
+                let secret_key = SecretKey::from_slice(scalar)
+                    .map_err(|_| SshError::CryptoError("Invalid ECDSA P-384 key".into()))?;
+                let signing_key = SigningKey::from(secret_key);
+                let public_key = p384::ecdsa::VerifyingKey::from(&signing_key);
+                let encoded_point = public_key.to_encoded_point(false);
+                (b"nistp384", encoded_point.as_bytes().to_vec())
+            }
+            crate::auth::key::EcdsaCurve::Nistp521 => {
+                // P-521 is not yet fully supported - return an error
+                return Err(SshError::CryptoError(
+                    "ECDSA P-521 curve not yet supported in authentication".to_string()
+                ));
+            }
+        };
+        
+        buf.put_u32(curve_name.len() as u32);
+        buf.put_slice(curve_name);
+        buf.put_u32(public_key_bytes.len() as u32);
+        buf.put_slice(&public_key_bytes);
+        
+        Ok(buf.to_vec())
+    }
+
+    /// Extract Ed25519 public key blob
+    fn extract_ed25519_public_key_blob(&self, private_key: &ed25519_dalek::SigningKey) -> Result<Vec<u8>, SshError> {
+        let mut buf = BytesMut::new();
+        
+        // Public key algorithm string
+        buf.put_u32(self.algorithm.len() as u32);
+        buf.put_slice(self.algorithm.as_bytes());
+        
+        // Public key (32 bytes)
+        let public_key = private_key.verifying_key();
+        let public_key_bytes = public_key.to_bytes();
+        buf.put_u32(public_key_bytes.len() as u32);
+        buf.put_slice(&public_key_bytes);
+        
+        Ok(buf.to_vec())
+    }
+
     /// Send signature for public key authentication
     ///
     /// This constructs the signature data according to RFC 4252 Section 7,
     /// signs it with the private key, and sends the signature.
     async fn send_signature(
         &mut self,
-        private_key: &RsaPrivateKey,
         public_key_blob: &[u8],
     ) -> Result<bool, SshError> {
         // Construct signature data according to RFC 4252 Section 7
@@ -183,8 +248,42 @@ impl PublicKeyAuthenticator {
         eprintln!("Signature data length: {} bytes", signature_data.len());
         eprintln!("Signature data (hex): {:02x?}", &signature_data[..20.min(signature_data.len())]);
         
-        // Encode the signature using RSA signature encoder
-        let signature = RsaSignatureEncoder::encode(private_key, &signature_data)?;
+        // Encode the signature using the appropriate encoder based on key type
+        let signature = match &self.private_key {
+            PrivateKey::Rsa(rsa_key) => {
+                RsaSignatureEncoder::encode(rsa_key, &signature_data)?
+            }
+            PrivateKey::Ecdsa(curve, scalar) => {
+                match curve {
+                    crate::auth::key::EcdsaCurve::Nistp256 => {
+                        use k256::SecretKey;
+                        use k256::ecdsa::SigningKey;
+                        let secret_key = SecretKey::from_slice(scalar)
+                            .map_err(|_| SshError::CryptoError("Invalid ECDSA P-256 key".into()))?;
+                        let signing_key = SigningKey::from(secret_key);
+                        EcdsaSignatureEncoder::encode_nistp256(&signing_key, &signature_data)?
+                    }
+                    crate::auth::key::EcdsaCurve::Nistp384 => {
+                        use p384::SecretKey;
+                        use p384::ecdsa::SigningKey;
+                        let secret_key = SecretKey::from_slice(scalar)
+                            .map_err(|_| SshError::CryptoError("Invalid ECDSA P-384 key".into()))?;
+                        let signing_key = SigningKey::from(secret_key);
+                        EcdsaSignatureEncoder::encode_nistp384(&signing_key, &signature_data)?
+                    }
+                    crate::auth::key::EcdsaCurve::Nistp521 => {
+                        // P-521 is not yet fully supported - skip for now
+                        // This can be added later when we have a proper implementation
+                        return Err(SshError::CryptoError(
+                            "ECDSA P-521 curve not yet supported in authentication".to_string()
+                        ));
+                    }
+                }
+            }
+            PrivateKey::Ed25519(ed25519_key) => {
+                Ed25519SignatureEncoder::encode(ed25519_key, &signature_data)?
+            }
+        };
         
         eprintln!("✓ Signature encoded successfully ({} bytes)", signature.data.len());
         

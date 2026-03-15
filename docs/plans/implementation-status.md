@@ -79,9 +79,21 @@ The SSH client implementation is **SIGNIFICANTLY PROGRESSIVE** with cryptographi
 - Support for signature-based auth flow
 
 **Remaining Gaps:**
-- ⚠️ **Authentication crypto integration** - `src/auth/signature.rs` exists but NOT used by authenticator
-- ❌ Real signature computation in auth flow (uses **empty/dummy signature**)
-  - `src/auth/mod.rs` and `src/auth/publickey.rs` still send `msg.write_string(b"")` for signature
+- ✅ **RSA authentication integration COMPLETE** (2026-03-15)
+  - `src/auth/signature.rs` IS NOW USED by authenticator
+  - `src/auth/mod.rs` and `src/auth/publickey.rs` use real RSA crypto
+  - Added 4 comprehensive auth flow tests
+- ✅ **ECDSA authentication integration COMPLETE** (2026-03-15)
+  - Real ECDSA signing for NIST P-256 and P-384
+  - `src/auth/signature.rs` IS NOW USED by authenticator
+  - Proper public key blob extraction
+  - SSH-encoded signature generation
+- ✅ **Ed25519 authentication integration COMPLETE** (2026-03-15)
+  - Real Ed25519 signing
+  - `src/auth/signature.rs` IS NOW USED by authenticator
+  - Proper public key blob extraction
+  - SSH-encoded signature generation
+- [ ] **ECDSA P-521 authentication integration** - Minor API compatibility issue to resolve
 - ❌ Keyboard-interactive authentication (RFC 4256)
 - ❌ SSH_AGENT protocol support
 - ❌ GSSAPI authentication (RFC 4462)

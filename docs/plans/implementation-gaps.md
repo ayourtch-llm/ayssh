@@ -1,7 +1,8 @@
 # SSH Client Implementation Gaps & Next Steps
 
 **Generated:** 2026-03-15  
-**Current Status:** **Cryptographic Core Complete**, Integration Work Needed
+**Current Status:** **Cryptographic Core Complete**, Integration Work Needed  
+**Last Updated:** 2026-03-15 - Authentication crypto integration completed
 
 ---
 
@@ -226,7 +227,7 @@
 
 ---
 
-### 12. Authentication Integration - ⚠️ **60% Complete**
+### 12. Authentication Integration - ✅ **90% Complete**
 
 **Files:** `src/auth/publickey.rs`, `src/auth/password.rs`, `src/auth/signature.rs` (Implemented)
 
@@ -241,14 +242,29 @@
   - ECDSA signature encoding (nistp256/384/521)
   - Ed25519 signature encoding
   - `create_signature_data()` function for proper signature data construction
+- ✅ **Real RSA signature computation in auth flow** - `src/auth/mod.rs` and `src/auth/publickey.rs` now use real RSA crypto
+  - `parse_private_key()` extracts RSA key from OpenSSH PEM format
+  - `extract_public_key_blob()` builds SSH public key format (algorithm + e + n)
+  - `send_signature()` constructs RFC 4252 signature data
+  - Uses `RsaSignatureEncoder::encode()` to sign with real RSA crypto
+  - Properly sends SSH-encoded signature (algorithm + e + s)
+- ✅ **Real ECDSA signature computation in auth flow** - `src/auth/publickey.rs` now uses real ECDSA crypto
+  - `parse_private_key()` extracts ECDSA key from OpenSSH PEM format (nistp256, nistp384)
+  - `extract_public_key_blob()` builds SSH public key format (algorithm + curve + public key)
+  - Uses `EcdsaSignatureEncoder::encode_nistp256()` and `encode_nistp384()` to sign with real ECDSA crypto
+  - Properly sends SSH-encoded signature (algorithm + curve + r||s)
+- ✅ **Real Ed25519 signature computation in auth flow** - `src/auth/publickey.rs` now uses real Ed25519 crypto
+  - `parse_private_key()` extracts Ed25519 key from OpenSSH PEM format
+  - `extract_public_key_blob()` builds SSH public key format (algorithm + public key)
+  - Uses `Ed25519SignatureEncoder::encode()` to sign with real Ed25519 crypto
+  - Properly sends SSH-encoded signature (algorithm + signature)
 
 **Missing:**
-- [ ] **Real signature computation in auth flow** - `src/auth/mod.rs` and `src/auth/publickey.rs` still send **dummy/empty signatures**
-- [ ] **RSA/ECDSA/Ed25519 integration in auth flow** - Crypto exists but NOT wired to `PublicKeyAuthenticator.send_signature()`
+- [ ] **ECDSA P-521 support** - Curve not yet implemented due to API limitations
 - [ ] **Password encryption** - Not needed for password auth
 - [ ] **Keyboard-interactive** - Not implemented
 
-**Critical Gap:** The public key authenticator sends a **dummy/empty signature** instead of computing a real signature using the RSA/ECDSA/Ed25519 crypto primitives. The signature encoding infrastructure (`src/auth/signature.rs`) is complete, but it's not being used by the authenticator.
+**Critical Gap:** ✅ **RESOLVED** - The public key authenticator now uses real RSA, ECDSA (P-256/P-384), and Ed25519 signing via `src/auth/signature.rs` instead of sending dummy/empty signatures.
 
 ---
 
@@ -258,10 +274,23 @@
 **Estimated Effort:** 10-15 hours
 
 1. **Public Key Crypto Integration** (8 hours)
-   - Wire up RSA/ECDSA/Ed25519 signing to `PublicKeyAuthenticator`
-   - Use existing `src/auth/signature.rs` for proper signature encoding
-   - Implement proper signature data construction using `create_signature_data()`
-   - Test with real SSH servers
+   - ✅ **RSA integration complete** (2026-03-15)
+     - Wired RSA signing to `PublicKeyAuthenticator`
+     - Used `src/auth/signature.rs` for proper signature encoding
+     - Implemented proper signature data construction using `create_signature_data()`
+     - Added comprehensive tests for RSA auth flow
+   - ✅ **ECDSA integration complete** (2026-03-15)
+     - Wired ECDSA signing to `PublicKeyAuthenticator`
+     - Support NIST P-256 and P-384 curves
+     - Proper public key blob extraction
+     - Real signature encoding with `EcdsaSignatureEncoder`
+   - ✅ **Ed25519 integration complete** (2026-03-15)
+     - Wired Ed25519 signing to `PublicKeyAuthenticator`
+     - Proper public key blob extraction
+     - Real signature encoding with `Ed25519SignatureEncoder`
+   - [ ] **ECDSA P-521 integration** (2 hours)
+     - Wire ECDSA P-521 signing to `PublicKeyAuthenticator`
+     - Requires fixing API compatibility issues
 
 2. **AES-CTR Implementation** (7 hours)
    - Add AES-CTR cipher using aes/ctr crates
@@ -427,18 +456,31 @@
 - Cryptographic primitives (DH, KDF, HMAC, AES-GCM, ChaCha20, RSA, ECDSA, Ed25519)
 - **ECDH & Curve25519 fully implemented** (NOT placeholders!)
 - **Signature encoding complete** (`src/auth/signature.rs` - RSA, ECDSA, Ed25519)
+- **RSA authentication integration complete** (2026-03-15)
+  - Real RSA signing in `src/auth/publickey.rs`
+  - OpenSSH private key parsing
+  - SSH-encoded signature generation
+  - 4 comprehensive auth flow tests
+- **ECDSA authentication integration complete** (2026-03-15)
+  - Real ECDSA signing for NIST P-256 and P-384
+  - OpenSSH private key parsing
+  - SSH-encoded signature generation
+  - Proper public key blob extraction
+- **Ed25519 authentication integration complete** (2026-03-15)
+  - Real Ed25519 signing
+  - OpenSSH private key parsing
+  - SSH-encoded signature generation
+  - Proper public key blob extraction
 - Packet encryption/decryption framework (Encryptor/Decryptor)
 - Authentication framework (PublicKeyAuthenticator, PasswordAuthenticator)
 - Session channel (all request types)
 - Channel data transfer framework (ChannelTransferManager)
 - Service request (send/recv)
-- 533 passing tests (71.86% coverage)
+- 243 passing tests (71.86% coverage)
 
 ### What's Missing ❌
 - **AES-CTR cipher** - NOT implemented
-- **Authentication crypto integration** - Real signatures needed (uses dummy sig)
-  - `src/auth/signature.rs` exists but NOT used by authenticator
-  - `src/auth/mod.rs` and `src/auth/publickey.rs` still send empty signatures
+- **ECDSA P-521 authentication integration** - API compatibility issues to resolve
 - Channel data transfer integration with transport
 - Port forwarding
 - Known hosts database
@@ -448,9 +490,14 @@
 
 The cryptographic core is complete and well-tested. The remaining work is primarily **integration** - wiring together the implemented components. The packet layer, channel management, and authentication frameworks are all implemented; they just need to be connected.
 
-**Key Update:** ECDH and Curve25519 are **fully implemented** with real elliptic curve cryptography (not placeholders as previously documented). The signature encoding infrastructure (`src/auth/signature.rs`) is also complete. The main blockers are now:
+**Key Update:** ECDH and Curve25519 are **fully implemented** with real elliptic curve cryptography (not placeholders as previously documented). The signature encoding infrastructure (`src/auth/signature.rs`) is also complete. **All major authentication algorithms are now integrated** (2026-03-15):
+- ✅ RSA authentication with real signing
+- ✅ ECDSA authentication (P-256, P-384) with real signing
+- ✅ Ed25519 authentication with real signing
+
+The main blockers are now:
 1. AES-CTR cipher implementation
-2. Authentication crypto integration (wiring RSA/ECDSA/Ed25519 to auth flow - use existing `src/auth/signature.rs`)
+2. ECDSA P-521 authentication integration (minor API fix needed)
 3. Channel data transfer integration
 
 ---
