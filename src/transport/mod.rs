@@ -5,14 +5,16 @@
 
 pub mod cipher;
 pub mod handshake;
-pub mod packet;
 pub mod kex;
+pub mod packet;
+pub mod session_id;
 pub mod state;
 
 pub use cipher::*;
 pub use handshake::*;
-pub use packet::*;
 pub use kex::*;
+pub use packet::*;
+pub use session_id::*;
 pub use state::*;
 
 use tokio::net::TcpStream;
