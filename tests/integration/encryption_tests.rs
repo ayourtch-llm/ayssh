@@ -13,8 +13,10 @@ fn test_cipher_initialization() {
     
     let cipher = CipherState::new(shared_secret, session_id, &enc_key, &mac_key);
     
-    // Cipher should be initialized - just check it doesn't panic
-    let _ = cipher.clone();
+    // Verify cipher was initialized with correct key sizes
+    assert_eq!(cipher.enc_key.len(), 32);
+    assert_eq!(cipher.mac_key.len(), 32);
+    assert_eq!(cipher.session_id.len(), 19); // "ssh_session_id_hash".len()
 }
 
 #[test]

@@ -5,9 +5,13 @@ use crate::crypto::cipher::{aes_gcm_decrypt, aes_gcm_encrypt, CipherError};
 /// Cipher state for SSH transport encryption
 #[derive(Debug, Clone, PartialEq)]
 pub struct CipherState {
-    enc_key: Vec<u8>,
-    mac_key: Vec<u8>,
-    session_id: Vec<u8>,
+    /// Encryption key (32 bytes for AES-256)
+    pub enc_key: Vec<u8>,
+    /// MAC key (32 bytes for HMAC-SHA256)
+    pub mac_key: Vec<u8>,
+    /// Session ID for key derivation
+    pub session_id: Vec<u8>,
+    /// Nonce counter for generating unique nonces
     nonce_counter: u64,
 }
 
