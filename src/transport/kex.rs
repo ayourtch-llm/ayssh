@@ -6,6 +6,7 @@
 //! - diffie-hellman-group-exchange-sha256 (RFC 4253)
 
 use crate::crypto::dh::{DhGroup, Mpint};
+use crate::crypto::kdf;
 use crate::protocol;
 use rand::RngCore;
 use sha2::{Digest, Sha256, Sha384};
@@ -19,6 +20,10 @@ pub struct KexContext {
     pub client_ephemeral: Option<Vec<u8>>,
     /// Server's ephemeral key
     pub server_ephemeral: Option<Vec<u8>>,
+    /// Client's private key (for DH)
+    client_private: Option<num_bigint::BigUint>,
+    /// Server's public key (for DH)
+    server_public: Option<num_bigint::BigUint>,
     /// Shared secret (if computed)
     pub shared_secret: Option<Vec<u8>>,
     /// Session ID (if computed)
@@ -32,6 +37,8 @@ impl KexContext {
             algorithm,
             client_ephemeral: None,
             server_ephemeral: None,
+            client_private: None,
+            server_public: None,
             shared_secret: None,
             session_id: None,
         }
@@ -40,87 +47,29 @@ impl KexContext {
     /// Generate client's ephemeral key for the selected algorithm
     pub fn generate_client_key(&mut self, rng: &mut impl RngCore) -> anyhow::Result<()> {
         match self.algorithm {
-            protocol::KexAlgorithm::DiffieHellmanGroup14Sha256 => {
+            protocol::KexAlgorithm::DiffieHellmanGroup14Sha256 |
+            protocol::KexAlgorithm::DiffieHellmanGroupExchangeSha256 |
+            protocol::KexAlgorithm::DiffieHellmanGroup14Sha384 |
+            protocol::KexAlgorithm::DiffieHellmanGroup14Sha512 |
+            protocol::KexAlgorithm::DiffieHellmanGroup16Sha512 |
+            protocol::KexAlgorithm::DiffieHellmanGroup18Sha512 => {
                 let group = DhGroup::group14();
                 let private_x = group.generate_private_key(rng, 256);
                 let public_y = group.compute_public_key(&private_x);
                 
+                self.client_private = Some(private_x);
                 self.client_ephemeral = Some(Mpint::encode(&public_y));
                 Ok(())
             }
-            protocol::KexAlgorithm::DiffieHellmanGroupExchangeSha256 => {
-                // For GEX, we use the same group14 parameters as default
-                let group = DhGroup::group14();
-                let private_x = group.generate_private_key(rng, 256);
-                let public_y = group.compute_public_key(&private_x);
-                
-                self.client_ephemeral = Some(Mpint::encode(&public_y));
-                Ok(())
-            }
-            protocol::KexAlgorithm::DiffieHellmanGroup14Sha384 => {
-                let group = DhGroup::group14();
-                let private_x = group.generate_private_key(rng, 256);
-                let public_y = group.compute_public_key(&private_x);
-                
-                self.client_ephemeral = Some(Mpint::encode(&public_y));
-                Ok(())
-            }
-            protocol::KexAlgorithm::DiffieHellmanGroup14Sha512 => {
-                let group = DhGroup::group14();
-                let private_x = group.generate_private_key(rng, 256);
-                let public_y = group.compute_public_key(&private_x);
-                
-                self.client_ephemeral = Some(Mpint::encode(&public_y));
-                Ok(())
-            }
-            protocol::KexAlgorithm::EcdhSha2Nistp256 => {
-                // Placeholder for ECDH - generate random bytes
-                let mut public_bytes = vec![0u8; 33]; // Compressed P-256 format
-                rng.fill_bytes(&mut public_bytes);
-                
-                self.client_ephemeral = Some(public_bytes);
-                Ok(())
-            }
-            protocol::KexAlgorithm::EcdhSha2Nistp384 => {
-                // Placeholder for P-384
-                let mut public_bytes = vec![0u8; 49]; // Compressed P-384 format
-                rng.fill_bytes(&mut public_bytes);
-                
-                self.client_ephemeral = Some(public_bytes);
-                Ok(())
-            }
-            protocol::KexAlgorithm::EcdhSha2Nistp521 => {
-                // Placeholder for P-521
-                let mut public_bytes = vec![0u8; 67]; // Compressed P-521 format
-                rng.fill_bytes(&mut public_bytes);
-                
-                self.client_ephemeral = Some(public_bytes);
-                Ok(())
-            }
+            protocol::KexAlgorithm::EcdhSha2Nistp256 |
+            protocol::KexAlgorithm::EcdhSha2Nistp384 |
+            protocol::KexAlgorithm::EcdhSha2Nistp521 |
             protocol::KexAlgorithm::Curve25519Sha256 => {
-                // Placeholder for Curve25519 - generate random 32 bytes
+                // For ECDH/curve25519, generate random bytes (placeholder)
                 let mut public_bytes = vec![0u8; 32];
                 rng.fill_bytes(&mut public_bytes);
                 
                 self.client_ephemeral = Some(public_bytes);
-                Ok(())
-            }
-            protocol::KexAlgorithm::DiffieHellmanGroup16Sha512 => {
-                // Use group14 as fallback (group16 not implemented yet)
-                let group = DhGroup::group14();
-                let private_x = group.generate_private_key(rng, 512);
-                let public_y = group.compute_public_key(&private_x);
-                
-                self.client_ephemeral = Some(Mpint::encode(&public_y));
-                Ok(())
-            }
-            protocol::KexAlgorithm::DiffieHellmanGroup18Sha512 => {
-                // Use group14 as fallback (group18 not implemented yet)
-                let group = DhGroup::group14();
-                let private_x = group.generate_private_key(rng, 512);
-                let public_y = group.compute_public_key(&private_x);
-                
-                self.client_ephemeral = Some(Mpint::encode(&public_y));
                 Ok(())
             }
         }
@@ -128,6 +77,9 @@ impl KexContext {
 
     /// Process server's key exchange message
     pub fn process_server_kex_init(&mut self, server_ephemeral: &[u8]) -> anyhow::Result<()> {
+        // Decode server's ephemeral key from MPINT
+        let server_public = Mpint::decode(server_ephemeral)?;
+        self.server_public = Some(server_public);
         self.server_ephemeral = Some(server_ephemeral.to_vec());
         Ok(())
     }
@@ -141,12 +93,16 @@ impl KexContext {
             protocol::KexAlgorithm::DiffieHellmanGroup14Sha512 |
             protocol::KexAlgorithm::DiffieHellmanGroup16Sha512 |
             protocol::KexAlgorithm::DiffieHellmanGroup18Sha512 => {
-                // For DH, compute shared secret: s = server_private^client_public mod p
-                // We need the client's private key to compute this
-                // In a full implementation, we'd store the private key
-                // For now, we'll just mark that we need to compute it
-                self.shared_secret = Some(vec![0u8; 32]); // Placeholder
-                Ok(())
+                // For DH, compute shared secret: s = server_public^client_private mod p
+                if let (Some(ref server_pub), Some(ref client_priv)) = 
+                    (&self.server_public, &self.client_private) {
+                    let group = DhGroup::group14();
+                    let shared = group.compute_shared_secret(server_pub, client_priv);
+                    self.shared_secret = Some(shared.to_bytes_be());
+                    Ok(())
+                } else {
+                    Err(anyhow::anyhow!("Missing private or public key for DH"))
+                }
             }
             protocol::KexAlgorithm::Curve25519Sha256 |
             protocol::KexAlgorithm::EcdhSha2Nistp256 |
@@ -154,14 +110,25 @@ impl KexContext {
             protocol::KexAlgorithm::EcdhSha2Nistp521 => {
                 // For ECDH/curve25519, compute shared secret using elliptic curve multiplication
                 // This would require a proper elliptic curve implementation
-                self.shared_secret = Some(vec![0u8; 32]); // Placeholder
-                Ok(())
+                // Placeholder: derive from ephemeral keys
+                if let (Some(ref client_eph), Some(ref server_eph)) = 
+                    (&self.client_ephemeral, &self.server_ephemeral) {
+                    // Simple placeholder: hash the concatenation
+                    use sha2::Sha256;
+                    let mut hasher = Sha256::new();
+                    hasher.update(client_eph);
+                    hasher.update(server_eph);
+                    self.shared_secret = Some(hasher.finalize().to_vec());
+                    Ok(())
+                } else {
+                    Err(anyhow::anyhow!("Missing ephemeral keys for ECDH"))
+                }
             }
         }
     }
 
     /// Generate the session hash (H)
-    pub fn generate_session_hash(&self, session_id: &[u8]) -> anyhow::Result<Vec<u8>> {
+    pub fn generate_session_hash(&self, _session_id: &[u8]) -> anyhow::Result<Vec<u8>> {
         match self.algorithm {
             protocol::KexAlgorithm::DiffieHellmanGroup14Sha256 |
             protocol::KexAlgorithm::DiffieHellmanGroupExchangeSha256 => {
@@ -222,6 +189,43 @@ impl KexContext {
             }
         }
     }
+
+    /// Derive session keys from shared secret and session hash
+    pub fn derive_session_keys(&mut self, hash: &[u8]) -> anyhow::Result<SessionKeys> {
+        if let Some(ref shared_secret) = self.shared_secret {
+            // Use the session hash as session_id for KDF
+            let enc_key_len = 32; // AES-256
+            let mac_key_len = 32; // SHA-256
+            let iv_len = 12; // For GCM/ChaCha20
+            
+            let enc_key = kdf::kdf(shared_secret, hash, 1, enc_key_len);
+            let mac_key = kdf::kdf(shared_secret, hash, 2, mac_key_len);
+            let client_iv = kdf::kdf(shared_secret, hash, 3, iv_len);
+            let server_iv = kdf::kdf(shared_secret, hash, 4, iv_len);
+            
+            Ok(SessionKeys {
+                enc_key,
+                mac_key,
+                client_iv,
+                server_iv,
+            })
+        } else {
+            Err(anyhow::anyhow!("Shared secret not computed yet"))
+        }
+    }
+}
+
+/// Session keys derived from key exchange
+#[derive(Debug)]
+pub struct SessionKeys {
+    /// Encryption key
+    pub enc_key: Vec<u8>,
+    /// MAC key
+    pub mac_key: Vec<u8>,
+    /// Client IV
+    pub client_iv: Vec<u8>,
+    /// Server IV
+    pub server_iv: Vec<u8>,
 }
 
 /// Perform key exchange with given algorithm
@@ -336,12 +340,13 @@ mod tests {
         let server_public = group.compute_public_key(&server_private);
         
         // Set up context
+        context.client_private = Some(client_private.clone());
         context.client_ephemeral = Some(Mpint::encode(&client_public));
+        context.server_public = Some(server_public.clone());
         context.server_ephemeral = Some(Mpint::encode(&server_public));
         
         // Compute shared secret
-        let shared_secret = group.compute_shared_secret(&server_public, &client_private);
-        context.shared_secret = Some(shared_secret.to_bytes_be());
+        context.compute_shared_secret().unwrap();
         
         // Generate session hash
         let _session_id = b"test-session-id-12345";
@@ -362,17 +367,55 @@ mod tests {
         let server_private = group.generate_private_key(&mut OsRng, 256);
         let server_public = group.compute_public_key(&server_private);
         
+        context1.client_private = Some(client_private.clone());
         context1.client_ephemeral = Some(Mpint::encode(&client_public));
+        context1.server_public = Some(server_public.clone());
         context1.server_ephemeral = Some(Mpint::encode(&server_public));
-        context1.shared_secret = Some(group.compute_shared_secret(&server_public, &client_private).to_bytes_be());
         
+        context2.client_private = Some(client_private.clone());
         context2.client_ephemeral = Some(Mpint::encode(&client_public));
+        context2.server_public = Some(server_public.clone());
         context2.server_ephemeral = Some(Mpint::encode(&server_public));
-        context2.shared_secret = Some(group.compute_shared_secret(&server_public, &client_private).to_bytes_be());
+        
+        context1.compute_shared_secret().unwrap();
+        context2.compute_shared_secret().unwrap();
         
         let hash1 = context1.generate_session_hash(b"session-id").unwrap();
         let hash2 = context2.generate_session_hash(b"session-id").unwrap();
         
         assert_eq!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_session_key_derivation() {
+        let mut context = KexContext::new(protocol::KexAlgorithm::DiffieHellmanGroup14Sha256);
+        
+        // Generate key pairs
+        let group = DhGroup::group14();
+        let client_private = group.generate_private_key(&mut OsRng, 256);
+        let client_public = group.compute_public_key(&client_private);
+        let server_private = group.generate_private_key(&mut OsRng, 256);
+        let server_public = group.compute_public_key(&server_private);
+        
+        // Set up context
+        context.client_private = Some(client_private.clone());
+        context.client_ephemeral = Some(Mpint::encode(&client_public));
+        context.server_public = Some(server_public.clone());
+        context.server_ephemeral = Some(Mpint::encode(&server_public));
+        
+        // Compute shared secret
+        context.compute_shared_secret().unwrap();
+        
+        // Generate session hash
+        let session_id = b"test-session-id";
+        let hash = context.generate_session_hash(session_id).unwrap();
+        
+        // Derive session keys
+        let keys = context.derive_session_keys(&hash).unwrap();
+        
+        assert_eq!(keys.enc_key.len(), 32); // AES-256
+        assert_eq!(keys.mac_key.len(), 32); // SHA-256
+        assert_eq!(keys.client_iv.len(), 12);
+        assert_eq!(keys.server_iv.len(), 12);
     }
 }
