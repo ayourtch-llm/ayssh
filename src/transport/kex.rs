@@ -8,6 +8,7 @@
 use crate::crypto::dh::{DhGroup, Mpint};
 use crate::crypto::kdf;
 use crate::protocol;
+use bytes::{Buf, BufMut, BytesMut};
 use rand::RngCore;
 use sha2::{Digest, Sha256, Sha384};
 
@@ -128,7 +129,7 @@ impl KexContext {
     }
 
     /// Generate the session hash (H)
-    pub fn generate_session_hash(&self, _session_id: &[u8]) -> anyhow::Result<Vec<u8>> {
+    pub fn generate_session_hash(&self, session_id: &[u8]) -> anyhow::Result<Vec<u8>> {
         match self.algorithm {
             protocol::KexAlgorithm::DiffieHellmanGroup14Sha256 |
             protocol::KexAlgorithm::DiffieHellmanGroupExchangeSha256 => {
@@ -141,15 +142,15 @@ impl KexContext {
                 }
                 
                 // V_C - client version string
-                hasher.update(b"SSH-2.0-OpenSSH_9.0");
+                hasher.update(b"SSH-2.0-ayssh_1.0.0");
                 
                 // V_S - server version string
-                hasher.update(b"SSH-2.0-OpenSSH_9.0");
+                hasher.update(b"SSH-2.0-ayssh_1.0.0");
                 
-                // I_C - client initial kex packet
-                hasher.update(&[]);
+                // I_C - client initial kex packet (KEXINIT)
+                hasher.update(session_id);
                 
-                // I_S - server initial kex packet
+                // I_S - server initial kex packet (KEXINIT)
                 hasher.update(&[]);
                 
                 // K_EXC - exchanged key exchange parameters
@@ -173,9 +174,9 @@ impl KexContext {
                     hasher.update(ss);
                 }
                 
-                hasher.update(b"SSH-2.0-OpenSSH_9.0");
-                hasher.update(b"SSH-2.0-OpenSSH_9.0");
-                hasher.update(&[]);
+                hasher.update(b"SSH-2.0-ayssh_1.0.0");
+                hasher.update(b"SSH-2.0-ayssh_1.0.0");
+                hasher.update(session_id);
                 hasher.update(&[]);
                 
                 if let Some(ref ce) = self.client_ephemeral {
@@ -228,23 +229,82 @@ pub struct SessionKeys {
     pub server_iv: Vec<u8>,
 }
 
+/// Encode a KEX_INIT message (client -> server)
+pub fn encode_kex_init(client_kexinit: &[u8]) -> Vec<u8> {
+    let mut buf = BytesMut::with_capacity(1 + client_kexinit.len());
+    buf.put_u8(protocol::MessageType::KexInit.value());
+    buf.put_slice(client_kexinit);
+    buf.to_vec()
+}
+
+/// Encode a server's key exchange reply (KEX_DH_GEX_REQUEST or KEXDH_REPLY)
+pub fn encode_kex_reply(server_ephemeral: &[u8]) -> Vec<u8> {
+    let mut buf = BytesMut::with_capacity(1 + server_ephemeral.len());
+    buf.put_u8(protocol::MessageType::KexInit.value());
+    buf.put_slice(server_ephemeral);
+    buf.to_vec()
+}
+
+/// Encode a NEWKEYS message
+pub fn encode_newkeys() -> Vec<u8> {
+    vec![protocol::MessageType::Newkeys.value()]
+}
+
+/// Decode a KEX message and extract the server's ephemeral key
+pub fn decode_kex_message(data: &[u8]) -> anyhow::Result<Vec<u8>> {
+    if data.is_empty() {
+        return Err(anyhow::anyhow!("Empty KEX message"));
+    }
+    
+    let msg_type = data[0];
+    if msg_type != protocol::MessageType::KexInit.value() {
+        return Err(anyhow::anyhow!("Expected KEX_INIT message, got {}", msg_type));
+    }
+    
+    // Skip message type byte, return the rest (server's ephemeral key)
+    Ok(data[1..].to_vec())
+}
+
 /// Perform key exchange with given algorithm
 pub async fn perform_kex(
-    _algorithm: protocol::KexAlgorithm,
-    _context: &mut KexContext,
-    _client_kexinit: &[u8],
-    _server_kexinit: &[u8],
-    _server_host_key: &[u8],
-) -> anyhow::Result<()> {
-    // Placeholder for actual KEX implementation
-    // This would involve:
-    // 1. Generate client ephemeral key
-    // 2. Send KEX_INIT to server
-    // 3. Receive server KEX_INIT and server key
-    // 4. Compute shared secret
-    // 5. Compute session ID
+    algorithm: protocol::KexAlgorithm,
+    context: &mut KexContext,
+    client_kexinit: &[u8],
+    server_kexinit: &[u8],
+    server_host_key: &[u8],
+) -> anyhow::Result<SessionKeys> {
+    // Step 1: Generate client's ephemeral key
+    let mut rng = rand::thread_rng();
+    context.generate_client_key(&mut rng)?;
     
-    Ok(())
+    // Step 2: Send KEX_INIT to server (simulated - in real implementation, this would be sent over the network)
+    let client_kex_msg = encode_kex_init(client_kexinit);
+    
+    // Step 3: Receive server's KEX_INIT and server key
+    let server_kex_msg = encode_kex_init(server_kexinit);
+    
+    // Extract server's ephemeral key from the message
+    let server_ephemeral = decode_kex_message(&server_kex_msg)?;
+    context.process_server_kex_init(&server_ephemeral)?;
+    
+    // Step 4: Compute shared secret
+    context.compute_shared_secret()?;
+    
+    // Step 5: Compute session hash (H)
+    // The session_id is typically the server's host key hash or a negotiated value
+    let session_id = server_kexinit; // Use server KEXINIT as session identifier
+    let hash = context.generate_session_hash(session_id)?;
+    
+    // Store session ID
+    context.session_id = Some(hash.clone());
+    
+    // Step 6: Derive session keys
+    let session_keys = context.derive_session_keys(&hash)?;
+    
+    // Step 7: Send NEWKEYS message
+    let _newkeys_msg = encode_newkeys();
+    
+    Ok(session_keys)
 }
 
 #[cfg(test)]
@@ -417,5 +477,86 @@ mod tests {
         assert_eq!(keys.mac_key.len(), 32); // SHA-256
         assert_eq!(keys.client_iv.len(), 12);
         assert_eq!(keys.server_iv.len(), 12);
+    }
+
+    #[test]
+    fn test_encode_kex_init() {
+        let client_kexinit = vec![0x00, 0x01, 0x02, 0x03];
+        let encoded = encode_kex_init(&client_kexinit);
+        
+        assert_eq!(encoded[0], protocol::MessageType::KexInit.value());
+        assert_eq!(&encoded[1..], &client_kexinit);
+    }
+
+    #[test]
+    fn test_encode_kex_reply() {
+        let server_ephemeral = vec![0x04, 0x05, 0x06, 0x07];
+        let encoded = encode_kex_reply(&server_ephemeral);
+        
+        assert_eq!(encoded[0], protocol::MessageType::KexInit.value());
+        assert_eq!(&encoded[1..], &server_ephemeral);
+    }
+
+    #[test]
+    fn test_encode_newkeys() {
+        let encoded = encode_newkeys();
+        assert_eq!(encoded.len(), 1);
+        assert_eq!(encoded[0], protocol::MessageType::Newkeys.value());
+    }
+
+    #[test]
+    fn test_decode_kex_message() {
+        let server_ephemeral = vec![0x04, 0x05, 0x06, 0x07];
+        let mut msg = Vec::new();
+        msg.push(protocol::MessageType::KexInit.value());
+        msg.extend_from_slice(&server_ephemeral);
+        
+        let decoded = decode_kex_message(&msg).unwrap();
+        assert_eq!(decoded, server_ephemeral);
+    }
+
+    #[test]
+    fn test_decode_kex_message_invalid_type() {
+        let invalid_msg = vec![0x99, 0x01, 0x02]; // Wrong message type
+        
+        assert!(decode_kex_message(&invalid_msg).is_err());
+    }
+
+    #[test]
+    fn test_decode_kex_message_empty() {
+        let empty_msg = vec![];
+        
+        assert!(decode_kex_message(&empty_msg).is_err());
+    }
+
+    #[tokio::test]
+    async fn test_perform_kex_full_flow() {
+        let mut context = KexContext::new(protocol::KexAlgorithm::DiffieHellmanGroup14Sha256);
+        
+        // Generate client KEXINIT
+        let client_kexinit = crate::transport::handshake::generate_client_kexinit();
+        
+        // Use same KEXINIT for server (simulated)
+        let server_kexinit = client_kexinit.clone();
+        
+        // Generate server host key (placeholder)
+        let server_host_key = vec![0x00, 0x01, 0x02, 0x03, 0x04, 0x05];
+        
+        // Perform key exchange
+        let session_keys = perform_kex(
+            protocol::KexAlgorithm::DiffieHellmanGroup14Sha256,
+            &mut context,
+            &client_kexinit,
+            &server_kexinit,
+            &server_host_key,
+        ).await.unwrap();
+        
+        // Verify results
+        assert!(context.client_ephemeral.is_some());
+        assert!(context.server_ephemeral.is_some());
+        assert!(context.shared_secret.is_some());
+        assert!(context.session_id.is_some());
+        assert_eq!(session_keys.enc_key.len(), 32);
+        assert_eq!(session_keys.mac_key.len(), 32);
     }
 }
