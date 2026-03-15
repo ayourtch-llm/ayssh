@@ -19,7 +19,7 @@ The SSH client implementation is **SIGNIFICANTLY PROGRESSIVE** with cryptographi
 | **Authentication State Machine** | ✅ Complete | 100% |
 | **Authentication Methods (Framework)** | ✅ Complete | 100% |
 | **Transport Layer State Machine** | ✅ Complete | 100% |
-| **Key Exchange (KEX)** | ✅ 90% | 90% |
+| **Key Exchange (KEX)** | ✅ 95% | 95% |
 | **Cipher Implementations** | ⚠️ Partial | 50% |
 | **MAC Implementations** | ✅ 80% | 80% |
 | **KDF** | ✅ Complete | 100% |
@@ -74,8 +74,8 @@ The SSH client implementation is **SIGNIFICANTLY PROGRESSIVE** with cryptographi
 - Support for signature-based auth flow
 
 **Remaining Gaps:**
-- ⚠️ Public key auth integration with crypto (uses placeholder signature)
-- ⚠️ Real signature computation in auth flow (needs RSA/ECDSA/Ed25519 integration)
+- ⚠️ **Authentication crypto integration** - RSA/ECDSA/Ed25519 crypto exists but NOT wired to auth flow
+- ❌ Real signature computation in auth flow (uses dummy signature)
 - ❌ Keyboard-interactive authentication (RFC 4256)
 - ❌ SSH_AGENT protocol support
 - ❌ GSSAPI authentication (RFC 4462)
@@ -83,19 +83,28 @@ The SSH client implementation is **SIGNIFICANTLY PROGRESSIVE** with cryptographi
 
 ---
 
-### ✅ RFC 4253: SSH Transport Layer Protocol (75% Complete)
+### ✅ RFC 4253: SSH Transport Layer Protocol (80% Complete)
 
 **Implemented Components:**
 - Version exchange (`src/transport/version.rs`) - Complete
 - Transport state machine (`src/transport/state.rs`) - Complete
 - Handshake state (`src/transport/handshake.rs`) - KEXINIT parsing implemented
 - **DH Key Exchange** (`src/crypto/dh.rs`) - 100% Complete
-- **KEX Context** (`src/transport/kex.rs`) - 90% Complete
+- **KEX Context** (`src/transport/kex.rs`) - 95% Complete
 - **KDF** (`src/crypto/kdf.rs`) - 100% Complete (9 tests passing)
 - **HMAC-SHA2** (`src/crypto/hmac.rs`) - 80% Complete
 - **AES-GCM** (`src/crypto/cipher.rs`) - 50% Complete
 - **ChaCha20-Poly1305** (`src/crypto/chacha20_poly1305.rs`) - 100% Complete
 - **Packet Encryption/Decryption** (`src/transport/packet.rs`) - 70% Complete
+- **ECDH & Curve25519** (`src/crypto/ecdh.rs`) - 100% Complete
+
+**ECDH & Curve25519 Implementation Details:**
+- ✅ **Curve25519** - Real implementation using `x25519-dalek`
+- ✅ **NIST P-256** - Real implementation using `k256`
+- ✅ **NIST P-384** - Real implementation using `p384`
+- ✅ **NIST P-521** - Real implementation using `p521`
+- ✅ All key generation and shared secret computation is functional
+- ✅ Tests verify implementations work correctly
 
 **Packet Layer Implementation Details:**
 - `Packet` struct with `serialize()` and `deserialize()` methods
@@ -111,10 +120,8 @@ The SSH client implementation is **SIGNIFICANTLY PROGRESSIVE** with cryptographi
 - MAC verification for CTR mode packets
 
 **Remaining Gaps:**
-- ⚠️ **AES-CTR** (RFC 4344) - Placeholder implementation exists
+- ❌ **AES-CTR** (RFC 4344) - NOT implemented
 - ❌ **AES-CBC** (RFC 4470, deprecated) - Not implemented
-- ❌ **ECDH NIST curves** - Placeholders exist, real implementation needed
-- ❌ **Curve25519** - Placeholder exists, real implementation needed
 - ❌ **ETM variants** - HMAC-SHA2-256-ETM@openssh.com missing
 - ⚠️ **Sequence number handling** - Implemented in Encryptor/Decryptor but not fully integrated
 
@@ -176,10 +183,10 @@ The SSH client implementation is **SIGNIFICANTLY PROGRESSIVE** with cryptographi
 ---
 
 ### ❌ RFC 4344: AES in SSH (Partially Implemented)
-**Status:** AES-CTR cipher not fully implemented
+**Status:** AES-CTR cipher not implemented
 
 **Remaining Gaps:**
-- ❌ **AES-CTR** - Placeholder implementation needs real AES-CTR
+- ❌ **AES-CTR** - NOT implemented
 
 ---
 
@@ -190,7 +197,7 @@ The SSH client implementation is **SIGNIFICANTLY PROGRESSIVE** with cryptographi
 - ✅ diffie-hellman-group14-sha256 (RFC 8731)
 - ✅ diffie-hellman-group14-sha384 (RFC 8731)
 - ✅ diffie-hellman-group14-sha512 (RFC 8731)
-- ✅ diffie-hellman-group-exchange-sha256 (RFC 4462)
+- ✅ diffie-hellman-group-exchange-sha256 (RFC 4253)
 - ⚠️ diffie-hellman-group16-sha512 - Uses group14 as placeholder
 - ⚠️ diffie-hellman-group18-sha512 - Uses group14 as placeholder
 
@@ -289,7 +296,7 @@ The SSH client implementation is **SIGNIFICANTLY PROGRESSIVE** with cryptographi
 | `version.rs` | ✅ Complete | 100% | Version exchange complete with tests |
 | `handshake.rs` | ⚠️ Partial | 40% | KEXINIT parsing, no actual KEX |
 | `state.rs` | ✅ Complete | 100% | State machine complete |
-| `kex.rs` | ✅ 90% | 90% | DH implemented, ECDH placeholders |
+| `kex.rs` | ✅ 95% | 95% | DH + ECDH + Curve25519 implemented |
 | `packet.rs` | ✅ 70% | 70% | Packet encryption/decryption implemented |
 | `encrypted.rs` | ⚠️ Partial | 20% | Stub implementation |
 | `cipher.rs` | ⚠️ Partial | 50% | AES-GCM implemented, no CTR |
@@ -302,7 +309,7 @@ The SSH client implementation is **SIGNIFICANTLY PROGRESSIVE** with cryptographi
 | `state.rs` | ✅ Complete | 100% | Auth state machine complete |
 | `methods.rs` | ✅ Complete | 100% | Method negotiation complete |
 | `mod.rs` | ✅ Complete | 100% | Authenticator framework complete |
-| `publickey.rs` | ✅ Complete | 100% | Full implementation with crypto integration |
+| `publickey.rs` | ✅ Complete | 100% | Full implementation (uses dummy sig) |
 | `password.rs` | ✅ Complete | 100% | Full implementation |
 
 ### Connection Layer (src/connection/)
@@ -336,6 +343,7 @@ The SSH client implementation is **SIGNIFICANTLY PROGRESSIVE** with cryptographi
 | `cipher.rs` | ⚠️ Partial | 50% | AES-GCM only (7 tests) |
 | `dh.rs` | ✅ Complete | 100% | DH fully implemented (7 tests) |
 | `chacha20_poly1305.rs` | ✅ Complete | 100% | ChaCha20-Poly1305 (7 tests) |
+| `ecdh.rs` | ✅ Complete | 100% | ECDH + Curve25519 fully implemented |
 
 ### Utils (src/utils/)
 | File | Status | Coverage | Notes |
@@ -355,48 +363,48 @@ The SSH client implementation is **SIGNIFICANTLY PROGRESSIVE** with cryptographi
 
 ### 🔴 CRITICAL - Blockers (Must Implement First)
 
-1. **ECDH & Curve25519 Real Implementation** - `src/transport/kex.rs` placeholders
-   - ECDH for NIST P-256/384/521 returns random bytes
-   - Curve25519 returns random bytes
-   - Modern servers prefer these algorithms
-
-2. **AES-CTR Support** - Required for backward compatibility
+1. **AES-CTR Support** - NOT IMPLEMENTED
    - Many servers still support AES-CTR
    - RFC 4344 requires AES-CTR
-   - Placeholder exists but needs real AES-CTR implementation
+   - Only AES-GCM and ChaCha20-Poly1305 are available
 
-3. **Authentication Crypto Integration** - Public key auth needs real signatures
-   - `PublicKeyAuthenticator` sends dummy signatures
-   - Need to wire up RSA/ECDSA/Ed25519 signing to auth flow
+2. **Authentication Crypto Integration** - Public key auth needs real signatures
+   - `PublicKeyAuthenticator` sends **dummy signatures**
+   - RSA/ECDSA/Ed25519 crypto exists but NOT wired to auth flow
+   - Need to wire up signature computation to auth flow
    - Signature computation needs session ID integration
 
 ### 🟡 HIGH - Major Features
 
-4. **Channel Data Transfer Integration** - Methods exist but not wired
+3. **Channel Data Transfer Integration** - Methods exist but not wired
    - `ChannelTransferManager.send_data()` exists
    - `Session.request_exec()` exists
    - Need to wire channel data to transport layer
    - Need to handle incoming channel data
 
-5. **Service Request Integration** - Basic implementation exists
+4. **Service Request Integration** - Basic implementation exists
    - `Transport.send_service_request()` implemented
    - `Transport.recv_service_accept()` implemented
    - Need to integrate into connection flow
 
 ### 🟢 MEDIUM - Nice to Have
 
-6. **Port Forwarding**
+5. **Port Forwarding**
    - TCP/IP forwarding
    - X11 forwarding implementation
    - Agent forwarding
 
-7. **Known Hosts Database**
+6. **Known Hosts Database**
    - Host key verification
    - known_hosts file parsing
 
-8. **CBC Mode Support**
+7. **CBC Mode Support**
    - AES-CBC for legacy server compatibility
    - Deprecated but still required
+
+8. **ETM Variants**
+   - HMAC-SHA2-256-ETM@openssh.com
+   - HMAC-SHA2-512-ETM@openssh.com
 
 ---
 
@@ -430,6 +438,7 @@ The SSH client implementation is **SIGNIFICANTLY PROGRESSIVE** with cryptographi
 | `keys/ed25519.rs` | 100% | 6 tests passing |
 | `session/mod.rs` | 100% | Well tested |
 | `transport/packet.rs` | 100% | 7 tests passing (encryption/decryption) |
+| `crypto/ecdh.rs` | ✅ Complete | ECDH + Curve25519 tested |
 | `auth/publickey.rs` | 0% | Implemented but not tested |
 | `auth/password.rs` | 0% | Implemented but not tested |
 | `channel/mod.rs` | 0% | ChannelTransferManager implemented but not tested |
@@ -447,13 +456,12 @@ The SSH client implementation is **SIGNIFICANTLY PROGRESSIVE** with cryptographi
    - Add signature encoding/decoding
    - Test with real SSH servers
 
-2. **ECDH & Curve25519 Implementation** (7 hours)
-   - Implement real ECDH for NIST P-256/384/521
-   - Implement Curve25519 with x25519-dalek
-   - Update KEX to use real shared secret computation
-   - Add tests with known test vectors
+2. **AES-CTR Implementation** (7 hours)
+   - Add AES-CTR cipher using aes/ctr crates
+   - Integrate into packet layer
+   - Add tests
 
-**Expected Outcome:** Functional authentication with modern key types
+**Expected Outcome:** Functional authentication with modern key types and better cipher compatibility
 
 ---
 
@@ -485,16 +493,11 @@ The SSH client implementation is **SIGNIFICANTLY PROGRESSIVE** with cryptographi
 ### Phase 3: Cipher & Protocol Completeness (Priority: MEDIUM)
 **Estimated Effort:** 15-20 hours
 
-1. **AES-CTR Implementation** (8 hours)
-   - Add AES-CTR cipher using aes crate
-   - Integrate into packet layer
-   - Add tests
-
-2. **CBC Mode Support** (5 hours)
+1. **CBC Mode Support** (8 hours)
    - AES-128-CBC and AES-256-CBC
    - For legacy server compatibility
 
-3. **ETM Variants** (2 hours)
+2. **ETM Variants** (5 hours)
    - HMAC-SHA2-256-ETM@openssh.com
    - HMAC-SHA2-512-ETM@openssh.com
 
@@ -528,6 +531,7 @@ The SSH client has **solid cryptographic foundations** with:
 - ✅ Complete state machines
 - ✅ Complete message type definitions
 - ✅ Excellent test coverage for crypto (DH, KDF, HMAC, AES-GCM, ChaCha20, RSA, ECDSA, Ed25519)
+- ✅ **ECDH & Curve25519 fully implemented** (NOT placeholders!)
 - ✅ **Packet encryption/decryption fully implemented** (Encryptor/Decryptor with multiple cipher support)
 - ✅ **Channel data transfer framework implemented** (ChannelTransferManager)
 - ✅ **Authentication framework fully implemented** (PublicKeyAuthenticator, PasswordAuthenticator)
@@ -536,7 +540,6 @@ The SSH client has **solid cryptographic foundations** with:
 - ✅ 533 passing tests (71.86% coverage)
 
 But is **missing integration work**:
-- ❌ ECDH & Curve25519 real implementations
 - ❌ AES-CTR cipher
 - ❌ Authentication crypto integration (RSA/ECDSA/Ed25519 signatures)
 - ❌ Channel data transfer integration with transport
