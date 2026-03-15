@@ -152,7 +152,7 @@ pub fn parse_server_kexinit(data: &[u8]) -> Result<protocol::AlgorithmProposal, 
         .map_err(|_| "Invalid comp_c2s UTF-8")?
         .to_string();
     
-    let comp_s2c_str = protocol::SshString::decode(&mut buf)
+    let _comp_s2c_str = protocol::SshString::decode(&mut buf)
         .map_err(|_| "Failed to decode comp_s2c")?
         .to_str()
         .map_err(|_| "Invalid comp_s2c UTF-8")?
@@ -177,7 +177,7 @@ pub fn parse_server_kexinit(data: &[u8]) -> Result<protocol::AlgorithmProposal, 
     buf.advance(1);
     
     // Parse initial kex algorithm
-    let initial_kex_str = protocol::SshString::decode(&mut buf)
+    let _initial_kex_str = protocol::SshString::decode(&mut buf)
         .map_err(|_| "Failed to decode initial_kex")?
         .to_str()
         .map_err(|_| "Invalid initial_kex UTF-8")?

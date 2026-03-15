@@ -1,6 +1,6 @@
 //! Connection module - SSH connection protocol and channel management
 
-use tracing::{debug, info, warn};
+use tracing::info;
 
 use crate::config::Config;
 use crate::error::SshError;
