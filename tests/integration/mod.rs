@@ -39,3 +39,4 @@ pub mod channel_transfer_tests;
 pub mod service_request_tests;
 pub mod known_hosts_tests;
 pub mod real_server_tests;
+pub mod e2e_tests;
