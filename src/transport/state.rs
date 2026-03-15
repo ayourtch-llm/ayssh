@@ -6,7 +6,7 @@
 //! - Established: Secure channel established, encrypted communication
 
 use crate::protocol::MessageType;
-use crate::errors::SshError;
+use crate::error::SshError;
 
 /// Transport session states as defined in RFC 4253
 #[derive(Debug, Clone, PartialEq, Eq, Copy)]

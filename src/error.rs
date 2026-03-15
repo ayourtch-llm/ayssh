@@ -10,6 +10,9 @@ pub enum SshError {
     #[error("Connection failed: {0}")]
     ConnectionFailed(String),
 
+    #[error("Connection error: {0}")]
+    ConnectionError(String),
+
     #[error("Authentication failed: {0}")]
     AuthenticationFailed(String),
 
@@ -19,8 +22,17 @@ pub enum SshError {
     #[error("Channel error: {0}")]
     ChannelError(String),
 
+    #[error("Session error: {0}")]
+    SessionError(String),
+
+    #[error("Crypto error: {0}")]
+    CryptoError(String),
+
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
+
+    #[error("Timeout error")]
+    TimeoutError,
 
     #[error("Unknown error: {0}")]
     Unknown(String),

@@ -12,3 +12,6 @@ pub use state::*;
 pub use publickey::*;
 pub use password::*;
 pub use methods::*;
+
+// Re-export AuthMethod from protocol for convenience
+pub use crate::protocol::AuthMethod;

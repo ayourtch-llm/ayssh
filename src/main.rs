@@ -4,6 +4,7 @@
 //! It provides a command-line interface for connecting to SSH servers.
 
 use ssh_client::{init_logging, NAME, VERSION};
+use tracing::{debug, info};
 
 fn print_usage() {
     println!("SSH Client v{}", VERSION);
@@ -77,14 +78,14 @@ async fn main() {
         std::process::exit(1);
     }
 
-    log::info!("SSH Client starting up");
-    log::info!("Version: {}", VERSION);
+    info!("SSH Client starting up");
+    info!("Version: {}", VERSION);
     
     if debug_mode {
-        log::debug!("Debug mode enabled");
+        debug!("Debug mode enabled");
     }
 
-    log::info!("SSH Client initialized successfully");
+    info!("SSH Client initialized successfully");
     println!("SSH Client v{} - initialized", VERSION);
     println!("Use --help for usage information");
 }
