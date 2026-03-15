@@ -3,6 +3,7 @@
 //! Handles the transport layer of SSH including key exchange,
 //! packet encryption, and session state management.
 
+use crate::protocol;
 use bytes::BufMut;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -99,6 +100,43 @@ impl Transport {
         self.stream.read_exact(&mut msg_buf).await?;
 
         Ok(msg_buf)
+    }
+
+    /// Send SERVICE_REQUEST message
+    pub async fn send_service_request(&mut self, service: &str) -> Result<(), crate::error::SshError> {
+        let mut msg = bytes::BytesMut::new();
+        msg.put_u8(protocol::MessageType::ServiceRequest as u8);
+        protocol::SshString::from_str(service).encode(&mut msg);
+        
+        self.send_message(&msg).await?;
+        Ok(())
+    }
+
+    /// Receive SERVICE_ACCEPT message
+    pub async fn recv_service_accept(&mut self) -> Result<String, crate::error::SshError> {
+        let mut msg = self.recv_message().await?;
+        
+        if msg.is_empty() {
+            return Err(crate::error::SshError::ProtocolError(
+                "Empty SERVICE_ACCEPT message".to_string()
+            ));
+        }
+        
+        let msg_type = msg[0];
+        if msg_type != protocol::MessageType::ServiceAccept as u8 {
+            return Err(crate::error::SshError::ProtocolError(
+                format!("Expected SERVICE_ACCEPT, got {}", msg_type)
+            ));
+        }
+        
+        // Decode service name
+        let service = protocol::SshString::decode(&mut msg.as_slice())
+            .map_err(|e| crate::error::SshError::ProtocolError(e.to_string()))?
+            .to_str()
+            .map_err(|e| crate::error::SshError::ProtocolError(e.to_string()))?
+            .to_string();
+        
+        Ok(service)
     }
 }
 
