@@ -4,6 +4,7 @@
 //! Handles client and server version string parsing and validation.
 
 use crate::error::SshError;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// SSH protocol version string with CRLF
 /// Format: SSH-2.0-software_version\r\n
@@ -11,6 +12,32 @@ pub const SSH_VERSION_STRING: &str = "SSH-2.0-ayssh_1.0.0\r\n";
 
 /// Maximum version string length (RFC 256 bytes)
 pub const MAX_VERSION_STRING_LENGTH: usize = 256;
+
+/// Send SSH version string to the remote peer
+pub async fn send_version<T: AsyncWriteExt + Unpin>(stream: &mut T) -> Result<(), SshError> {
+    let version_bytes = SSH_VERSION_STRING.as_bytes();
+    stream.write_all(version_bytes).await?;
+    Ok(())
+}
+
+/// Receive SSH version string from the remote peer
+pub async fn recv_version<T: AsyncReadExt + Unpin>(stream: &mut T) -> Result<String, SshError> {
+    let mut buf = vec![0u8; MAX_VERSION_STRING_LENGTH];
+    let n = stream.read(&mut buf).await?;
+    
+    if n == 0 {
+        return Err(SshError::ProtocolError("Empty version string".to_string()));
+    }
+    
+    // Find CRLF
+    let end = buf[..n].iter().rposition(|&b| b == b'\n')
+        .ok_or(SshError::ProtocolError("No CRLF in version string".to_string()))?;
+    
+    let version = std::str::from_utf8(&buf[..end])
+        .map_err(|_| SshError::ProtocolError("Invalid UTF-8 in version string".to_string()))?;
+    
+    Ok(version.to_string())
+}
 
 /// Parse and validate SSH version string
 ///

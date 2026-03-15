@@ -76,7 +76,7 @@ pub struct Authenticator<'a> {
     /// Private key (for public key auth)
     private_key: Option<Vec<u8>>,
     /// List of available authentication methods
-    available_methods: HashSet<String>,
+    pub available_methods: HashSet<String>,
     /// Keyboard-interactive responses handler
     keyboard_interactive_handler: Option<Box<dyn Fn(&keyboard::Challenge) -> Result<Vec<String>, SshError> + Send>>,
 }

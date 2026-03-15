@@ -153,6 +153,21 @@ impl Transport {
         Ok(service)
     }
 
+    /// Transition to encrypted state after key exchange
+    pub fn transition_to_encrypted(
+        &mut self,
+        session_id: &[u8],
+        negotiated: &protocol::NegotiatedAlgorithms,
+    ) -> Result<(), crate::error::SshError> {
+        // Update handshake state
+        self.handshake.negotiated = Some(negotiated.clone());
+        
+        // Transition state machine to established
+        self.state.transition_to_established();
+        
+        Ok(())
+    }
+
     /// Send channel data message
     pub async fn send_channel_data(
         &mut self,

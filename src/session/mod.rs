@@ -254,6 +254,49 @@ impl Session {
         }
     }
 
+    /// Open a new session channel
+    pub async fn open(transport: &mut crate::transport::Transport) -> Result<Self, crate::error::SshError> {
+        use crate::channel::types::ChannelId;
+        use crate::protocol::messages::MessageType;
+
+        // Open session channel
+        let mut msg = bytes::BytesMut::new();
+        msg.put_u8(MessageType::ChannelOpen as u8);
+        msg.put_u32(0); // recipient channel (0 for server)
+        msg.put_u32(1024); // initial window size
+        msg.put_u32(32768); // maximum packet size
+        msg.put_u32(0); // channel type length
+        msg.put_slice(b"session");
+        msg.put_u32(0); // extra data length
+
+        transport.send_message(&msg).await?;
+
+        // Receive confirmation
+        let response = transport.recv_message().await?;
+        let msg_type = response[0];
+
+        if msg_type != MessageType::ChannelOpenConfirmation as u8 {
+            return Err(crate::error::SshError::ProtocolError(
+                format!("Expected ChannelOpenConfirmation, got {}", msg_type)
+            ));
+        }
+
+        // Parse channel ID
+        let mut buf = &response[1..];
+        let local_id = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]);
+        let _recipient_id = u32::from_be_bytes([buf[4], buf[5], buf[6], buf[7]]);
+        let _window_size = u32::from_be_bytes([buf[8], buf[9], buf[10], buf[11]]);
+        let _max_packet = u32::from_be_bytes([buf[12], buf[13], buf[14], buf[15]]);
+
+        // Create channel and session
+        let channel = Channel::new_session(
+            ChannelId::new(local_id),
+            ChannelId::new(0),
+        );
+
+        Ok(Session::new(channel))
+    }
+
     /// Get the channel ID
     pub fn channel_id(&self) -> u32 {
         self.channel_id
