@@ -3,6 +3,7 @@
 //! Handles the transport layer of SSH including key exchange,
 //! packet encryption, and session state management.
 
+use crate::channel::ChannelTransferManager;
 use crate::protocol;
 use bytes::BufMut;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -39,6 +40,8 @@ pub struct Transport {
     state: state::TransportStateMachine,
     /// Handshake state
     handshake: handshake::HandshakeState,
+    /// Channel transfer manager for managing channels
+    channel_manager: ChannelTransferManager,
 }
 
 impl Transport {
@@ -48,6 +51,7 @@ impl Transport {
             stream,
             state: state::TransportStateMachine::new(),
             handshake: handshake::HandshakeState::default(),
+            channel_manager: ChannelTransferManager::new(),
         }
     }
 
@@ -69,6 +73,16 @@ impl Transport {
     /// Get the handshake state
     pub fn handshake_state(&self) -> &handshake::HandshakeState {
         &self.handshake
+    }
+
+    /// Get the channel manager
+    pub fn channel_manager(&self) -> &ChannelTransferManager {
+        &self.channel_manager
+    }
+
+    /// Get mutable reference to channel manager
+    pub fn channel_manager_mut(&mut self) -> &mut ChannelTransferManager {
+        &mut self.channel_manager
     }
 
     /// Send raw bytes over the transport
@@ -138,6 +152,76 @@ impl Transport {
         
         Ok(service)
     }
+
+    /// Send channel data message
+    pub async fn send_channel_data(
+        &mut self,
+        channel_id: u32,
+        data: &[u8],
+    ) -> Result<(), crate::error::SshError> {
+        let mut msg = bytes::BytesMut::new();
+        msg.put_u8(protocol::MessageType::ChannelData as u8);
+        msg.put_u32(channel_id);
+        msg.put_u32(data.len() as u32);
+        msg.put_slice(data);
+        
+        self.send_message(&msg).await
+    }
+
+    /// Send channel EOF message
+    pub async fn send_channel_eof(&mut self, channel_id: u32) -> Result<(), crate::error::SshError> {
+        let mut msg = bytes::BytesMut::new();
+        msg.put_u8(protocol::MessageType::ChannelEof as u8);
+        msg.put_u32(channel_id);
+        
+        self.send_message(&msg).await
+    }
+
+    /// Send channel close message
+    pub async fn send_channel_close(&mut self, channel_id: u32) -> Result<(), crate::error::SshError> {
+        let mut msg = bytes::BytesMut::new();
+        msg.put_u8(protocol::MessageType::ChannelClose as u8);
+        msg.put_u32(channel_id);
+        
+        self.send_message(&msg).await
+    }
+
+    /// Send channel request message
+    pub async fn send_channel_request(
+        &mut self,
+        channel_id: u32,
+        request_type: &str,
+        want_reply: bool,
+    ) -> Result<(), crate::error::SshError> {
+        let mut msg = bytes::BytesMut::new();
+        msg.put_u8(protocol::MessageType::ChannelRequest as u8);
+        msg.put_u32(channel_id);
+        msg.put_u32(request_type.len() as u32);
+        msg.put_slice(request_type.as_bytes());
+        msg.put_u8(if want_reply { 1 } else { 0 });
+        
+        self.send_message(&msg).await
+    }
+
+    /// Send channel request with string data
+    pub async fn send_channel_request_string(
+        &mut self,
+        channel_id: u32,
+        request_type: &str,
+        want_reply: bool,
+        data: &str,
+    ) -> Result<(), crate::error::SshError> {
+        let mut msg = bytes::BytesMut::new();
+        msg.put_u8(protocol::MessageType::ChannelRequest as u8);
+        msg.put_u32(channel_id);
+        msg.put_u32(request_type.len() as u32);
+        msg.put_slice(request_type.as_bytes());
+        msg.put_u8(if want_reply { 1 } else { 0 });
+        msg.put_u32(data.len() as u32);
+        msg.put_slice(data.as_bytes());
+        
+        self.send_message(&msg).await
+    }
 }
 
 #[cfg(test)]
@@ -150,5 +234,17 @@ mod tests {
         // This test would require a real TCP connection or mock
         // For now, just verify the API exists
         assert!(true);
+    }
+
+    #[tokio::test]
+    async fn test_transport_channel_methods_exist() {
+        // Verify that channel methods exist on Transport
+        // This is a compile-time check
+        let _ = Transport::new;
+        let _ = Transport::send_channel_data;
+        let _ = Transport::send_channel_eof;
+        let _ = Transport::send_channel_close;
+        let _ = Transport::send_channel_request;
+        let _ = Transport::send_channel_request_string;
     }
 }

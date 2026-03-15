@@ -19,6 +19,8 @@ pub enum ConnectionState {
     KeyExchange,
     /// Authenticating user
     Authentication,
+    /// Negotiating connection service (ssh-connection)
+    ServiceNegotiation,
     /// Connection established and ready for use
     Established,
     /// Connection closed or error
@@ -34,6 +36,7 @@ impl fmt::Display for ConnectionState {
             ConnectionState::AlgorithmNegotiation => write!(f, "ALGORITHM_NEGOTIATION"),
             ConnectionState::KeyExchange => write!(f, "KEY_EXCHANGE"),
             ConnectionState::Authentication => write!(f, "AUTHENTICATION"),
+            ConnectionState::ServiceNegotiation => write!(f, "SERVICE_NEGOTIATION"),
             ConnectionState::Established => write!(f, "ESTABLISHED"),
             ConnectionState::Closed => write!(f, "CLOSED"),
         }
@@ -46,6 +49,10 @@ pub struct ConnectionStateMachine {
     server_version: Option<String>,
     client_version: String,
     algorithms: Option<crate::protocol::algorithms::NegotiatedAlgorithms>,
+    /// Whether ssh-connection service has been requested
+    service_requested: bool,
+    /// Whether ssh-connection service has been accepted
+    service_accepted: bool,
 }
 
 impl Default for ConnectionStateMachine {
@@ -55,6 +62,8 @@ impl Default for ConnectionStateMachine {
             server_version: None,
             client_version: "SSH-2.0-rustssh".to_string(),
             algorithms: None,
+            service_requested: false,
+            service_accepted: false,
         }
     }
 }
@@ -145,11 +154,47 @@ impl ConnectionStateMachine {
         Ok(())
     }
 
-    /// Transition to Established state
-    pub fn transition_to_established(&mut self) -> Result<(), crate::error::SshError> {
+    /// Transition to ServiceNegotiation state (after authentication)
+    pub fn transition_to_service_negotiation(&mut self) -> Result<(), crate::error::SshError> {
         if self.current_state != ConnectionState::Authentication {
             return Err(crate::error::SshError::ProtocolError(
+                "Cannot transition to ServiceNegotiation from current state".to_string(),
+            ));
+        }
+        self.current_state = ConnectionState::ServiceNegotiation;
+        Ok(())
+    }
+
+    /// Mark service as requested
+    pub fn mark_service_requested(&mut self) {
+        self.service_requested = true;
+    }
+
+    /// Mark service as accepted
+    pub fn mark_service_accepted(&mut self) {
+        self.service_accepted = true;
+    }
+
+    /// Check if service has been requested
+    pub fn service_requested(&self) -> bool {
+        self.service_requested
+    }
+
+    /// Check if service has been accepted
+    pub fn service_accepted(&self) -> bool {
+        self.service_accepted
+    }
+
+    /// Transition to Established state (after service negotiation)
+    pub fn transition_to_established(&mut self) -> Result<(), crate::error::SshError> {
+        if self.current_state != ConnectionState::ServiceNegotiation {
+            return Err(crate::error::SshError::ProtocolError(
                 "Cannot transition to Established from current state".to_string(),
+            ));
+        }
+        if !self.service_requested || !self.service_accepted {
+            return Err(crate::error::SshError::ProtocolError(
+                "Service must be requested and accepted before transition to Established".to_string(),
             ));
         }
         self.current_state = ConnectionState::Established;
@@ -206,7 +251,15 @@ mod tests {
         assert!(machine.transition_to_authentication().is_ok());
         assert_eq!(machine.current_state(), ConnectionState::Authentication);
         
-        // Authentication -> Established
+        // Authentication -> ServiceNegotiation
+        assert!(machine.transition_to_service_negotiation().is_ok());
+        assert_eq!(machine.current_state(), ConnectionState::ServiceNegotiation);
+        
+        // Mark service as requested and accepted
+        machine.mark_service_requested();
+        machine.mark_service_accepted();
+        
+        // ServiceNegotiation -> Established
         assert!(machine.transition_to_established().is_ok());
         assert_eq!(machine.current_state(), ConnectionState::Established);
     }
@@ -217,6 +270,25 @@ mod tests {
         
         // Try to go from Disconnected to VersionExchange (should fail)
         assert!(machine.transition_to_version_exchange().is_err());
+    }
+
+    #[test]
+    fn test_service_negotiation_required() {
+        let mut machine = ConnectionStateMachine::new();
+        machine.transition_to_connected().unwrap();
+        machine.transition_to_version_exchange().unwrap();
+        machine.transition_to_algorithm_negotiation().unwrap();
+        machine.transition_to_key_exchange().unwrap();
+        machine.transition_to_authentication().unwrap();
+        machine.transition_to_service_negotiation().unwrap();
+        
+        // Try to go to Established without marking service as requested/accepted (should fail)
+        assert!(machine.transition_to_established().is_err());
+        
+        // Mark service and try again (should succeed)
+        machine.mark_service_requested();
+        machine.mark_service_accepted();
+        assert!(machine.transition_to_established().is_ok());
     }
 
     #[test]

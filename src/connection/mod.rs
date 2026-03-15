@@ -4,21 +4,18 @@ use tracing::info;
 
 use crate::config::Config;
 use crate::error::SshError;
+use crate::session::SessionManager;
 use tokio::net::TcpStream;
 
 // Connection state machine
 pub mod state;
 
-// Note: These modules will be implemented in later tasks
-// pub mod channels;
-// pub mod session;
-// pub mod exec;
-// pub mod forward;
-
 /// Represents an established SSH connection
 pub struct Connection {
     /// The underlying transport layer
     transport: Option<Transport>,
+    /// Session manager for handling session channels
+    session_manager: SessionManager,
     /// Connection configuration
     config: Config,
     /// Whether the connection is established
@@ -34,6 +31,7 @@ impl Connection {
     pub fn new(config: Config) -> Self {
         Self {
             transport: None,
+            session_manager: SessionManager::new(),
             config,
             is_connected: false,
         }
@@ -53,7 +51,7 @@ impl Connection {
         Ok(())
     }
 
-    /// Resolves the hostname to an IP address
+    /// Resolve the hostname to an IP address
     async fn resolve_address(&self) -> Result<std::net::SocketAddr, SshError> {
         use tokio::net::lookup_host;
         
@@ -93,6 +91,46 @@ impl Connection {
     /// Returns a reference to the configuration
     pub fn config(&self) -> &Config {
         &self.config
+    }
+
+    /// Get mutable reference to transport
+    pub fn transport_mut(&mut self) -> Option<&mut Transport> {
+        self.transport.as_mut()
+    }
+
+    /// Get reference to session manager
+    pub fn session_manager(&self) -> &SessionManager {
+        &self.session_manager
+    }
+
+    /// Get mutable reference to session manager
+    pub fn session_manager_mut(&mut self) -> &mut SessionManager {
+        &mut self.session_manager
+    }
+
+    /// Create a new session channel
+    pub fn create_session_channel(&mut self, originator_address: &str, originator_port: u16) -> u32 {
+        self.session_manager.create_session(originator_address, originator_port)
+    }
+
+    /// Get session by ID
+    pub fn get_session(&self, channel_id: u32) -> Option<&crate::session::Session> {
+        self.session_manager.get_session(channel_id)
+    }
+
+    /// Get mutable session by ID
+    pub fn get_session_mut(&mut self, channel_id: u32) -> Option<&mut crate::session::Session> {
+        self.session_manager.get_session_mut(channel_id)
+    }
+
+    /// List all active sessions
+    pub fn list_sessions(&self) -> Vec<u32> {
+        self.session_manager.list_sessions()
+    }
+
+    /// Get session count
+    pub fn session_count(&self) -> usize {
+        self.session_manager.session_count()
     }
 }
 

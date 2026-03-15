@@ -194,10 +194,15 @@ impl PublicKeyAuthenticator {
                 (b"nistp384", encoded_point.as_bytes().to_vec())
             }
             crate::auth::key::EcdsaCurve::Nistp521 => {
-                // P-521 is not yet fully supported - return an error
-                return Err(SshError::CryptoError(
-                    "ECDSA P-521 curve not yet supported in authentication".to_string()
-                ));
+                use p521::elliptic_curve::sec1::ToEncodedPoint;
+                use p521::ecdsa::SigningKey;
+                
+                // For P-521, the scalar is 66 bytes
+                let signing_key = SigningKey::from_slice(scalar)
+                    .map_err(|_| SshError::CryptoError("Invalid ECDSA P-521 key".into()))?;
+                let public_key = p521::ecdsa::VerifyingKey::from(&signing_key);
+                let encoded_point = public_key.to_encoded_point(false);
+                (b"nistp521", encoded_point.as_bytes().to_vec())
             }
         };
         

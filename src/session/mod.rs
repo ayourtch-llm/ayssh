@@ -453,9 +453,18 @@ impl Session {
         self.exit_status = Some(status);
     }
 
-    /// Handle incoming channel data
+    /// Handle incoming channel data (stdout)
     pub fn handle_channel_data(&mut self, data: &[u8]) -> Option<Vec<u8>> {
-        None
+        // For now, just return the data to be displayed
+        // In a full implementation, this would send to stdout
+        Some(data.to_vec())
+    }
+
+    /// Handle incoming extended data (stderr)
+    pub fn handle_extended_data(&mut self, data: &[u8]) -> Option<Vec<u8>> {
+        // For now, just return the data to be displayed
+        // In a full implementation, this would send to stderr
+        Some(data.to_vec())
     }
 
     /// Handle incoming channel EOF
