@@ -31,3 +31,4 @@ pub mod connection_state_tests;
 pub mod channel_state_tests;
 pub mod key_format_tests;
 pub mod rsa_key_tests;
+pub mod cli_tests;
