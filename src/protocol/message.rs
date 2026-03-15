@@ -228,6 +228,13 @@ impl From<BytesMut> for Message {
     }
 }
 
+impl Message {
+    /// Create a message from raw bytes
+    pub fn from_bytes(data: Vec<u8>) -> Self {
+        Self { data: BytesMut::from(data.as_slice()) }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,7 +1,8 @@
 //! Session Management Integration Tests (RFC 4254)
 
-use ssh_client::session::Session;
+use ssh_client::session::{Session, WindowDimensions, TerminalModes, TerminalMode, ReadUint32};
 use ssh_client::channel::types::{Channel, ChannelId, ChannelType};
+use ssh_client::protocol::messages::MessageType;
 
 #[test]
 fn test_window_dimensions_creation() {
@@ -27,7 +28,7 @@ fn test_window_dimensions_creation() {
 
 #[test]
 fn test_window_dimensions_encode() {
-    let dims = ssh_client::session::WindowDimensions::new(120, 40);
+    let dims = WindowDimensions::new(120, 40);
     let msg = dims.encode();
 
     // Verify encoding
@@ -39,14 +40,14 @@ fn test_window_dimensions_encode() {
 
 #[test]
 fn test_terminal_modes_default() {
-    let modes = ssh_client::session::TerminalModes::default();
+    let modes = TerminalModes::default();
     assert_eq!(modes.modes.len(), 37);
     assert!(modes.modes.iter().all(|&m| m == 0));
 }
 
 #[test]
 fn test_terminal_modes_raw() {
-    let modes = ssh_client::session::TerminalModes::raw();
+    let modes = TerminalModes::raw();
     assert_eq!(modes.modes.len(), 37);
     // RAW flag is at index 2
     assert_eq!(modes.modes[2], 1);
@@ -54,7 +55,7 @@ fn test_terminal_modes_raw() {
 
 #[test]
 fn test_terminal_mode_struct() {
-    let mode = ssh_client::session::TerminalMode {
+    let mode = TerminalMode {
         term: 0,
         echo: 0,
         raw: 1,
@@ -119,7 +120,7 @@ fn test_session_request_pty() {
     let msg = session.request_pty("xterm-256color", dims, modes);
 
     // Verify message type
-    assert_eq!(msg.msg_type(), Some(ssh_client::protocol::messages::MessageType::ChannelRequest));
+    assert_eq!(msg.msg_type(), Some(MessageType::ChannelRequest));
 
     // Verify request name
     let offset = 1 + 4; // Skip msg type and channel id
@@ -141,7 +142,7 @@ fn test_session_request_shell() {
     let msg = session.request_shell();
 
     // Verify message type
-    assert_eq!(msg.msg_type(), Some(ssh_client::protocol::messages::MessageType::ChannelRequest));
+    assert_eq!(msg.msg_type(), Some(MessageType::ChannelRequest));
 
     // Verify request name
     let offset = 1 + 4; // Skip msg type and channel id
@@ -163,7 +164,7 @@ fn test_session_request_exec() {
     let msg = session.request_exec("ls -la");
 
     // Verify message type
-    assert_eq!(msg.msg_type(), Some(ssh_client::protocol::messages::MessageType::ChannelRequest));
+    assert_eq!(msg.msg_type(), Some(MessageType::ChannelRequest));
 
     // Message structure:
     // byte: message type (1)
@@ -192,7 +193,7 @@ fn test_session_request_subsystem() {
     let msg = session.request_subsystem("sftp");
 
     // Verify message type
-    assert_eq!(msg.msg_type(), Some(ssh_client::protocol::messages::MessageType::ChannelRequest));
+    assert_eq!(msg.msg_type(), Some(MessageType::ChannelRequest));
 
     // Message structure:
     // byte: message type (1)
@@ -221,7 +222,7 @@ fn test_session_request_x11() {
     let msg = session.request_x11(false, "X11-AUTH-METHOD-1", "00:11:22:33:44:55", 0);
 
     // Verify message type
-    assert_eq!(msg.msg_type(), Some(ssh_client::protocol::messages::MessageType::ChannelRequest));
+    assert_eq!(msg.msg_type(), Some(MessageType::ChannelRequest));
 
     // Verify request name
     let offset = 1 + 4; // Skip msg type and channel id
@@ -243,7 +244,7 @@ fn test_session_request_env() {
     let msg = session.request_env("PATH", "/usr/bin:/bin");
 
     // Verify message type
-    assert_eq!(msg.msg_type(), Some(ssh_client::protocol::messages::MessageType::ChannelRequest));
+    assert_eq!(msg.msg_type(), Some(MessageType::ChannelRequest));
 
     // Message structure:
     // byte: message type (1)
@@ -278,7 +279,7 @@ fn test_session_send_signal() {
     let msg = session.send_signal("SIGINT");
 
     // Verify message type
-    assert_eq!(msg.msg_type(), Some(ssh_client::protocol::messages::MessageType::ChannelRequest));
+    assert_eq!(msg.msg_type(), Some(MessageType::ChannelRequest));
 
     // Verify request name - offset after channel_id (4 bytes)
     let request_offset = 1 + 4; // Skip msg type and channel id
@@ -307,7 +308,7 @@ fn test_session_notify_window_change() {
     let msg = session.notify_window_change(dims);
 
     // Verify message type
-    assert_eq!(msg.msg_type(), Some(ssh_client::protocol::messages::MessageType::ChannelRequest));
+    assert_eq!(msg.msg_type(), Some(MessageType::ChannelRequest));
 
     // Verify request name
     let offset = 1 + 4; // Skip msg type and channel id
@@ -334,7 +335,7 @@ fn test_session_send_exit_status() {
     let msg = session.send_exit_status(0);
 
     // Verify message type
-    assert_eq!(msg.msg_type(), Some(ssh_client::protocol::messages::MessageType::ChannelRequest));
+    assert_eq!(msg.msg_type(), Some(MessageType::ChannelRequest));
 
     // Verify request name
     let offset = 1 + 4; // Skip msg type and channel id
@@ -360,7 +361,7 @@ fn test_session_send_keepalive() {
     let msg = session.send_keepalive(false);
 
     // Verify message type
-    assert_eq!(msg.msg_type(), Some(ssh_client::protocol::messages::MessageType::ChannelRequest));
+    assert_eq!(msg.msg_type(), Some(MessageType::ChannelRequest));
 
     // Verify request name
     let offset = 1 + 4; // Skip msg type and channel id
@@ -386,7 +387,7 @@ fn test_session_methods() {
 
     // Test set_dimensions
     let dims = WindowDimensions::new(120, 40);
-    session.set_dimensions(dims);
+    session.set_dimensions(dims.clone());
     assert_eq!(session.dimensions, dims);
 
     // Test set_terminal_modes
@@ -397,7 +398,7 @@ fn test_session_methods() {
     // Test add_environment
     session.add_environment("PATH", "/usr/bin");
     assert_eq!(session.environment.len(), 1);
-    assert_eq!(session.environment[0], ("PATH".to_string(), "/usr/bin".to_string()));
+    assert_eq!(session.environment.get("PATH"), Some(&"/usr/bin".to_string()));
 
     // Test set_exit_status
     session.set_exit_status(0);
@@ -419,7 +420,9 @@ fn test_session_request_encode_all() {
     let modes = TerminalModes::default();
 
     // Test all request types encode correctly
-    let _pty_msg = session.request_pty("xterm", dims, modes);
+    let dims = WindowDimensions::new(80, 24);
+    let modes = TerminalModes::default();
+    let _pty_msg = session.request_pty("xterm", dims.clone(), modes);
     let _shell_msg = session.request_shell();
     let _exec_msg = session.request_exec("ls");
     let _subsystem_msg = session.request_subsystem("sftp");

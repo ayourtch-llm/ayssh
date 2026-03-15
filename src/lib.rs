@@ -34,11 +34,18 @@ pub mod utils;
 pub use auth::AuthMethod;
 pub use auth::AuthMethodManager;
 pub use channel::Channel;
+pub use channel::ChannelId;
+pub use channel::ChannelType;
 pub use config::Config;
 pub use connection::Connection;
 pub use error::SshError;
 pub use protocol::{AuthMethod as ProtocolAuthMethod, MessageType};
 pub use session::Session;
+pub use session::SessionManager;
+pub use session::WindowDimensions;
+pub use session::TerminalModes;
+pub use session::TerminalMode;
+pub use session::SessionState;
 pub use transport::Transport;
 
 /// Version information for the SSH client
