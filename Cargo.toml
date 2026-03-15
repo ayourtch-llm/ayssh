@@ -50,6 +50,9 @@ tokio-test = "0.4"
 # Temp files for key testing
 tempfile = "3.9"
 
+# Random port generation
+rand = "0.8"
+
 [lib]
 name = "ssh_client"
 path = "src/lib.rs"
