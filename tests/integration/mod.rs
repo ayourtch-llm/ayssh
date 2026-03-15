@@ -19,3 +19,4 @@ pub mod connection_tests;
 pub mod password_auth_tests;
 pub mod channel_tests;
 pub mod session_tests;
+pub mod auth_method_tests;
