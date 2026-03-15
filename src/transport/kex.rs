@@ -4,8 +4,11 @@
 //! Supports:
 //! - diffie-hellman-group14-sha256 (RFC 8731)
 //! - diffie-hellman-group-exchange-sha256 (RFC 4253)
+//! - curve25519-sha256 (RFC 8731)
+//! - ecdh-sha2-nistp256/384/521 (RFC 5656)
 
 use crate::crypto::dh::{DhGroup, Mpint};
+use crate::crypto::ecdh::{CurveType, EcdhKeyPair};
 use crate::crypto::kdf;
 use crate::protocol;
 use bytes::{Buf, BufMut, BytesMut};
@@ -25,6 +28,10 @@ pub struct KexContext {
     client_private: Option<num_bigint::BigUint>,
     /// Server's public key (for DH)
     server_public: Option<num_bigint::BigUint>,
+    /// Client's ECDH key pair (for ECDH algorithms)
+    client_ecdh_keypair: Option<EcdhKeyPair>,
+    /// Server's ECDH public key
+    server_ecdh_public: Option<Vec<u8>>,
     /// Shared secret (if computed)
     pub shared_secret: Option<Vec<u8>>,
     /// Session ID (if computed)
@@ -40,8 +47,21 @@ impl KexContext {
             server_ephemeral: None,
             client_private: None,
             server_public: None,
+            client_ecdh_keypair: None,
+            server_ecdh_public: None,
             shared_secret: None,
             session_id: None,
+        }
+    }
+
+    /// Determine the curve type for an ECDH algorithm
+    fn get_curve_type(&self) -> Option<CurveType> {
+        match self.algorithm {
+            protocol::KexAlgorithm::Curve25519Sha256 => Some(CurveType::Curve25519),
+            protocol::KexAlgorithm::EcdhSha2Nistp256 => Some(CurveType::Nistp256),
+            protocol::KexAlgorithm::EcdhSha2Nistp384 => Some(CurveType::Nistp384),
+            protocol::KexAlgorithm::EcdhSha2Nistp521 => Some(CurveType::Nistp521),
+            _ => None,
         }
     }
 
@@ -66,22 +86,34 @@ impl KexContext {
             protocol::KexAlgorithm::EcdhSha2Nistp384 |
             protocol::KexAlgorithm::EcdhSha2Nistp521 |
             protocol::KexAlgorithm::Curve25519Sha256 => {
-                // For ECDH/curve25519, generate random bytes (placeholder)
-                let mut public_bytes = vec![0u8; 32];
-                rng.fill_bytes(&mut public_bytes);
-                
-                self.client_ephemeral = Some(public_bytes);
-                Ok(())
+                // Generate real ECDH key pair
+                if let Some(curve) = self.get_curve_type() {
+                    let keypair = EcdhKeyPair::generate(curve, rng);
+                    self.client_ecdh_keypair = Some(keypair.clone());
+                    self.client_ephemeral = Some(keypair.encode_public_key());
+                    Ok(())
+                } else {
+                    Err(anyhow::anyhow!("Unknown ECDH algorithm"))
+                }
             }
         }
     }
 
     /// Process server's key exchange message
     pub fn process_server_kex_init(&mut self, server_ephemeral: &[u8]) -> anyhow::Result<()> {
-        // Decode server's ephemeral key from MPINT
-        let server_public = Mpint::decode(server_ephemeral)?;
-        self.server_public = Some(server_public);
-        self.server_ephemeral = Some(server_ephemeral.to_vec());
+        // Check if this is an ECDH algorithm
+        if let Some(curve) = self.get_curve_type() {
+            // For ECDH, server_ephemeral is the encoded public key
+            let decoded = EcdhKeyPair::decode_public_key(curve, server_ephemeral)
+                .map_err(|e| anyhow::anyhow!("{}", e))?;
+            self.server_ecdh_public = Some(decoded);
+            self.server_ephemeral = Some(server_ephemeral.to_vec());
+        } else {
+            // For DH, decode from MPINT
+            let server_public = Mpint::decode(server_ephemeral)?;
+            self.server_public = Some(server_public);
+            self.server_ephemeral = Some(server_ephemeral.to_vec());
+        }
         Ok(())
     }
 
@@ -109,20 +141,14 @@ impl KexContext {
             protocol::KexAlgorithm::EcdhSha2Nistp256 |
             protocol::KexAlgorithm::EcdhSha2Nistp384 |
             protocol::KexAlgorithm::EcdhSha2Nistp521 => {
-                // For ECDH/curve25519, compute shared secret using elliptic curve multiplication
-                // This would require a proper elliptic curve implementation
-                // Placeholder: derive from ephemeral keys
-                if let (Some(ref client_eph), Some(ref server_eph)) = 
-                    (&self.client_ephemeral, &self.server_ephemeral) {
-                    // Simple placeholder: hash the concatenation
-                    use sha2::Sha256;
-                    let mut hasher = Sha256::new();
-                    hasher.update(client_eph);
-                    hasher.update(server_eph);
-                    self.shared_secret = Some(hasher.finalize().to_vec());
+                // For ECDH, compute shared secret using elliptic curve multiplication
+                if let (Some(ref keypair), Some(ref server_pub)) = 
+                    (&self.client_ecdh_keypair, &self.server_ecdh_public) {
+                    let shared = keypair.compute_shared_secret(server_pub);
+                    self.shared_secret = Some(shared);
                     Ok(())
                 } else {
-                    Err(anyhow::anyhow!("Missing ephemeral keys for ECDH"))
+                    Err(anyhow::anyhow!("Missing ECDH keypair or server public key"))
                 }
             }
         }
