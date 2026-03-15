@@ -1,12 +1,9 @@
 //! Basic integration test skeleton.
 
-use ssh_client;
-
 /// Example integration test using TestServer
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::helpers::TestServer;
+    use super::super::helpers::TestServer;
 
     #[test]
     fn test_server_basic() {

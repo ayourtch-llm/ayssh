@@ -381,11 +381,12 @@ impl Session {
 
     /// Notify window change
     pub fn notify_window_change(&self, dims: WindowDimensions) -> Message {
-        let mut buf = BytesMut::with_capacity(1 + 4 + 11 + 1 + 4 + 4 + 4 + 4);
+        let request_name = b"window-change";
+        let mut buf = BytesMut::with_capacity(1 + 4 + 4 + request_name.len() + 1 + 4 + 4 + 4 + 4);
         buf.put_u8(MessageType::ChannelRequest.value());
         buf.put_u32(self.channel_id);
-        buf.put_u32(11); // "window-change\0".len()
-        buf.put_slice(b"window-change\0");
+        buf.put_u32(request_name.len() as u32);
+        buf.put_slice(request_name);
         buf.put_u8(0); // want_reply = false
         buf.put_u32(dims.width_chars);
         buf.put_u32(dims.height_chars);

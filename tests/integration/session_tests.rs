@@ -311,7 +311,7 @@ fn test_session_notify_window_change() {
     assert_eq!(msg.msg_type(), Some(MessageType::ChannelRequest));
 
     // Verify request name
-    let offset = 1 + 4; // Skip msg type and channel id
+    let offset = 1 + 4 + 4; // Skip msg type, channel id, and request name length
     let request_name = msg.read_string_slice(offset).unwrap();
     assert_eq!(request_name, "window-change");
 

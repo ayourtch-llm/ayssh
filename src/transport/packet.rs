@@ -63,6 +63,9 @@ impl Packet {
         // Write padding length (4 bytes, big-endian)
         result.extend_from_slice(&(self.padding_length as u32).to_be_bytes());
         
+        // Write message type
+        result.push(self.msg_type);
+        
         // Write payload
         result.extend_from_slice(&self.payload);
         
@@ -104,8 +107,8 @@ impl Packet {
         Ok(Packet {
             length,
             padding_length,
-            payload: data[payload_start..payload_end].to_vec(),
-            msg_type: if length > 0 { data[payload_start] } else { 0 },
+            payload: data[payload_start + 1..payload_end].to_vec(),
+            msg_type: data[payload_start],
         })
     }
 
@@ -118,6 +121,9 @@ impl Packet {
         
         // Write padding length (4 bytes, big-endian)
         result.extend_from_slice(&(self.padding_length as u32).to_be_bytes());
+        
+        // Write message type
+        result.push(self.msg_type);
         
         // Write payload
         result.extend_from_slice(&self.payload);
