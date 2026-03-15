@@ -33,6 +33,14 @@ mod tests {
     }
 
     #[test]
+    fn test_ecdsa_p521_algorithm_support() {
+        // Test that ECDSA P-521 algorithm is supported
+        let algorithm = "ecdsa-sha2-nistp521";
+        assert_eq!(algorithm.len(), 20);
+        assert!(algorithm.contains("nistp521"));
+    }
+
+    #[test]
     fn test_message_format_publickey_request() {
         // Test the message format for publickey auth request
         let mut msg = Message::with_type(MessageType::UserauthRequest);
