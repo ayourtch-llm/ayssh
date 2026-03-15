@@ -102,6 +102,26 @@ impl TransportStateMachine {
         self.mac_key = mac_key.to_vec();
     }
 
+    /// Transition to KeyExchange state
+    pub fn transition_to_key_exchange(&mut self) {
+        self.state = State::KeyExchange;
+    }
+
+    /// Transition to Established state
+    pub fn transition_to_established(&mut self) {
+        self.state = State::Established;
+    }
+
+    /// Transition to Disconnected state
+    pub fn transition_to_disconnected(&mut self) {
+        self.state = State::Disconnected;
+    }
+
+    /// Get reference to cipher if initialized
+    pub fn cipher(&self) -> Option<&CipherState> {
+        self.cipher.as_ref()
+    }
+
     /// Encrypt a packet using the current cipher
     pub fn encrypt_packet(&mut self, plaintext: &[u8]) -> Result<Vec<u8>, CipherError> {
         if let Some(ref mut cipher) = self.cipher {

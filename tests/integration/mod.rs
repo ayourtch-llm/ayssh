@@ -11,3 +11,4 @@ pub mod hmac_tests;
 pub mod kdf_tests;
 pub mod cipher_tests;
 pub mod encryption_tests;
+pub mod handshake_tests;
