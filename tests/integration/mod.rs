@@ -30,3 +30,4 @@ pub mod client_config_tests;
 pub mod connection_state_tests;
 pub mod channel_state_tests;
 pub mod key_format_tests;
+pub mod rsa_key_tests;
