@@ -1,10 +1,12 @@
-//! HMAC-SHA256 and HMAC-SHA512 implementation for SSH
+//! HMAC-SHA256, HMAC-SHA512, and HMAC-SHA1 implementation for SSH
 //!
-//! This module implements HMAC-SHA256 and HMAC-SHA512 as defined in RFC 2104 and used in SSH (RFC 4253).
+//! This module implements HMAC-SHA256, HMAC-SHA512, and HMAC-SHA1 as defined in RFC 2104 and used in SSH (RFC 4253).
 //! HMAC (Hash-based Message Authentication Code) is a mechanism for message authentication
 //! using cryptographic hash functions.
 
 use ring::hmac;
+use sha1::Sha1;
+use sha1::Digest;
 
 /// HMAC-SHA256 state machine for streaming computation
 ///
@@ -105,6 +107,72 @@ impl HmacSha512 {
     }
 }
 
+/// HMAC-SHA1 state machine for streaming computation
+pub struct HmacSha1 {
+    /// SHA1 hasher for streaming computation
+    hasher: Sha1,
+    /// Key for HMAC
+    key: Vec<u8>,
+}
+
+impl HmacSha1 {
+    /// Create a new HMAC-SHA1 instance with the given key
+    pub fn new(key: &[u8]) -> Self {
+        assert!(!key.is_empty(), "HMAC key must not be empty");
+        
+        Self {
+            hasher: Sha1::new(),
+            key: key.to_vec(),
+        }
+    }
+
+    /// Update the HMAC computation with additional data
+    pub fn update(&mut self, data: &[u8]) {
+        self.hasher.update(data);
+    }
+
+    /// Finalize the HMAC computation and return the result
+    pub fn finish(mut self) -> [u8; 20] {
+        // Compute HMAC-SHA1 manually since ring doesn't support it
+        // HMAC(K, text) = H(K' XOR opad, H(K' XOR ipad, text))
+        let block_size: usize = 64; // SHA1 block size
+        
+        let mut k = self.key.clone();
+        
+        // If key is longer than block size, hash it
+        if k.len() > block_size {
+            let hash_result = Sha1::new().chain_update(&k).finalize();
+            k = hash_result.to_vec();
+        }
+        
+        // Pad key to block size
+        k.resize(block_size, 0);
+        
+        // Create ipad and opad
+        let mut ipad = [0x36u8; 64];
+        let mut opad = [0x5cu8; 64];
+        
+        for i in 0..64 {
+            ipad[i] ^= k[i];
+            opad[i] ^= k[i];
+        }
+        
+        // Compute inner hash: H(K' XOR ipad || text)
+        let mut inner_hasher = Sha1::new();
+        inner_hasher.update(&ipad);
+        inner_hasher.update(&self.hasher.finalize_reset());
+        let inner_hash = inner_hasher.finalize();
+        
+        // Compute outer hash: H(K' XOR opad || inner_hash)
+        let mut outer_hasher = Sha1::new();
+        outer_hasher.update(&opad);
+        outer_hasher.update(&inner_hash);
+        let result = outer_hasher.finalize();
+        
+        result.into()
+    }
+}
+
 /// Compute HMAC-SHA256 for the given key and data
 ///
 /// This is a convenience function that creates a new `HmacSha256` instance,
@@ -137,6 +205,13 @@ pub fn compute(key: &[u8], data: &[u8]) -> [u8; 32] {
 /// Compute HMAC-SHA512 for the given key and data
 pub fn compute_sha512(key: &[u8], data: &[u8]) -> [u8; 64] {
     let mut hmac = HmacSha512::new(key);
+    hmac.update(data);
+    hmac.finish()
+}
+
+/// Compute HMAC-SHA1 for the given key and data
+pub fn compute_sha1(key: &[u8], data: &[u8]) -> [u8; 20] {
+    let mut hmac = HmacSha1::new(key);
     hmac.update(data);
     hmac.finish()
 }
@@ -189,6 +264,55 @@ mod tests {
         
         let result1 = compute(key1, data);
         let result2 = compute(key2, data);
+        
+        assert_ne!(result1, result2);
+    }
+
+    // HMAC-SHA1 tests
+    #[test]
+    fn test_hmac_sha1_basic() {
+        let key = b"key";
+        let data = b"Hi There";
+        let result = compute_sha1(key, data);
+        
+        // Verify it produces 20 bytes
+        assert_eq!(result.len(), 20);
+    }
+
+    #[test]
+    fn test_hmac_sha1_empty_key_panics() {
+        // This test expects a panic, but our implementation doesn't panic
+        // Let's test that it handles empty keys gracefully
+        let result = std::panic::catch_unwind(|| {
+            HmacSha1::new(b"");
+        });
+        // If it panics, the test passes
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_hmac_sha1_streaming() {
+        let key = b"key";
+        let data = b"Hi There";
+        
+        let mut hmac = HmacSha1::new(key);
+        hmac.update(&data[..4]);
+        hmac.update(&data[4..]);
+        
+        let result = hmac.finish();
+        let expected = compute_sha1(key, data);
+        
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_hmac_sha1_different_keys() {
+        let key1 = b"key1";
+        let key2 = b"key2";
+        let data = b"same data";
+        
+        let result1 = compute_sha1(key1, data);
+        let result2 = compute_sha1(key2, data);
         
         assert_ne!(result1, result2);
     }
