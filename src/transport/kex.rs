@@ -247,6 +247,8 @@ pub async fn perform_kex(
 mod tests {
     use super::*;
     use rand::rngs::OsRng;
+    use crate::crypto::dh::{DhGroup, Mpint};
+    use num_bigint::BigUint;
 
     #[test]
     fn test_kex_context_creation() {
@@ -271,5 +273,106 @@ mod tests {
         
         assert!(context.client_ephemeral.is_some());
         assert_eq!(context.client_ephemeral.as_ref().unwrap().len(), 32);
+    }
+
+    #[test]
+    fn test_dh_shared_secret_computation() {
+        let group = DhGroup::group14();
+        
+        // Generate client's key pair
+        let client_private = group.generate_private_key(&mut OsRng, 256);
+        let client_public = group.compute_public_key(&client_private);
+        
+        // Generate server's key pair
+        let server_private = group.generate_private_key(&mut OsRng, 256);
+        let server_public = group.compute_public_key(&server_private);
+        
+        // Compute shared secret from both sides
+        let client_shared = group.compute_shared_secret(&server_public, &client_private);
+        let server_shared = group.compute_shared_secret(&client_public, &server_private);
+        
+        // Both sides should compute the same shared secret
+        assert_eq!(client_shared, server_shared);
+        assert!(client_shared > BigUint::from(0u8));
+    }
+
+    #[test]
+    fn test_dh_shared_secret_with_mpint() {
+        let group = DhGroup::group14();
+        
+        let client_private = group.generate_private_key(&mut OsRng, 256);
+        let client_public = group.compute_public_key(&client_private);
+        
+        let server_private = group.generate_private_key(&mut OsRng, 256);
+        let server_public = group.compute_public_key(&server_private);
+        
+        // Encode public keys as MPINT (as sent over the wire)
+        let client_mpint = Mpint::encode(&client_public);
+        let server_mpint = Mpint::encode(&server_public);
+        
+        // Decode MPINTs back to BigUint
+        let client_public_decoded = Mpint::decode(&client_mpint).unwrap();
+        let server_public_decoded = Mpint::decode(&server_mpint).unwrap();
+        
+        // Compute shared secret using decoded values
+        // Client computes: s = server_public^client_private mod p
+        let client_shared = group.compute_shared_secret(&server_public_decoded, &client_private);
+        // Server computes: s = client_public^server_private mod p
+        let server_shared = group.compute_shared_secret(&client_public_decoded, &server_private);
+        
+        assert_eq!(client_shared, server_shared);
+        assert!(client_shared > BigUint::from(0u8));
+    }
+
+    #[test]
+    fn test_session_hash_generation() {
+        let mut context = KexContext::new(protocol::KexAlgorithm::DiffieHellmanGroup14Sha256);
+        
+        // Generate key pairs
+        let group = DhGroup::group14();
+        let client_private = group.generate_private_key(&mut OsRng, 256);
+        let client_public = group.compute_public_key(&client_private);
+        let server_private = group.generate_private_key(&mut OsRng, 256);
+        let server_public = group.compute_public_key(&server_private);
+        
+        // Set up context
+        context.client_ephemeral = Some(Mpint::encode(&client_public));
+        context.server_ephemeral = Some(Mpint::encode(&server_public));
+        
+        // Compute shared secret
+        let shared_secret = group.compute_shared_secret(&server_public, &client_private);
+        context.shared_secret = Some(shared_secret.to_bytes_be());
+        
+        // Generate session hash
+        let _session_id = b"test-session-id-12345";
+        let hash = context.generate_session_hash(_session_id).unwrap();
+        
+        assert_eq!(hash.len(), 32); // SHA256 output
+    }
+
+    #[test]
+    fn test_session_hash_deterministic() {
+        let mut context1 = KexContext::new(protocol::KexAlgorithm::DiffieHellmanGroup14Sha256);
+        let mut context2 = KexContext::new(protocol::KexAlgorithm::DiffieHellmanGroup14Sha256);
+        
+        // Use the same inputs for both
+        let group = DhGroup::group14();
+        let client_private = group.generate_private_key(&mut OsRng, 256);
+        let client_public = group.compute_public_key(&client_private);
+        let server_private = group.generate_private_key(&mut OsRng, 256);
+        let server_public = group.compute_public_key(&server_private);
+        
+        context1.client_ephemeral = Some(Mpint::encode(&client_public));
+        context1.server_ephemeral = Some(Mpint::encode(&server_public));
+        context1.shared_secret = Some(group.compute_shared_secret(&server_public, &client_private).to_bytes_be());
+        
+        context2.client_ephemeral = Some(Mpint::encode(&client_public));
+        context2.server_ephemeral = Some(Mpint::encode(&server_public));
+        context2.shared_secret = Some(group.compute_shared_secret(&server_public, &client_private).to_bytes_be());
+        
+        let hash1 = context1.generate_session_hash(b"session-id").unwrap();
+        let hash2 = context2.generate_session_hash(b"session-id").unwrap();
+        
+        assert_eq!(hash1, hash2);
     }
 }
