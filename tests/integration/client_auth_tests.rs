@@ -79,15 +79,16 @@ async fn test_client_multiple_auth_methods() {
 /// Test 8: Test Client authentication result parsing
 #[tokio::test]
 async fn test_client_auth_result_parsing() {
-    let client = SshClient::new("localhost".to_string(), 22);
+    // Use a port that's unlikely to have a server running
+    let client = SshClient::new("localhost".to_string(), 65433);
     let result = client.connect().await;
     
     // Verify result is an error (no server)
     assert!(result.is_err());
     
-    // The error should be a SessionError or similar
+    // The error should be a ConnectionError
     let err_msg = result.err().unwrap().to_string();
-    assert!(err_msg.contains("Session") || err_msg.contains("connection"));
+    assert!(err_msg.contains("connection") || err_msg.contains("Connect") || err_msg.contains("connect"));
 }
 
 /// Test 9: Test Client with username and password

@@ -27,8 +27,11 @@ fn test_client_port() {
 /// Test 4: Verify Client::connect() returns error (no server)
 #[tokio::test]
 async fn test_client_connect_fails_without_server() {
-    let client = SshClient::new("localhost".to_string(), 22);
+    // Use a port that's unlikely to have a server running
+    let client = SshClient::new("localhost".to_string(), 65432);
     let result = client.connect().await;
+    
+    // Should fail to connect to non-existent server
     assert!(result.is_err());
 }
 
