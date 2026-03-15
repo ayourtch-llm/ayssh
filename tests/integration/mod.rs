@@ -8,3 +8,4 @@ pub mod state_machine_tests;
 pub mod version_tests;
 pub mod algo_tests;
 pub mod hmac_tests;
+pub mod kdf_tests;

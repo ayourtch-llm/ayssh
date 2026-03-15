@@ -60,3 +60,7 @@ path = "src/lib.rs"
 [[bin]]
 name = "ssh_client"
 path = "src/main.rs"
+
+[[test]]
+name = "integration"
+path = "tests/integration/mod.rs"

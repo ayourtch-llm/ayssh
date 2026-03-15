@@ -30,7 +30,7 @@ fn test_algorithm_selection_common_kex() {
     
     let negotiated = client.select_common_algorithms(&server).unwrap();
     
-    assert!(!negotiated.kex_algorithm.is_empty());
+    assert!(!negotiated.kex.is_empty());
 }
 
 #[test]

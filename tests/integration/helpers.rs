@@ -2,7 +2,7 @@
 
 use std::fs;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::OnceLock;
 use tempfile::TempDir;
@@ -167,7 +167,7 @@ Subsystem sftp /usr/libexec/sftp-server
     }
 
     /// Returns the path to the temporary directory.
-    pub fn temp_dir(&self) -> &PathBuf {
+    pub fn temp_dir(&self) -> &Path {
         self.temp_dir.path()
     }
 
