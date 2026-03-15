@@ -36,7 +36,7 @@ mod tests {
     fn test_ecdsa_p521_algorithm_support() {
         // Test that ECDSA P-521 algorithm is supported
         let algorithm = "ecdsa-sha2-nistp521";
-        assert_eq!(algorithm.len(), 20);
+        assert_eq!(algorithm.len(), 19); // ecdsa-sha2-nistp521 = 19 chars
         assert!(algorithm.contains("nistp521"));
     }
 

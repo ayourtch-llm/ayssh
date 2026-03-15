@@ -23,6 +23,11 @@ fn test_connection_state_machine() {
     assert!(machine.transition_to_authentication().is_ok());
     assert_eq!(machine.current_state(), ConnectionState::Authentication);
     
+    assert!(machine.transition_to_service_negotiation().is_ok());
+    assert_eq!(machine.current_state(), ConnectionState::ServiceNegotiation);
+    machine.mark_service_requested();
+    machine.mark_service_accepted();
+    
     assert!(machine.transition_to_established().is_ok());
     assert_eq!(machine.current_state(), ConnectionState::Established);
 }
@@ -71,6 +76,9 @@ fn test_is_established() {
     machine.transition_to_algorithm_negotiation().unwrap();
     machine.transition_to_key_exchange().unwrap();
     machine.transition_to_authentication().unwrap();
+    machine.transition_to_service_negotiation().unwrap();
+    machine.mark_service_requested();
+    machine.mark_service_accepted();
     machine.transition_to_established().unwrap();
     
     assert!(machine.is_established());

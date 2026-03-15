@@ -89,6 +89,9 @@ fn test_connection_state_established() {
     machine.transition_to_algorithm_negotiation().unwrap();
     machine.transition_to_key_exchange().unwrap();
     machine.transition_to_authentication().unwrap();
+    machine.transition_to_service_negotiation().unwrap();
+    machine.mark_service_requested();
+    machine.mark_service_accepted();
     machine.transition_to_established().unwrap();
     assert!(machine.is_established());
 }
@@ -102,6 +105,9 @@ fn test_connection_state_close() {
     machine.transition_to_algorithm_negotiation().unwrap();
     machine.transition_to_key_exchange().unwrap();
     machine.transition_to_authentication().unwrap();
+    machine.transition_to_service_negotiation().unwrap();
+    machine.mark_service_requested();
+    machine.mark_service_accepted();
     machine.transition_to_established().unwrap();
     machine.transition_to_closed();
     assert_eq!(machine.current_state(), ConnectionState::Closed);
@@ -163,6 +169,12 @@ fn test_connection_state_full_lifecycle() {
     machine.transition_to_authentication().unwrap();
     assert_eq!(machine.current_state(), ConnectionState::Authentication);
     
+    // Service negotiation
+    machine.transition_to_service_negotiation().unwrap();
+    assert_eq!(machine.current_state(), ConnectionState::ServiceNegotiation);
+    machine.mark_service_requested();
+    machine.mark_service_accepted();
+    
     // Established
     machine.transition_to_established().unwrap();
     assert!(machine.is_established());
@@ -202,6 +214,9 @@ fn test_connection_state_after_close() {
     machine.transition_to_algorithm_negotiation().unwrap();
     machine.transition_to_key_exchange().unwrap();
     machine.transition_to_authentication().unwrap();
+    machine.transition_to_service_negotiation().unwrap();
+    machine.mark_service_requested();
+    machine.mark_service_accepted();
     machine.transition_to_established().unwrap();
     machine.transition_to_closed();
     
@@ -234,6 +249,12 @@ fn test_connection_state_is_established() {
     
     machine.transition_to_authentication().unwrap();
     assert!(!machine.is_established());
+    
+    machine.transition_to_service_negotiation().unwrap();
+    assert!(!machine.is_established());
+    
+    machine.mark_service_requested();
+    machine.mark_service_accepted();
     
     machine.transition_to_established().unwrap();
     assert!(machine.is_established());
