@@ -4,6 +4,7 @@
 
 use crate::protocol::errors::ProtocolError;
 use std::fmt;
+use std::str::FromStr;
 
 /// Algorithm proposal for SSH negotiation (RFC 4253 Section 7.1)
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -349,6 +350,26 @@ impl KexAlgorithm {
             KexAlgorithm::EcdhSha2Nistp256 => "ecdh-sha2-nistp256",
             KexAlgorithm::EcdhSha2Nistp384 => "ecdh-sha2-nistp384",
             KexAlgorithm::EcdhSha2Nistp521 => "ecdh-sha2-nistp521",
+        }
+    }
+}
+
+impl FromStr for KexAlgorithm {
+    type Err = ProtocolError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "diffie-hellman-group14-sha256" => Ok(KexAlgorithm::DiffieHellmanGroup14Sha256),
+            "diffie-hellman-group14-sha384" => Ok(KexAlgorithm::DiffieHellmanGroup14Sha384),
+            "diffie-hellman-group14-sha512" => Ok(KexAlgorithm::DiffieHellmanGroup14Sha512),
+            "diffie-hellman-group16-sha512" => Ok(KexAlgorithm::DiffieHellmanGroup16Sha512),
+            "diffie-hellman-group18-sha512" => Ok(KexAlgorithm::DiffieHellmanGroup18Sha512),
+            "diffie-hellman-group-exchange-sha256" => Ok(KexAlgorithm::DiffieHellmanGroupExchangeSha256),
+            "curve25519-sha256" => Ok(KexAlgorithm::Curve25519Sha256),
+            "ecdh-sha2-nistp256" => Ok(KexAlgorithm::EcdhSha2Nistp256),
+            "ecdh-sha2-nistp384" => Ok(KexAlgorithm::EcdhSha2Nistp384),
+            "ecdh-sha2-nistp521" => Ok(KexAlgorithm::EcdhSha2Nistp521),
+            _ => Err(ProtocolError::UnsupportedAlgorithm(s.to_string())),
         }
     }
 }

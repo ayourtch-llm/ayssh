@@ -33,6 +33,15 @@ impl Message {
         msg
     }
 
+    /// Set the message type
+    pub fn set_message_type(&mut self, msg_type: MessageType) {
+        if !self.data.is_empty() {
+            self.data[0] = msg_type.value();
+        } else {
+            self.data.put_u8(msg_type.value());
+        }
+    }
+
     /// Get the message type
     pub fn msg_type(&self) -> Option<MessageType> {
         MessageType::from_value(self.data[0])
@@ -93,6 +102,11 @@ impl Message {
     /// Write bytes to the message
     pub fn write_bytes(&mut self, value: &[u8]) {
         self.data.extend_from_slice(value);
+    }
+
+    /// Encode the message to bytes
+    pub fn encode(self) -> Vec<u8> {
+        self.data.to_vec()
     }
 
     /// Read a byte from the message

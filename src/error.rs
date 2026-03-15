@@ -34,6 +34,9 @@ pub enum SshError {
     #[error("Timeout error")]
     TimeoutError,
 
+    #[error("KEX error: {0}")]
+    KexError(String),
+
     #[error("Unknown error: {0}")]
     Unknown(String),
 }
@@ -49,6 +52,12 @@ impl SshError {
 
     pub fn protocol(msg: &str) -> Self {
         SshError::ProtocolError(msg.to_string())
+    }
+}
+
+impl From<anyhow::Error> for SshError {
+    fn from(err: anyhow::Error) -> Self {
+        SshError::KexError(err.to_string())
     }
 }
 

@@ -3,7 +3,11 @@
 //! Implements the initial key exchange and authentication handshake.
 
 use crate::protocol;
+use crate::protocol::KexAlgorithm;
+use crate::transport::TransportSession;
 use bytes::{Buf, BufMut, BytesMut};
+use std::str::FromStr;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// SSH protocol version string
 pub const SSH_VERSION_STRING: &str = "SSH-2.0-ayssh_1.0.0";
@@ -239,16 +243,171 @@ pub fn parse_server_kexinit(data: &[u8]) -> Result<protocol::AlgorithmProposal, 
     })
 }
 
-/// Perform the key exchange handshake
-pub async fn perform_handshake(_client_kexinit: &[u8], _server_kexinit: &[u8]) -> anyhow::Result<()> {
-    // Placeholder for actual handshake implementation
+/// Select the first matching algorithm from a list
+pub fn select_algorithm(preferred: &[String], server_list: &[String]) -> Option<String> {
+    for algo in preferred {
+        if server_list.contains(algo) {
+            return Some(algo.clone());
+        }
+    }
+    None
+}
+
+/// Negotiate algorithms from client and server proposals
+pub fn negotiate_algorithms(client: &protocol::AlgorithmProposal, server: &protocol::AlgorithmProposal) -> protocol::NegotiatedAlgorithms {
+    let kex = select_algorithm(&client.kex_algorithms, &server.kex_algorithms)
+        .expect("No common KEX algorithm");
+    
+    let host_key = select_algorithm(&client.server_host_key_algorithms, &server.server_host_key_algorithms)
+        .expect("No common host key algorithm");
+    
+    let enc_c2s = select_algorithm(&client.encryption_algorithms_c2s, &server.encryption_algorithms_c2s)
+        .expect("No common encryption algorithm (C2S)");
+    
+    let enc_s2c = select_algorithm(&client.encryption_algorithms_s2c, &server.encryption_algorithms_s2c)
+        .expect("No common encryption algorithm (S2C)");
+    
+    let mac_c2s = select_algorithm(&client.mac_algorithms_c2s, &server.mac_algorithms_c2s)
+        .expect("No common MAC algorithm (C2S)");
+    
+    let mac_s2c = select_algorithm(&client.mac_algorithms_s2c, &server.mac_algorithms_s2c)
+        .expect("No common MAC algorithm (S2C)");
+    
+    let comp = select_algorithm(&client.compression_algorithms, &server.compression_algorithms)
+        .expect("No common compression algorithm");
+    
+    protocol::NegotiatedAlgorithms {
+        kex,
+        host_key,
+        enc_c2s,
+        enc_s2c,
+        mac_c2s,
+        mac_s2c,
+        compression: comp,
+    }
+}
+
+/// Send SSH version string
+pub async fn send_version<T: AsyncWriteExt + Unpin>(stream: &mut T) -> Result<(), crate::error::SshError> {
+    let version_bytes = SSH_VERSION_STRING.as_bytes();
+    let mut msg = BytesMut::with_capacity(version_bytes.len() + 4);
+    msg.put_u32(version_bytes.len() as u32);
+    msg.put(version_bytes);
+    stream.write_all(&msg).await?;
     Ok(())
+}
+
+/// Receive SSH version string
+pub async fn recv_version<T: AsyncReadExt + Unpin>(stream: &mut T) -> Result<String, crate::error::SshError> {
+    let mut len_buf = [0u8; 4];
+    stream.read_exact(&mut len_buf).await?;
+    let len = u32::from_be_bytes(len_buf) as usize;
+    
+    let mut version_bytes = vec![0u8; len];
+    stream.read_exact(&mut version_bytes).await?;
+    
+    String::from_utf8(version_bytes)
+        .map_err(|_| crate::error::SshError::ProtocolError("Invalid UTF-8 in version string".to_string()))
+}
+
+/// Perform the key exchange handshake
+pub async fn perform_handshake<T: AsyncReadExt + AsyncWriteExt + Unpin>(
+    mut stream: T,
+    server_version: &str,
+) -> Result<(TransportSession<T>, protocol::NegotiatedAlgorithms), crate::error::SshError> {
+    // 1. Send client version
+    send_version(&mut stream).await?;
+    
+    // 2. Receive server version
+    let server_ver = recv_version(&mut stream).await?;
+    let (_proto, _software) = parse_version_string(server_ver.as_bytes())
+        .map_err(|e| crate::error::SshError::ProtocolError(e.to_string()))?;
+    
+    // 3. Generate and send client KEXINIT
+    let client_kexinit = generate_client_kexinit();
+    stream.write_all(&client_kexinit).await?;
+    
+    // 4. Receive and parse server KEXINIT
+    let mut len_buf = [0u8; 4];
+    stream.read_exact(&mut len_buf).await?;
+    let len = u32::from_be_bytes(len_buf) as usize;
+    
+    let mut server_kexinit_bytes = vec![0u8; len];
+    stream.read_exact(&mut server_kexinit_bytes).await?;
+    
+    let server_proposal = parse_server_kexinit(&server_kexinit_bytes)
+        .map_err(|e| crate::error::SshError::ProtocolError(e.to_string()))?;
+    
+    // 5. Negotiate algorithms
+    let client_proposal = parse_server_kexinit(&client_kexinit)
+        .map_err(|e| crate::error::SshError::ProtocolError(e.to_string()))?;
+    let negotiated = negotiate_algorithms(&client_proposal, &server_proposal);
+    
+    // 6. Create transport session and initiate KEX
+    let mut transport_session = TransportSession::new(stream, KexAlgorithm::from_str(&negotiated.kex).unwrap_or(KexAlgorithm::Curve25519Sha256));
+    transport_session.init_kex()?;
+    
+    // 7. Send KEXINIT message (with client ephemeral key)
+    let client_ephemeral = transport_session.kex_context().client_ephemeral.clone()
+        .expect("Client ephemeral key not generated");
+    
+    let mut kexinit_msg = BytesMut::new();
+    kexinit_msg.put_u8(protocol::MessageType::KexInit as u8);
+    kexinit_msg.put_u32(client_ephemeral.len() as u32);
+    kexinit_msg.put_slice(&client_ephemeral);
+    transport_session.stream_mut().write_all(&kexinit_msg).await?;
+    
+    // 8. Receive KEX_REPLY from server (server ephemeral key)
+    let mut len_buf2 = [0u8; 4];
+    transport_session.stream_mut().read_exact(&mut len_buf2).await?;
+    let len2 = u32::from_be_bytes(len_buf2) as usize;
+    
+    let mut reply_bytes = vec![0u8; len2];
+    transport_session.stream_mut().read_exact(&mut reply_bytes).await?;
+    
+    if reply_bytes[0] != protocol::MessageType::KexInit as u8 {
+        return Err(crate::error::SshError::ProtocolError(
+            "Expected KEX_INIT from server".to_string()
+        ));
+    }
+    
+    transport_session.kex_context_mut().process_server_kex_init(&reply_bytes[1..])?;
+    
+    // 9. Compute shared secret
+    transport_session.kex_context_mut().compute_shared_secret()?;
+    
+    // 10. Derive session keys
+    let session_id = transport_session.session_id().cloned()
+        .expect("Session ID not set");
+    transport_session.kex_context_mut().derive_session_keys(&session_id)?;
+    
+    // 11. Send NEWKEYS message to transition to encrypted mode
+    let newkeys_msg = crate::transport::kex::encode_newkeys();
+    transport_session.stream_mut().write_all(&newkeys_msg).await?;
+    
+    // 12. Receive NEWKEYS from server
+    let mut len_buf3 = [0u8; 4];
+    transport_session.stream_mut().read_exact(&mut len_buf3).await?;
+    let len3 = u32::from_be_bytes(len_buf3) as usize;
+    
+    let mut newkeys_bytes = vec![0u8; len3];
+    transport_session.stream_mut().read_exact(&mut newkeys_bytes).await?;
+    
+    if newkeys_bytes[0] != protocol::MessageType::Newkeys as u8 {
+        return Err(crate::error::SshError::ProtocolError(
+            "Expected NEWKEYS from server".to_string()
+        ));
+    }
+    
+    // 13. Transition to encrypted state
+    transport_session.transition_to_encrypted()?;
+    
+    Ok((transport_session, negotiated))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bytes::BytesMut;
 
     #[test]
     fn test_parse_version_string_valid() {
@@ -324,5 +483,34 @@ mod tests {
         
         assert_eq!(state.client_kexinit, Some(vec![1, 2, 3]));
         assert_eq!(state.server_kexinit, Some(vec![4, 5, 6]));
+    }
+
+    #[test]
+    fn test_select_algorithm() {
+        let preferred = vec!["aes256-gcm".to_string(), "aes128-gcm".to_string()];
+        let server_list = vec!["aes128-gcm".to_string(), "chacha20-poly1305".to_string()];
+        
+        let result = select_algorithm(&preferred, &server_list);
+        assert_eq!(result, Some("aes128-gcm".to_string()));
+    }
+
+    #[test]
+    fn test_select_algorithm_no_match() {
+        let preferred = vec!["aes256-gcm".to_string()];
+        let server_list = vec!["chacha20-poly1305".to_string()];
+        
+        let result = select_algorithm(&preferred, &server_list);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_negotiate_algorithms() {
+        let client = parse_server_kexinit(&generate_client_kexinit()).unwrap();
+        let server = parse_server_kexinit(&generate_client_kexinit()).unwrap();
+        
+        let negotiated = negotiate_algorithms(&client, &server);
+        
+        assert_eq!(negotiated.kex, "curve25519-sha256");
+        assert_eq!(negotiated.compression, "none");
     }
 }
