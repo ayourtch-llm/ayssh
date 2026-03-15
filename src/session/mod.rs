@@ -221,6 +221,50 @@ pub enum SessionState {
     Closed,
 }
 
+/// Shell handle for interactive communication
+#[derive(Debug)]
+pub struct ShellHandle {
+    channel_id: u32,
+    stdin_write: tokio::sync::mpsc::Sender<Vec<u8>>,
+    stdout_rx: tokio::sync::mpsc::Receiver<Vec<u8>>,
+    stderr_rx: tokio::sync::mpsc::Receiver<Vec<u8>>,
+    closed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl ShellHandle {
+    /// Write data to shell stdin
+    pub async fn write(&mut self, data: &[u8]) -> Result<(), crate::error::SshError> {
+        self.stdin_write.send(data.to_vec()).await.map_err(|_| {
+            crate::error::SshError::IoError(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "Shell stdin closed",
+            ))
+        })?;
+        Ok(())
+    }
+
+    /// Read data from shell stdout
+    pub async fn read_stdout(&mut self) -> Result<Option<Vec<u8>>, crate::error::SshError> {
+        Ok(self.stdout_rx.recv().await)
+    }
+
+    /// Read data from shell stderr
+    pub async fn read_stderr(&mut self) -> Result<Option<Vec<u8>>, crate::error::SshError> {
+        Ok(self.stderr_rx.recv().await)
+    }
+
+    /// Close the shell handle
+    pub async fn close(&mut self) -> Result<(), crate::error::SshError> {
+        self.closed.store(true, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+
+    /// Check if shell is closed
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
 /// SSH Session handler
 #[derive(Debug)]
 pub struct Session {
@@ -238,11 +282,25 @@ pub struct Session {
     pub environment: HashMap<String, String>,
     /// Exit status
     pub exit_status: Option<u32>,
+    /// Shell handle (if shell is active)
+    shell_handle: Option<ShellHandle>,
+    /// Senders for stdout/stderr (used when processing channel data)
+    _stdout_tx: Option<tokio::sync::mpsc::Sender<Vec<u8>>>,
+    _stderr_tx: Option<tokio::sync::mpsc::Sender<Vec<u8>>>,
 }
 
 impl Session {
     /// Create a new session from a channel
     pub fn new(channel: Channel) -> Self {
+        // Create channels for shell I/O
+        // stdin: client writes to shell
+        let (stdin_write, _) = tokio::sync::mpsc::channel::<Vec<u8>>(100);
+        // stdout: shell writes to client
+        let (stdout_tx, stdout_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(100);
+        // stderr: shell writes to client
+        let (stderr_tx, stderr_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(100);
+        let closed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
         Self {
             channel_id: channel.local_id.to_u32(),
             state: SessionState::Initial,
@@ -251,7 +309,46 @@ impl Session {
             terminal_modes: TerminalModes::default(),
             environment: HashMap::new(),
             exit_status: None,
+            shell_handle: Some(ShellHandle {
+                channel_id: channel.local_id.to_u32(),
+                stdin_write,
+                stdout_rx,
+                stderr_rx,
+                closed,
+            }),
+            // Store senders for use when processing data
+            _stdout_tx: Some(stdout_tx),
+            _stderr_tx: Some(stderr_tx),
         }
+    }
+
+    /// Create a new session from a channel without shell handle
+    pub fn new_without_shell(channel: Channel) -> Self {
+        Self {
+            channel_id: channel.local_id.to_u32(),
+            state: SessionState::Initial,
+            terminal_type: None,
+            dimensions: WindowDimensions::default_terminal(),
+            terminal_modes: TerminalModes::default(),
+            environment: HashMap::new(),
+            exit_status: None,
+            shell_handle: None,
+            _stdout_tx: None,
+            _stderr_tx: None,
+        }
+    }
+
+    /// Create a default session (for testing)
+    pub fn default_for_test() -> Self {
+        use crate::channel::types::ChannelId;
+        let channel = Channel::new(
+            ChannelId::new(1),
+            ChannelId::new(100),
+            ChannelType::Session,
+            65536,
+            32768,
+        );
+        Self::new(channel)
     }
 
     /// Open a new session channel
@@ -305,6 +402,28 @@ impl Session {
     /// Get the current session state
     pub fn state(&self) -> &SessionState {
         &self.state
+    }
+
+    /// Get shell handle if shell is active
+    pub fn shell_handle(&self) -> Option<&ShellHandle> {
+        self.shell_handle.as_ref()
+    }
+
+    /// Set shell handle
+    pub fn set_shell_handle(&mut self, handle: ShellHandle) {
+        self.shell_handle = Some(handle);
+    }
+
+    /// Start shell session
+    pub fn start_shell(&mut self) -> Result<(), crate::error::SshError> {
+        self.state = SessionState::Shell;
+        Ok(())
+    }
+
+    /// Start exec session
+    pub fn start_exec(&mut self) -> Result<(), crate::error::SshError> {
+        self.state = SessionState::Executing;
+        Ok(())
     }
 
     /// Request PTY allocation
@@ -500,14 +619,26 @@ impl Session {
     pub fn handle_channel_data(&mut self, data: &[u8]) -> Option<Vec<u8>> {
         // For now, just return the data to be displayed
         // In a full implementation, this would send to stdout
-        Some(data.to_vec())
+        if let Some(ref mut handle) = self.shell_handle {
+            // This would need access to stdout_rx, which requires refactoring
+            // For now, return data for display
+            Some(data.to_vec())
+        } else {
+            Some(data.to_vec())
+        }
     }
 
     /// Handle incoming extended data (stderr)
     pub fn handle_extended_data(&mut self, data: &[u8]) -> Option<Vec<u8>> {
         // For now, just return the data to be displayed
         // In a full implementation, this would send to stderr
-        Some(data.to_vec())
+        if let Some(ref mut handle) = self.shell_handle {
+            // This would need access to stderr_rx, which requires refactoring
+            // For now, return data for display
+            Some(data.to_vec())
+        } else {
+            Some(data.to_vec())
+        }
     }
 
     /// Handle incoming channel EOF
@@ -518,6 +649,17 @@ impl Session {
     /// Handle incoming channel close
     pub fn handle_close(&mut self) {
         self.state = SessionState::Closed;
+    }
+
+    /// Process shell stdin data
+    pub async fn process_shell_stdin(
+        &mut self,
+        data: &[u8],
+        transport: &mut crate::transport::Transport,
+    ) -> Result<(), crate::error::SshError> {
+        // Send data to remote shell
+        transport.send_channel_data(self.channel_id, data).await?;
+        Ok(())
     }
 }
 
