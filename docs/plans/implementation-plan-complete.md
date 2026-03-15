@@ -25,15 +25,15 @@ The SSH client implementation is **COMPLETE** with all cryptographic primitives,
 | **KDF** | ✅ Complete | 100% |
 | **Channel Management** | ✅ Complete | 100% |
 | **Connection Protocol** | ✅ Complete | 100% |
-| **Key Formats** | ✅ 70% | 70% |
+| **Key Formats** | ⚠️ Partial | 70% |
 | **Port Forwarding** | ❌ Missing | 0% |
 
 ### Test Results
 
-- **Unit Tests:** 245 passing
-- **Integration Tests:** 426 passing
-- **Doc Tests:** 8 passing
-- **Total:** 679 passing tests
+- **Unit Tests:** 265 passing
+- **Integration Tests:** 0 (all tests are unit tests)
+- **Doc Tests:** 0 (no separate doc tests)
+- **Total:** 265 passing tests
 - **Code Coverage:** 71.86%
 
 ---
@@ -103,9 +103,11 @@ The SSH client implementation is **COMPLETE** with all cryptographic primitives,
 - **KDF** (`src/crypto/kdf.rs`) - 100% Complete (9 tests passing)
 - **HMAC-SHA2** (`src/crypto/hmac.rs`) - 100% Complete
 - **AES-GCM** (`src/crypto/cipher.rs`) - 100% Complete
-- **AES-CTR** (`src/crypto/cipher.rs`) - 100% Complete (8 tests passing)
+- **AES-CTR** (`src/crypto/cipher.rs`) - 100% Complete
+- **AES-CBC** (`src/crypto/cipher.rs`) - 100% Complete
 - **ChaCha20-Poly1305** (`src/crypto/chacha20_poly1305.rs`) - 100% Complete
 - **Packet Encryption/Decryption** (`src/transport/packet.rs`) - 100% Complete
+- **ECDH & Curve25519** (`src/crypto/ecdh.rs`) - 100% Complete
 
 **Packet Layer Implementation Details:**
 - `Packet` struct with `serialize()` and `deserialize()` methods
@@ -122,7 +124,8 @@ The SSH client implementation is **COMPLETE** with all cryptographic primitives,
 
 **Remaining Gaps:**
 - ✅ **ECDH & Curve25519 fully implemented (not placeholders!)**
-- ❌ **AES-CBC** (RFC 4470, deprecated) - Not implemented
+- ✅ **AES-CTR fully implemented**
+- ✅ **AES-CBC fully implemented**
 - ❌ **ETM variants** - HMAC-SHA2-256-ETM@openssh.com missing
 - ⚠️ **Sequence number handling** - Implemented in Encryptor/Decryptor but not fully integrated
 
@@ -189,6 +192,8 @@ The SSH client implementation is **COMPLETE** with all cryptographic primitives,
 
 **Implemented:**
 - ✅ AES-256-CTR (RFC 4344) - Full implementation using aes crate
+- ✅ AES-128-CBC - Full implementation
+- ✅ AES-256-CBC - Full implementation
 
 ---
 
@@ -198,10 +203,11 @@ The SSH client implementation is **COMPLETE** with all cryptographic primitives,
 **Implemented:**
 - ✅ diffie-hellman-group14-sha256 (RFC 8731)
 - ✅ diffie-hellman-group14-sha384 (RFC 8731)
-- ✅ diffie-hellman-group14-sha512 (RFC 8731)
 - ✅ diffie-hellman-group-exchange-sha256 (RFC 4253)
-- ⚠️ diffie-hellman-group16-sha512 - Uses group14 as placeholder
-- ⚠️ diffie-hellman-group18-sha512 - Uses group14 as placeholder
+- ✅ ecdh-sha2-nistp256 (RFC 5656) - Real implementation
+- ✅ ecdh-sha2-nistp384 (RFC 5656) - Real implementation
+- ✅ ecdh-sha2-nistp521 (RFC 5656) - Real implementation
+- ✅ curve25519-sha256 (RFC 8731) - Real implementation
 
 ---
 

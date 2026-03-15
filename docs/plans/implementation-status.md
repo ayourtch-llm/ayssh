@@ -25,15 +25,15 @@ The SSH client implementation is **COMPLETE** with all cryptographic primitives,
 | **KDF** | ✅ Complete | 100% |
 | **Channel Management** | ✅ Complete | 100% |
 | **Connection Protocol** | ✅ Complete | 100% |
-| **Key Formats** | ✅ 70% | 70% |
+| **Key Formats** | ⚠️ Partial | 70% |
 | **Port Forwarding** | ❌ Missing | 0% |
 
 ### Test Results
 
-- **Unit Tests:** 245 passing
-- **Integration Tests:** 426 passing
-- **Doc Tests:** 8 passing
-- **Total:** 679 passing tests
+- **Unit Tests:** 265 passing
+- **Integration Tests:** 0 (all tests are unit tests)
+- **Doc Tests:** 0 (no separate doc tests)
+- **Total:** 265 passing tests
 - **Code Coverage:** 71.86%
 
 ---
@@ -87,25 +87,11 @@ The SSH client implementation is **COMPLETE** with all cryptographic primitives,
 - Support for signature-based auth flow
 
 **Remaining Gaps:**
-- ✅ **RSA authentication integration COMPLETE** (2026-03-15)
-  - `src/auth/signature.rs` IS NOW USED by authenticator
-  - `src/auth/mod.rs` and `src/auth/publickey.rs` use real RSA crypto
-  - Added 4 comprehensive auth flow tests
-- ✅ **ECDSA authentication integration COMPLETE** (2026-03-15)
-  - Real ECDSA signing for NIST P-256 and P-384
-  - `src/auth/signature.rs` IS NOW USED by authenticator
-  - Proper public key blob extraction
-  - SSH-encoded signature generation
-- ✅ **Ed25519 authentication integration COMPLETE** (2026-03-15)
-  - Real Ed25519 signing
-  - `src/auth/signature.rs` IS NOW USED by authenticator
-  - Proper public key blob extraction
-  - SSH-encoded signature generation
-- [ ] **ECDSA P-521 authentication integration** - Minor API compatibility issue to resolve
 - ❌ Keyboard-interactive authentication (RFC 4256)
 - ❌ SSH_AGENT protocol support
 - ❌ GSSAPI authentication (RFC 4462)
 - ❌ Host key verification during auth
+- ⚠️ **ECDSA P-521 authentication integration** - Minor API compatibility issue to resolve
 
 ---
 
@@ -120,7 +106,8 @@ The SSH client implementation is **COMPLETE** with all cryptographic primitives,
 - **KDF** (`src/crypto/kdf.rs`) - 100% Complete (9 tests passing)
 - **HMAC-SHA2** (`src/crypto/hmac.rs`) - 100% Complete
 - **AES-GCM** (`src/crypto/cipher.rs`) - 100% Complete
-- **AES-CTR** (`src/crypto/cipher.rs`) - 100% Complete (8 tests passing)
+- **AES-CTR** (`src/crypto/cipher.rs`) - 100% Complete
+- **AES-CBC** (`src/crypto/cipher.rs`) - 100% Complete
 - **ChaCha20-Poly1305** (`src/crypto/chacha20_poly1305.rs`) - 100% Complete
 - **Packet Encryption/Decryption** (`src/transport/packet.rs`) - 100% Complete
 - **ECDH & Curve25519** (`src/crypto/ecdh.rs`) - 100% Complete
@@ -143,10 +130,14 @@ The SSH client implementation is **COMPLETE** with all cryptographic primitives,
   - `src/crypto/cipher.rs` has real AES-CTR implementation
   - Uses `aes` crate from RustCrypto
   - Proper counter mode with 8-byte nonce
-  - Tested with 10 passing unit tests
+  - Tested with 8 passing unit tests
   - Integrated into `src/transport/packet.rs` Encryptor/Decryptor
   - Full encrypt/decrypt cycle working with HMAC-SHA2-256
-- ❌ **AES-CBC** (RFC 4470, deprecated) - Not implemented
+- ✅ **AES-CBC COMPLETE** (2026-03-15)
+  - `src/crypto/cipher.rs` has real AES-CBC implementation
+  - Uses `aes` crate from RustCrypto
+  - Proper PKCS#7 padding
+  - Integrated into `src/transport/packet.rs` Encryptor/Decryptor
 - ❌ **ETM variants** - HMAC-SHA2-256-ETM@openssh.com missing
 - ❌ **HMAC-SHA1** (RFC 4335, deprecated) - Not implemented
 - ❌ **UMAC variants** - Not implemented

@@ -2,7 +2,7 @@
 
 **Generated:** 2026-03-15  
 **Current Status:** **COMPLETE** - All cryptographic primitives, authentication, and channel management implemented  
-**Last Updated:** 2026-03-15 - All core implementation complete with 679 passing tests  
+**Last Updated:** 2026-03-15 - All core implementation complete with 265 passing tests  
 **Code Statistics:** 15,665 lines of code across 54 source files
 
 ---
@@ -50,11 +50,12 @@
 **Implemented:**
 - ✅ **AES-256-GCM** (RFC 5647) - Full implementation using ring
 - ✅ **AES-256-CTR** (RFC 4344) - Full implementation with 8 passing tests
+- ✅ **AES-128-CBC** (RFC 4470, deprecated) - Full implementation
+- ✅ **AES-256-CBC** (RFC 4470, deprecated) - Full implementation
 - ✅ **ChaCha20-Poly1305** (RFC 8439) - Full implementation using ring
 
 **Missing:**
-- ❌ **AES-128-CBC** (RFC 4470, deprecated) - Not implemented
-- ❌ **AES-256-CBC** (RFC 4470, deprecated) - Not implemented
+- ❌ **ETM variants** - HMAC-SHA2-256-ETM@openssh.com missing
 
 **Dependencies:**
 - `aes` crate (RustCrypto) ✅
@@ -101,11 +102,12 @@
 **Implemented:**
 - ✅ Packet structure defined with length, padding, payload, msg_type
 - ✅ Packet serialization/deserialization
-- ✅ `Encryptor` class with AES-GCM, ChaCha20-Poly1305, AES-CTR+HMAC support
+- ✅ `Encryptor` class with AES-GCM, ChaCha20-Poly1305, AES-CTR+HMAC, AES-CBC support
 - ✅ `Decryptor` class with MAC verification
 - ✅ Sequence number handling
 - ✅ Padding generation
 - ✅ AES-CTR cipher fully integrated
+- ✅ AES-CBC cipher fully integrated
 - ✅ 7 passing tests for encryption/decryption
 
 **Missing:**
