@@ -185,9 +185,10 @@ impl EcdhKeyPair {
 
     /// Compute NIST P-256 shared secret
     fn compute_nistp256_shared_secret(&self, peer_public: &[u8]) -> Vec<u8> {
-        use k256::elliptic_curve::sec1::ToEncodedPoint;
         use k256::elliptic_curve::sec1::FromEncodedPoint;
         use k256::elliptic_curve::point::AffineCoordinates;
+        use k256::SecretKey as K256SecretKey;
+        use k256::ProjectivePoint;
         
         // Parse peer's public key as an encoded point
         let peer_point = k256::EncodedPoint::from_bytes(peer_public).expect("Invalid peer public key");
@@ -195,45 +196,75 @@ impl EcdhKeyPair {
         // Convert to public key
         let peer_public_key = k256::PublicKey::from_encoded_point(&peer_point).expect("Invalid peer point");
         
-        // For P-256, extract x-coordinate from peer's public key
-        let x = peer_public_key.as_affine().x();
+        // Parse our private key
+        let our_secret = K256SecretKey::from_bytes(self.private_key.as_slice().try_into()
+            .expect("Invalid private key")).expect("Failed to parse private key");
+        
+        // Compute shared secret: scalar * peer_public
+        // We need to dereference the NonZeroScalar for the multiplication
+        let our_affine = peer_public_key.as_affine();
+        let shared_point = ProjectivePoint::from(our_affine) * *our_secret.to_nonzero_scalar();
+        
+        // Convert back to affine and get x-coordinate
+        let shared_affine = k256::AffinePoint::from(shared_point);
+        let x = shared_affine.x();
         x.as_slice().to_vec()
     }
 
     /// Compute NIST P-384 shared secret
     fn compute_nistp384_shared_secret(&self, peer_public: &[u8]) -> Vec<u8> {
-        use p384::SecretKey;
+        use p384::elliptic_curve::sec1::FromEncodedPoint;
+        use p384::elliptic_curve::point::AffineCoordinates;
+        use p384::SecretKey as P384SecretKey;
+        use p384::ProjectivePoint;
         
-        // For P-384, extract x-coordinate from peer's public key
-        if peer_public.len() >= 1 {
-            let x_start = 1; // Skip curve type byte
-            let x_end = x_start + 48; // P-384 x-coordinate is 48 bytes
-            if peer_public.len() >= x_end {
-                peer_public[x_start..x_end].to_vec()
-            } else {
-                vec![]
-            }
-        } else {
-            vec![]
-        }
+        // Parse peer's public key as an encoded point
+        let peer_point = p384::EncodedPoint::from_bytes(peer_public).expect("Invalid peer public key");
+        
+        // Convert to public key
+        let peer_public_key = p384::PublicKey::from_encoded_point(&peer_point).expect("Invalid peer point");
+        
+        // Parse our private key
+        let our_secret = P384SecretKey::from_bytes(self.private_key.as_slice().try_into()
+            .expect("Invalid private key")).expect("Failed to parse private key");
+        
+        // Compute shared secret: scalar * peer_public
+        // We need to dereference the NonZeroScalar for the multiplication
+        let our_affine = peer_public_key.as_affine();
+        let shared_point = ProjectivePoint::from(our_affine) * *our_secret.to_nonzero_scalar();
+        
+        // Convert back to affine and get x-coordinate
+        let shared_affine = p384::AffinePoint::from(shared_point);
+        let x = shared_affine.x();
+        x.as_slice().to_vec()
     }
 
     /// Compute NIST P-521 shared secret
     fn compute_nistp521_shared_secret(&self, peer_public: &[u8]) -> Vec<u8> {
-        use p521::SecretKey;
+        use p521::elliptic_curve::sec1::FromEncodedPoint;
+        use p521::elliptic_curve::point::AffineCoordinates;
+        use p521::SecretKey as P521SecretKey;
+        use p521::ProjectivePoint;
         
-        // For P-521, extract x-coordinate from peer's public key
-        if peer_public.len() >= 1 {
-            let x_start = 1; // Skip curve type byte
-            let x_end = x_start + 66; // P-521 x-coordinate is 66 bytes
-            if peer_public.len() >= x_end {
-                peer_public[x_start..x_end].to_vec()
-            } else {
-                vec![]
-            }
-        } else {
-            vec![]
-        }
+        // Parse peer's public key as an encoded point
+        let peer_point = p521::EncodedPoint::from_bytes(peer_public).expect("Invalid peer public key");
+        
+        // Convert to public key
+        let peer_public_key = p521::PublicKey::from_encoded_point(&peer_point).expect("Invalid peer point");
+        
+        // Parse our private key
+        let our_secret = P521SecretKey::from_bytes(self.private_key.as_slice().try_into()
+            .expect("Invalid private key")).expect("Failed to parse private key");
+        
+        // Compute shared secret: scalar * peer_public
+        // We need to dereference the NonZeroScalar for the multiplication
+        let our_affine = peer_public_key.as_affine();
+        let shared_point = ProjectivePoint::from(our_affine) * *our_secret.to_nonzero_scalar();
+        
+        // Convert back to affine and get x-coordinate
+        let shared_affine = p521::AffinePoint::from(shared_point);
+        let x = shared_affine.x();
+        x.as_slice().to_vec()
     }
 
     /// Encode public key for SSH message (with curve type prefix)
