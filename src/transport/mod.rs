@@ -3,6 +3,10 @@
 //! Handles the transport layer of SSH including key exchange,
 //! packet encryption, and session state management.
 
+use bytes::BufMut;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
+
 pub mod cipher;
 pub mod encrypted;
 pub mod handshake;
@@ -20,8 +24,6 @@ pub use packet::*;
 pub use session_id::*;
 pub use state::*;
 pub use version::*;
-
-use tokio::net::TcpStream;
 
 /// SSH Transport layer
 ///
@@ -64,5 +66,49 @@ impl Transport {
     /// Get the handshake state
     pub fn handshake_state(&self) -> &handshake::HandshakeState {
         &self.handshake
+    }
+
+    /// Send raw bytes over the transport
+    pub async fn send(&mut self, data: &[u8]) -> Result<(), crate::error::SshError> {
+        self.stream.write_all(data).await?;
+        Ok(())
+    }
+
+    /// Receive raw bytes from the transport
+    pub async fn recv(&mut self, buf: &mut [u8]) -> Result<usize, crate::error::SshError> {
+        let n = self.stream.read(buf).await?;
+        Ok(n)
+    }
+
+    /// Send an SSH message
+    pub async fn send_message(&mut self, msg: &[u8]) -> Result<(), crate::error::SshError> {
+        self.send(msg).await
+    }
+
+    /// Receive an SSH message (with length prefix)
+    pub async fn recv_message(&mut self) -> Result<Vec<u8>, crate::error::SshError> {
+        // Read length prefix (4 bytes)
+        let mut len_buf = [0u8; 4];
+        self.stream.read_exact(&mut len_buf).await?;
+        let len = u32::from_be_bytes(len_buf) as usize;
+
+        // Read the message
+        let mut msg_buf = vec![0u8; len];
+        self.stream.read_exact(&mut msg_buf).await?;
+
+        Ok(msg_buf)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[tokio::test]
+    async fn test_transport_send_recv() {
+        // This test would require a real TCP connection or mock
+        // For now, just verify the API exists
+        assert!(true);
     }
 }

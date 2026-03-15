@@ -32,6 +32,7 @@ pub mod utils;
 
 // Re-export commonly used items
 pub use auth::AuthMethod;
+pub use auth::AuthMethodManager;
 pub use channel::Channel;
 pub use config::Config;
 pub use connection::Connection;

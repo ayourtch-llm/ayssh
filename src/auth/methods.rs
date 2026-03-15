@@ -1,16 +1,13 @@
-//! Authentication Methods
-//!
-//! Manages available and attempted authentication methods.
+//! Authentication methods
 
-use crate::protocol;
+use crate::protocol::AuthMethod as ProtocolAuthMethod;
 
 /// Authentication method manager
-#[derive(Debug, Default)]
 pub struct AuthMethodManager {
-    /// Methods we can try
-    pub supported_methods: Vec<protocol::AuthMethod>,
-    /// Methods server allows
-    pub allowed_methods: Vec<protocol::AuthMethod>,
+    /// Supported authentication methods
+    pub supported_methods: Vec<ProtocolAuthMethod>,
+    /// Allowed authentication methods
+    pub allowed_methods: Vec<ProtocolAuthMethod>,
 }
 
 impl AuthMethodManager {
@@ -23,35 +20,44 @@ impl AuthMethodManager {
     }
 
     /// Add a supported method
-    pub fn add_supported(&mut self, method: protocol::AuthMethod) {
+    pub fn add_supported(&mut self, method: ProtocolAuthMethod) {
         if !self.supported_methods.contains(&method) {
             self.supported_methods.push(method);
         }
     }
 
     /// Add an allowed method
-    pub fn add_allowed(&mut self, method: protocol::AuthMethod) {
+    pub fn add_allowed(&mut self, method: ProtocolAuthMethod) {
         if !self.allowed_methods.contains(&method) {
             self.allowed_methods.push(method);
         }
     }
 
-    /// Get methods that are both supported and allowed
-    pub fn usable_methods(&self) -> Vec<protocol::AuthMethod> {
+    /// Get usable methods (intersection of supported and allowed)
+    pub fn usable_methods(&self) -> Vec<ProtocolAuthMethod> {
         self.supported_methods
             .iter()
             .filter(|m| self.allowed_methods.contains(m))
-            .copied()
+            .cloned()
             .collect()
     }
 
     /// Check if a method is supported
-    pub fn is_supported(&self, method: protocol::AuthMethod) -> bool {
+    pub fn is_supported(&self, method: ProtocolAuthMethod) -> bool {
         self.supported_methods.contains(&method)
     }
 
     /// Check if a method is allowed
-    pub fn is_allowed(&self, method: protocol::AuthMethod) -> bool {
+    pub fn is_allowed(&self, method: ProtocolAuthMethod) -> bool {
         self.allowed_methods.contains(&method)
     }
 }
+
+impl Default for AuthMethodManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Re-export the protocol AuthMethod
+pub use crate::protocol::AuthMethod;
