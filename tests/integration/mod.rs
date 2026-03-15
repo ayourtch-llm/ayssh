@@ -35,3 +35,6 @@ pub mod key_format_tests;
 pub mod rsa_key_tests;
 pub mod cli_tests;
 pub mod keyboard_auth_tests;
+pub mod channel_transfer_tests;
+pub mod service_request_tests;
+pub mod known_hosts_tests;

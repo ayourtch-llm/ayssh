@@ -80,6 +80,11 @@ mod channel_transfer {
 
         /// Send channel EOF
         pub fn send_eof(&mut self, channel_id: ChannelId) -> Option<Vec<u8>> {
+            // Check if channel exists
+            if !self.channels.contains_key(&channel_id) {
+                return None;
+            }
+
             let mut msg = BytesMut::with_capacity(1 + 4);
             msg.put_u8(MessageType::ChannelEof as u8);
             msg.put_u32(channel_id.to_u32());
@@ -89,6 +94,11 @@ mod channel_transfer {
 
         /// Send channel close
         pub fn send_close(&mut self, channel_id: ChannelId) -> Option<Vec<u8>> {
+            // Check if channel exists
+            if !self.channels.contains_key(&channel_id) {
+                return None;
+            }
+
             let mut msg = BytesMut::with_capacity(1 + 4);
             msg.put_u8(MessageType::ChannelClose as u8);
             msg.put_u32(channel_id.to_u32());
