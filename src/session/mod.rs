@@ -299,27 +299,30 @@ impl Session {
 
     /// Request exec
     pub fn request_exec(&self, command: &str) -> Message {
-        let mut buf = BytesMut::with_capacity(1 + 4 + 4 + 1 + command.len() + 1);
+        let command_len = command.len();
+        let mut buf = BytesMut::with_capacity(1 + 4 + 4 + 1 + 4 + command_len);
         buf.put_u8(MessageType::ChannelRequest.value());
         buf.put_u32(self.channel_id);
-        buf.put_u32(4); // "exec\0".len()
-        buf.put_slice(b"exec\0");
+        buf.put_u32(4); // "exec".len()
+        buf.put_slice(b"exec");
         buf.put_u8(0); // want_reply = false
+        buf.put_u32(command_len as u32);
         buf.put_slice(command.as_bytes());
-        buf.put_u8(0); // null terminator
 
         Message::from_bytes(buf.to_vec())
     }
 
     /// Request subsystem
     pub fn request_subsystem(&self, name: &str) -> Message {
-        let mut buf = BytesMut::with_capacity(1 + 4 + name.len() + 1 + 1);
+        let name_len = name.len();
+        let mut buf = BytesMut::with_capacity(1 + 4 + 4 + 1 + 4 + name_len);
         buf.put_u8(MessageType::ChannelRequest.value());
         buf.put_u32(self.channel_id);
-        buf.put_u32(name.len() as u32 + 1);
+        buf.put_u32(9); // "subsystem".len()
+        buf.put_slice(b"subsystem");
+        buf.put_u8(0); // want_reply = false
+        buf.put_u32(name_len as u32);
         buf.put_slice(name.as_bytes());
-        buf.put_u8(0); // null terminator
-        buf.put_u8(1); // want_reply = true
 
         Message::from_bytes(buf.to_vec())
     }
@@ -351,30 +354,33 @@ impl Session {
 
     /// Request environment variable
     pub fn request_env(&self, name: &str, value: &str) -> Message {
-        let mut buf = BytesMut::with_capacity(1 + 4 + 4 + 1 + name.len() + 1 + value.len() + 1);
+        let name_len = name.len();
+        let value_len = value.len();
+        let mut buf = BytesMut::with_capacity(1 + 4 + 4 + 1 + 4 + name_len + 4 + value_len);
         buf.put_u8(MessageType::ChannelRequest.value());
         buf.put_u32(self.channel_id);
-        buf.put_u32(4); // "env\0".len()
-        buf.put_slice(b"env\0");
-        buf.put_u8(1); // want_reply = true
+        buf.put_u32(4); // "env".len()
+        buf.put_slice(b"env");
+        buf.put_u8(0); // want_reply = false
+        buf.put_u32(name_len as u32);
         buf.put_slice(name.as_bytes());
-        buf.put_u8(0); // null terminator
+        buf.put_u32(value_len as u32);
         buf.put_slice(value.as_bytes());
-        buf.put_u8(0); // null terminator
 
         Message::from_bytes(buf.to_vec())
     }
 
     /// Send signal
     pub fn send_signal(&self, signal: &str) -> Message {
-        let mut buf = BytesMut::with_capacity(1 + 4 + 6 + 1 + signal.len() + 1);
+        let signal_len = signal.len();
+        let mut buf = BytesMut::with_capacity(1 + 4 + 6 + 1 + 4 + signal_len);
         buf.put_u8(MessageType::ChannelRequest.value());
         buf.put_u32(self.channel_id);
-        buf.put_u32(6); // "signal\0".len()
-        buf.put_slice(b"signal\0");
+        buf.put_u32(6); // "signal".len()
+        buf.put_slice(b"signal");
         buf.put_u8(0); // want_reply = false
+        buf.put_u32(signal_len as u32);
         buf.put_slice(signal.as_bytes());
-        buf.put_u8(0); // null terminator
 
         Message::from_bytes(buf.to_vec())
     }
@@ -411,11 +417,11 @@ impl Session {
 
     /// Send keepalive
     pub fn send_keepalive(&self, want_reply: bool) -> Message {
-        let mut buf = BytesMut::with_capacity(1 + 4 + 18 + 1);
+        let mut buf = BytesMut::with_capacity(1 + 4 + 21 + 1);
         buf.put_u8(MessageType::ChannelRequest.value());
         buf.put_u32(self.channel_id);
-        buf.put_u32(18); // "keepalive@openssh.com".len()
-        buf.put_slice(b"keepalive@openssh.com\0");
+        buf.put_u32(21); // "keepalive@openssh.com".len()
+        buf.put_slice(b"keepalive@openssh.com");
         buf.put_u8(if want_reply { 1 } else { 0 });
 
         Message::from_bytes(buf.to_vec())

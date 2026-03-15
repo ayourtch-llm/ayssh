@@ -166,15 +166,13 @@ fn test_session_request_exec() {
     // Verify message type
     assert_eq!(msg.msg_type(), Some(MessageType::ChannelRequest));
 
-    // Message structure:
-    // byte: message type (1)
-    // uint32: channel_id (4)
-    // string: "exec" (4 + 4)
-    // boolean: want_reply (1)
-    // string: "ls -la" (4 + 6)
-    
-    // Command starts at offset: 1 + 4 + 8 + 1 = 14
-    let command_offset = 14;
+    // Verify request name
+    let offset = 1 + 4; // Skip msg type and channel id (points to request_name length field)
+    let request_name = msg.read_string_slice(offset).unwrap();
+    assert_eq!(request_name, "exec");
+
+    // Verify command
+    let command_offset = offset + 4 + request_name.len() + 1; // +1 for want_reply (false)
     let command = msg.read_string_slice(command_offset).unwrap();
     assert_eq!(command, "ls -la");
 }
@@ -195,15 +193,13 @@ fn test_session_request_subsystem() {
     // Verify message type
     assert_eq!(msg.msg_type(), Some(MessageType::ChannelRequest));
 
-    // Message structure:
-    // byte: message type (1)
-    // uint32: channel_id (4)
-    // string: "subsystem" (4 + 9)
-    // boolean: want_reply (1)
-    // string: "sftp" (4 + 4)
-    
-    // Subsystem starts at offset: 1 + 4 + 13 + 1 = 19
-    let subsystem_offset = 19;
+    // Verify request name
+    let offset = 1 + 4; // Skip msg type and channel id (points to request_name length field)
+    let request_name = msg.read_string_slice(offset).unwrap();
+    assert_eq!(request_name, "subsystem");
+
+    // Verify subsystem
+    let subsystem_offset = offset + 4 + request_name.len() + 1; // +1 for want_reply (false)
     let subsystem = msg.read_string_slice(subsystem_offset).unwrap();
     assert_eq!(subsystem, "sftp");
 }
@@ -246,23 +242,67 @@ fn test_session_request_env() {
     // Verify message type
     assert_eq!(msg.msg_type(), Some(MessageType::ChannelRequest));
 
-    // Message structure:
-    // byte: message type (1)
-    // uint32: channel_id (4)
-    // string: "env" (4 + 3)
-    // boolean: want_reply (1)
-    // string: "PATH" (4 + 4)
-    // string: "/usr/bin:/bin" (4 + 13)
-    
-    // Name starts at offset: 1 + 4 + 7 + 1 = 13
-    let name_offset = 13;
+    // Verify request name
+    let offset = 1 + 4; // Skip msg type and channel id (points to request_name length field)
+    let request_name = msg.read_string_slice(offset).unwrap();
+    assert_eq!(request_name, "env");
+
+    // Verify environment variable name
+    let name_offset = offset + 4 + request_name.len() + 1; // +1 for want_reply (false)
     let name = msg.read_string_slice(name_offset).unwrap();
     assert_eq!(name, "PATH");
 
-    // Value starts at offset: 13 + 4 + 4 = 21
-    let value_offset = 21;
+    // Verify environment variable value
+    let value_offset = name_offset + 4 + name.len();
     let value = msg.read_string_slice(value_offset).unwrap();
     assert_eq!(value, "/usr/bin:/bin");
+}
+
+#[test]
+fn debug_env_message() {
+    use ssh_client::channel::{Channel, ChannelId, ChannelType};
+    use ssh_client::session::Session;
+    
+    let channel = Channel::new(
+        ChannelId::new(1),
+        ChannelId::new(100),
+        ChannelType::Session,
+        65536,
+        32768,
+    );
+
+    let session = Session::new(channel.clone());
+    let msg = session.request_env("PATH", "/usr/bin:/bin");
+
+    let data = msg.as_bytes();
+    println!("Message length: {} bytes", data.len());
+    println!("Message bytes:");
+    for (i, byte) in data.iter().enumerate() {
+        if i > 0 && i % 16 == 0 {
+            println!();
+        }
+        print!("{:02x} ", byte);
+    }
+    println!("\n");
+    
+    // Decode request_name
+    let name_len = u32::from_be_bytes([data[5], data[6], data[7], data[8]]) as usize;
+    println!("Request name length: {} (bytes 5-8)", name_len);
+    
+    let request_name = std::str::from_utf8(&data[9..9+name_len]).unwrap();
+    println!("Request name: \"{}\" (length: {})", request_name, name_len);
+    
+    // Decode want_reply
+    let want_reply = data[9+name_len];
+    println!("Want reply: {} (byte {})", want_reply, 9+name_len);
+    
+    // Decode env name
+    let name_offset = 9 + name_len + 1;
+    let env_name_len = u32::from_be_bytes([data[name_offset], data[name_offset+1], data[name_offset+2], data[name_offset+3]]) as usize;
+    println!("Env name length: {} (bytes {}-{})", env_name_len, name_offset, name_offset+3);
+    
+    let env_name = std::str::from_utf8(&data[name_offset+4..name_offset+4+env_name_len]).unwrap();
+    println!("Env name: \"{}\" (length: {})", env_name, env_name_len);
 }
 
 #[test]
@@ -311,7 +351,7 @@ fn test_session_notify_window_change() {
     assert_eq!(msg.msg_type(), Some(MessageType::ChannelRequest));
 
     // Verify request name
-    let offset = 1 + 4 + 4; // Skip msg type, channel id, and request name length
+    let offset = 1 + 4; // Skip msg type and channel id (points to request_name length field)
     let request_name = msg.read_string_slice(offset).unwrap();
     assert_eq!(request_name, "window-change");
 
@@ -367,6 +407,42 @@ fn test_session_send_keepalive() {
     let offset = 1 + 4; // Skip msg type and channel id
     let request_name = msg.read_string_slice(offset).unwrap();
     assert_eq!(request_name, "keepalive@openssh.com");
+}
+
+#[test]
+fn debug_keepalive_message() {
+    use ssh_client::channel::{Channel, ChannelId, ChannelType};
+    use ssh_client::session::Session;
+    
+    let channel = Channel::new(
+        ChannelId::new(1),
+        ChannelId::new(100),
+        ChannelType::Session,
+        65536,
+        32768,
+    );
+
+    let session = Session::new(channel.clone());
+    let msg = session.send_keepalive(false);
+
+    let data = msg.as_bytes();
+    println!("Message length: {} bytes", data.len());
+    println!("Message bytes:");
+    for (i, byte) in data.iter().enumerate() {
+        if i > 0 && i % 16 == 0 {
+            println!();
+        }
+        print!("{:02x} ", byte);
+    }
+    println!("\n");
+    
+    // Decode length field
+    let name_len = u32::from_be_bytes([data[5], data[6], data[7], data[8]]) as usize;
+    println!("Length field (bytes 5-8): {} (should be 21)", name_len);
+    
+    // Decode string
+    let name = std::str::from_utf8(&data[9..9+name_len]).unwrap();
+    println!("String: \"{}\" (length: {})", name, name.len());
 }
 
 #[test]
