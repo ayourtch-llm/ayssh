@@ -26,18 +26,41 @@ impl SshClient {
     }
 
     /// Connect to the server
+    ///
+    /// This is a placeholder implementation. In a real implementation,
+    /// this would:
+    /// 1. Establish TCP connection
+    /// 2. Perform version exchange
+    /// 3. Perform key exchange
+    /// 4. Authenticate
+    /// 5. Open session channel
+    /// 6. Return Session
     pub async fn connect(&self) -> Result<Session, crate::SshError> {
-        // Placeholder implementation
-        Ok(Session::new(self.host.clone(), self.port))
+        // Placeholder: In real implementation, this would create a Channel
+        // For now, return an error indicating this needs implementation
+        Err(crate::SshError::SessionError(
+            "Session creation requires Channel from authenticated connection".into()
+        ))
     }
 
     /// Connect with authentication
+    ///
+    /// This is a placeholder implementation. In a real implementation,
+    /// this would:
+    /// 1. Establish TCP connection
+    /// 2. Perform version exchange
+    /// 3. Perform key exchange
+    /// 4. Authenticate with provided method
+    /// 5. Open session channel
+    /// 6. Return Session
     pub async fn connect_with_auth(
         &self,
         _auth_method: AuthMethod,
     ) -> Result<Session, crate::SshError> {
-        // Placeholder implementation
-        let session = Session::new(self.host.clone(), self.port);
-        Ok(session)
+        // Placeholder: In real implementation, this would create a Channel
+        // For now, return an error indicating this needs implementation
+        Err(crate::SshError::SessionError(
+            "Session creation requires Channel from authenticated connection".into()
+        ))
     }
 }
