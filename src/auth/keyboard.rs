@@ -127,36 +127,43 @@ impl<'a> KeyboardInteractiveAuthenticator<'a> {
         }
     }
 
-    /// Sends the initial keyboard-interactive authentication request
+    /// Sends the initial keyboard-interactive authentication request per RFC 4256 Section 3.1
     async fn send_auth_request(&mut self) -> Result<(), SshError> {
         let mut msg = Message::new();
         msg.write_byte(MessageType::UserauthRequest.value());
         msg.write_string(self.username.as_bytes());
         msg.write_string(self.service.as_bytes());
         msg.write_string(b"keyboard-interactive");
-        msg.write_string(b""); // authorization shell (empty)
+        msg.write_string(self.language_tag.as_bytes()); // language tag (usually empty)
+        msg.write_string(b""); // submethods (usually empty)
 
         self.transport.send_message(&msg.as_bytes()).await?;
         Ok(())
     }
 
-    /// Parses a UserauthInfoRequest message into a Challenge
+    /// Parses a UserauthInfoRequest message into a Challenge per RFC 4256 Section 3.3
     fn parse_challenge(&self, msg: &Message) -> Result<Challenge, SshError> {
         let mut offset = 1; // Skip message type
 
-        // Language tag
-        let lang_bytes = msg.read_string(offset).ok_or_else(|| {
-            SshError::ProtocolError("Failed to read language tag".to_string())
+        // Name (can be empty)
+        let name_bytes = msg.read_string(offset).ok_or_else(|| {
+            SshError::ProtocolError("Failed to read challenge name".to_string())
         })?;
-        let language_tag = String::from_utf8_lossy(&lang_bytes).to_string();
-        offset += 4 + lang_bytes.len();
+        let name = String::from_utf8_lossy(&name_bytes).to_string();
+        offset += 4 + name_bytes.len();
 
-        // Instructions (can be empty)
+        // Instruction (can be empty)
         let instruction_bytes = msg.read_string(offset).ok_or_else(|| {
             SshError::ProtocolError("Failed to read instruction".to_string())
         })?;
         let instruction = String::from_utf8_lossy(&instruction_bytes).to_string();
         offset += 4 + instruction_bytes.len();
+
+        // Language tag (can be empty, usually is)
+        let _lang_bytes = msg.read_string(offset).ok_or_else(|| {
+            SshError::ProtocolError("Failed to read language tag".to_string())
+        })?;
+        offset += 4 + _lang_bytes.len();
 
         // Number of prompts
         let num_prompts = msg.read_uint32(offset).ok_or_else(|| {
@@ -184,26 +191,23 @@ impl<'a> KeyboardInteractiveAuthenticator<'a> {
         }
 
         Ok(Challenge {
-            name: String::new(), // Name is typically empty in OpenSSH
+            name,
             instruction,
             num_prompts,
             prompts,
         })
     }
 
-    /// Sends responses to a challenge
+    /// Sends responses to a challenge per RFC 4256 Section 3.4
     async fn send_responses(&mut self, responses: &[String]) -> Result<(), SshError> {
         let mut msg = Message::new();
-        msg.write_byte(MessageType::UserauthRequest.value());
-        msg.write_string(self.username.as_bytes());
-        msg.write_string(self.service.as_bytes());
-        msg.write_string(b"keyboard-interactive");
-        msg.write_string(b""); // language tag (empty)
+        // SSH_MSG_USERAUTH_INFO_RESPONSE = 61
+        msg.write_byte(MessageType::UserauthInfoResponse.value());
 
         // Number of responses
         msg.write_uint32(responses.len() as u32);
 
-        // Each response
+        // Each response as SSH string
         for response in responses {
             msg.write_string(response.as_bytes());
         }

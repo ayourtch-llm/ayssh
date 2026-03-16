@@ -17,6 +17,8 @@ pub enum ConnectionType {
     CiscoSsh,
     /// SSH connection with RSA public key authentication
     CiscoSshKey,
+    /// SSH connection with keyboard-interactive authentication
+    CiscoSshKbdInteractive,
 }
 
 /// Configuration for CiscoConn command execution
@@ -206,6 +208,27 @@ impl CiscoConn {
                             ));
                         }
                     }
+                }
+                ConnectionType::CiscoSshKbdInteractive => {
+                    let password = password.to_string();
+                    let mut kbd_auth = crate::auth::KeyboardInteractiveAuthenticator::new(
+                        &mut transport,
+                        username.to_string(),
+                    );
+
+                    kbd_auth.authenticate(|challenge| {
+                        debug!("Keyboard-interactive challenge: name={:?}, instruction={:?}, {} prompts",
+                               challenge.name, challenge.instruction, challenge.num_prompts);
+                        for prompt in &challenge.prompts {
+                            debug!("  Prompt: {:?} (echo={})", prompt.prompt, prompt.echo);
+                        }
+                        // Respond to each prompt with the password
+                        Ok(challenge.prompts.iter().map(|_| password.clone()).collect())
+                    }).await.map_err(|e| {
+                        SshError::AuthenticationFailed(format!("Keyboard-interactive auth failed: {}", e))
+                    })?;
+
+                    info!("Keyboard-interactive authentication successful");
                 }
             }
 
