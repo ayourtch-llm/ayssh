@@ -492,8 +492,8 @@ impl Transport {
                     newkeys_bytes.extend_from_slice(&newkeys_buffer[..n]);
                     
                     // SSH packet format: [length (4 bytes)][padding_length (1 byte)][payload]
-                    // Message type is at byte 5, not byte 0
-                    if newkeys_bytes.len() >= 5 && newkeys_bytes[5] == crate::protocol::MessageType::Newkeys as u8 {
+                    // Message type is at byte 5 (index 5), so we need at least 6 bytes
+                    if newkeys_bytes.len() >= 6 && newkeys_bytes[5] == crate::protocol::MessageType::Newkeys as u8 {
                         debug!("Received valid NEWKEYS message ({} bytes)", newkeys_bytes.len());
                         break;
                     }
@@ -513,7 +513,7 @@ impl Transport {
             }
         }
         
-        if newkeys_bytes.len() < 5 || newkeys_bytes[5] != crate::protocol::MessageType::Newkeys as u8 {
+        if newkeys_bytes.len() < 6 || newkeys_bytes[5] != crate::protocol::MessageType::Newkeys as u8 {
             return Err(crate::error::SshError::ProtocolError(
                 "Expected NEWKEYS from server".to_string()
             ));

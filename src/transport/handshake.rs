@@ -443,7 +443,9 @@ pub async fn perform_handshake<T: AsyncReadExt + AsyncWriteExt + Unpin>(
     let mut newkeys_bytes = vec![0u8; len3];
     transport_session.stream_mut().read_exact(&mut newkeys_bytes).await?;
     
-    if newkeys_bytes[0] != protocol::MessageType::Newkeys as u8 {
+    // newkeys_bytes contains: [padding_length (1 byte)][payload][padding]
+    // The message type is at byte 1 (after padding_length byte)
+    if newkeys_bytes.len() < 2 || newkeys_bytes[1] != protocol::MessageType::Newkeys as u8 {
         return Err(crate::error::SshError::ProtocolError(
             "Expected NEWKEYS from server".to_string()
         ));
