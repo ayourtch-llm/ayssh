@@ -179,8 +179,13 @@ async fn handle_connection(
     let server_ephemeral = kex_context.client_ephemeral.clone().unwrap();
 
     // Process client's ephemeral key
-    // For DH: client_e is the raw mpint value, need to wrap as length-prefixed for process_server_kex_init
-    // For ECDH: client_e is the raw public key
+    // process_server_kex_init expects the data AFTER the host key string
+    // in KEXDH_REPLY format: [string Q_S][string sig]
+    // For the server receiving KEXDH_INIT, the data is just [string e]
+    // which is already length-prefixed in client_e_data
+    debug!("Client e: {} bytes, first 4: {:?}", client_e.len(),
+           &client_e[..std::cmp::min(4, client_e.len())]);
+    // Wrap as length-prefixed for process_server_kex_init
     let mut client_e_for_kex = Vec::with_capacity(4 + client_e.len());
     client_e_for_kex.extend_from_slice(&(client_e.len() as u32).to_be_bytes());
     client_e_for_kex.extend_from_slice(client_e);

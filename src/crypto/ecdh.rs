@@ -88,20 +88,18 @@ impl EcdhKeyPair {
     }
 
     /// Generate NIST P-256 key pair
-    fn generate_nistp256(rng: &mut impl rand::RngCore) -> Self {
-        use k256::SecretKey;
-        use k256::elliptic_curve::sec1::ToEncodedPoint;
-        
-        // Generate random private key
+    fn generate_nistp256(_rng: &mut impl rand::RngCore) -> Self {
+        use p256::SecretKey;
+        use p256::elliptic_curve::sec1::ToEncodedPoint;
+
         let secret_key = SecretKey::random(&mut rand::thread_rng());
         let private_key = secret_key.to_bytes().to_vec();
-        
-        // Derive public key
+
         let public_key_bytes = secret_key.public_key()
             .to_encoded_point(false)
             .as_ref()
             .to_vec();
-        
+
         Self {
             curve: CurveType::Nistp256,
             private_key,
@@ -185,28 +183,21 @@ impl EcdhKeyPair {
 
     /// Compute NIST P-256 shared secret
     fn compute_nistp256_shared_secret(&self, peer_public: &[u8]) -> Vec<u8> {
-        use k256::elliptic_curve::sec1::FromEncodedPoint;
-        use k256::elliptic_curve::point::AffineCoordinates;
-        use k256::SecretKey as K256SecretKey;
-        use k256::ProjectivePoint;
-        
-        // Parse peer's public key as an encoded point
-        let peer_point = k256::EncodedPoint::from_bytes(peer_public).expect("Invalid peer public key");
-        
-        // Convert to public key
-        let peer_public_key = k256::PublicKey::from_encoded_point(&peer_point).expect("Invalid peer point");
-        
-        // Parse our private key
-        let our_secret = K256SecretKey::from_bytes(self.private_key.as_slice().try_into()
+        use p256::elliptic_curve::sec1::FromEncodedPoint;
+        use p256::elliptic_curve::point::AffineCoordinates;
+        use p256::SecretKey as P256SecretKey;
+        use p256::ProjectivePoint;
+
+        let peer_point = p256::EncodedPoint::from_bytes(peer_public).expect("Invalid peer public key");
+        let peer_public_key = p256::PublicKey::from_encoded_point(&peer_point).expect("Invalid peer point");
+
+        let our_secret = P256SecretKey::from_bytes(self.private_key.as_slice().try_into()
             .expect("Invalid private key")).expect("Failed to parse private key");
-        
-        // Compute shared secret: scalar * peer_public
-        // We need to dereference the NonZeroScalar for the multiplication
+
         let our_affine = peer_public_key.as_affine();
         let shared_point = ProjectivePoint::from(our_affine) * *our_secret.to_nonzero_scalar();
-        
-        // Convert back to affine and get x-coordinate
-        let shared_affine = k256::AffinePoint::from(shared_point);
+
+        let shared_affine = p256::AffinePoint::from(shared_point);
         let x = shared_affine.x();
         x.as_slice().to_vec()
     }
