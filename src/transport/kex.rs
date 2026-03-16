@@ -12,7 +12,7 @@ use crate::crypto::ecdh::{CurveType, EcdhKeyPair};
 use crate::crypto::kdf;
 use crate::protocol;
 use bytes::{Buf, BufMut, BytesMut};
-use rand::RngCore;
+use rand::{Rng, RngCore};
 use sha1::Sha1;
 use sha2::{Digest, Sha256, Sha384};
 use tracing::debug;
@@ -476,7 +476,9 @@ pub fn encode_newkeys() -> Vec<u8> {
     let total_without_padding = 4 + 1 + payload_len; // length field + padding_length field + payload
     let remainder = total_without_padding % 8;
     let mut padding_length = if remainder == 0 {
-        8u8 // Already aligned, but need at least 4 bytes padding, and 8 maintains alignment
+        // Already aligned, use 8 bytes of padding to maintain alignment
+        // while satisfying the minimum 4-byte padding requirement
+        8u8
     } else {
         (8 - remainder) as u8
     };
@@ -493,7 +495,11 @@ pub fn encode_newkeys() -> Vec<u8> {
     msg.extend_from_slice(&packet_length.to_be_bytes()); // 4-byte length
     msg.push(padding_length); // 1-byte padding length
     msg.extend_from_slice(&payload); // payload (message type byte)
-    msg.extend(std::iter::repeat(0u8).take(padding_length as usize)); // padding
+
+    // RFC 4253 Section 6: padding SHOULD be random bytes
+    let mut padding = vec![0u8; padding_length as usize];
+    rand::thread_rng().fill(&mut padding[..]);
+    msg.extend_from_slice(&padding);
 
     msg
 }
