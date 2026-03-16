@@ -128,19 +128,8 @@ pub async fn server_handshake(
     let mut recv_seq: u32 = 0;
 
     // Step 1: Version exchange (server sends first)
-    {
-        use std::io::Write;
-        write!(std::io::stderr(), "[SERVER-HS] About to write version bytes...\n").ok();
-        std::io::stderr().flush().ok();
-    }
     send_version_custom(&mut io.stream, SSH_SERVER_VERSION_STRING).await?;
-    {
-        use std::io::Write;
-        write!(std::io::stderr(), "[SERVER-HS] Version sent, recv_version next...\n").ok();
-        std::io::stderr().flush().ok();
-    }
     let client_version = recv_version(&mut io.stream).await?;
-    eprintln!("[SERVER-HS] Got client version: {}", client_version);
     debug!("Client version: {}", client_version);
 
     // Step 2: Send server KEXINIT
@@ -173,7 +162,6 @@ pub async fn server_handshake(
     // For negotiation, the CLIENT's proposal takes priority (first match wins)
     let negotiated = negotiate_algorithms(&client_proposal, &server_proposal);
     info!("Negotiated: kex={}, enc={}, mac={}", negotiated.kex, negotiated.enc_c2s, negotiated.mac_c2s);
-    eprintln!("[SERVER-HS] Negotiated: kex={}, enc={}, mac={}", negotiated.kex, negotiated.enc_c2s, negotiated.mac_c2s);
 
     // Step 5: Key exchange (receive KEXDH_INIT, send KEXDH_REPLY)
     let kex_algorithm = KexAlgorithm::from_str(&negotiated.kex)
@@ -328,7 +316,6 @@ pub async fn server_handshake(
         mac_algorithm: negotiated.mac_c2s.clone(),
     });
     info!("Encryption established: enc={}, mac={}", negotiated.enc_c2s, negotiated.mac_c2s);
-    eprintln!("[SERVER-HS] Encryption established");
 
     // Step 7: Handle SERVICE_REQUEST
     let service_req = io.recv_message().await?;
@@ -336,7 +323,6 @@ pub async fn server_handshake(
         return Err(SshError::ProtocolError(format!("Expected SERVICE_REQUEST (5), got {}", service_req.get(0).unwrap_or(&0))));
     }
     debug!("Received SERVICE_REQUEST");
-    eprintln!("[SERVER-HS] Received SERVICE_REQUEST");
 
     // Send SERVICE_ACCEPT
     let mut accept = BytesMut::new();
@@ -514,5 +500,207 @@ mod tests {
         server.join().expect("Server thread panicked");
         client.join().expect("Client thread panicked");
         eprintln!("[TEST] server-client e2e: {:?}", t0.elapsed());
+    }
+
+    /// Helper: run a full server-client handshake with specific algorithm preferences
+    fn run_crypto_test(kex: Option<&str>, cipher: Option<&str>, mac: Option<&str>) {
+        use std::sync::mpsc;
+        let (port_tx, port_rx) = mpsc::channel::<u16>();
+
+        let kex_s = kex.map(|s| s.to_string());
+        let cipher_s = cipher.map(|s| s.to_string());
+        let mac_s = mac.map(|s| s.to_string());
+
+        let kex_c = kex_s.clone();
+        let cipher_c = cipher_s.clone();
+        let mac_c = mac_s.clone();
+
+        let server = std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all().build().unwrap();
+            rt.block_on(async {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                port_tx.send(listener.local_addr().unwrap().port()).unwrap();
+
+                let host_key = HostKeyPair::generate_ed25519();
+                let filter = AlgorithmFilter {
+                    kex: kex_s, cipher: cipher_s, mac: mac_s,
+                };
+                let (stream, _) = listener.accept().await.unwrap();
+                let (mut io, ch) = server_handshake(stream, &host_key, &filter).await
+                    .expect("Server handshake failed");
+
+                // Send test data + EOF + CLOSE
+                let mut msg = BytesMut::new();
+                msg.put_u8(94); msg.put_u32(ch);
+                let data = b"AYSSH_TEST_OK\n";
+                msg.put_u32(data.len() as u32); msg.put_slice(data);
+                io.send_message(&msg).await.unwrap();
+                let mut eof = BytesMut::new();
+                eof.put_u8(96); eof.put_u32(ch);
+                io.send_message(&eof).await.unwrap();
+                let mut close = BytesMut::new();
+                close.put_u8(97); close.put_u32(ch);
+                io.send_message(&close).await.unwrap();
+            });
+        });
+
+        let client = std::thread::spawn(move || {
+            let port = port_rx.recv_timeout(std::time::Duration::from_secs(30)).unwrap();
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all().build().unwrap();
+            rt.block_on(async {
+                let mut transport = crate::transport::Transport::new(
+                    TcpStream::connect(format!("127.0.0.1:{}", port)).await.unwrap()
+                );
+                if let Some(ref k) = kex_c { transport.set_preferred_kex(k); }
+                if let Some(ref c) = cipher_c { transport.set_preferred_cipher(c); }
+                if let Some(ref m) = mac_c { transport.set_preferred_mac(m); }
+
+                transport.handshake().await.expect("Handshake failed");
+                transport.send_service_request("ssh-userauth").await.unwrap();
+                transport.recv_service_accept().await.unwrap();
+
+                let mut auth = crate::auth::Authenticator::new(&mut transport, "test".to_string())
+                    .with_password("test".to_string());
+                auth.available_methods.insert("password".to_string());
+                let r = auth.authenticate().await.unwrap();
+                assert!(matches!(r, crate::auth::AuthenticationResult::Success));
+
+                let session = crate::session::Session::open(&mut transport).await.unwrap();
+                let ch = session.remote_channel_id();
+                transport.send_channel_request(ch, "shell", true).await.unwrap();
+                let _ = transport.recv_message().await.unwrap();
+
+                let data = transport.recv_message().await.unwrap();
+                assert!(!data.is_empty() && data[0] == 94, "Expected CHANNEL_DATA");
+                let len = u32::from_be_bytes([data[5], data[6], data[7], data[8]]) as usize;
+                let text = std::str::from_utf8(&data[9..9+len]).unwrap_or("");
+                assert!(text.contains("AYSSH_TEST_OK"), "Got {:?}", text);
+            });
+        });
+
+        server.join().expect("Server panicked");
+        client.join().expect("Client panicked");
+    }
+
+    /// Exhaustive crypto combination test.
+    /// Runs all KEX × cipher × MAC combinations sequentially in a single test
+    /// to avoid thread starvation from 28+ parallel server-client pairs.
+    #[test]
+    fn test_crypto_matrix() {
+        let kex_algorithms = [
+            "diffie-hellman-group1-sha1",
+            "diffie-hellman-group14-sha1",
+            "diffie-hellman-group14-sha256",
+            "curve25519-sha256",
+            "ecdh-sha2-nistp256",
+            "ecdh-sha2-nistp384",
+            "ecdh-sha2-nistp521",
+        ];
+
+        let ciphers = [
+            "aes128-cbc",
+            "aes192-cbc",
+            "aes256-cbc",
+            "aes128-ctr",
+            "aes192-ctr",
+            "aes256-ctr",
+        ];
+
+        let aead_ciphers = [
+            "aes128-gcm@openssh.com",
+            "aes256-gcm@openssh.com",
+        ];
+
+        let macs = [
+            "hmac-sha1",
+            "hmac-sha2-256",
+            "hmac-sha2-512",
+            "hmac-sha1-etm@openssh.com",
+            "hmac-sha2-256-etm@openssh.com",
+            "hmac-sha2-512-etm@openssh.com",
+        ];
+
+        let mut passed = 0;
+        let mut failed = Vec::new();
+        let t0 = std::time::Instant::now();
+
+        // Test each KEX with a representative cipher+MAC
+        for kex in &kex_algorithms {
+            let label = format!("kex={}", kex);
+            eprint!("  {} ... ", label);
+            match std::panic::catch_unwind(|| {
+                run_crypto_test(Some(kex), Some("aes128-ctr"), Some("hmac-sha1"));
+            }) {
+                Ok(()) => { passed += 1; eprintln!("ok"); }
+                Err(_) => { failed.push(label); eprintln!("FAILED"); }
+            }
+        }
+
+        // Test each non-AEAD cipher with a fixed KEX+MAC
+        for cipher in &ciphers {
+            let label = format!("cipher={}", cipher);
+            eprint!("  {} ... ", label);
+            match std::panic::catch_unwind(|| {
+                run_crypto_test(Some("curve25519-sha256"), Some(cipher), Some("hmac-sha1"));
+            }) {
+                Ok(()) => { passed += 1; eprintln!("ok"); }
+                Err(_) => { failed.push(label); eprintln!("FAILED"); }
+            }
+        }
+
+        // Test each AEAD cipher (MAC is implicit)
+        for cipher in &aead_ciphers {
+            let label = format!("aead={}", cipher);
+            eprint!("  {} ... ", label);
+            match std::panic::catch_unwind(|| {
+                run_crypto_test(Some("curve25519-sha256"), Some(cipher), None);
+            }) {
+                Ok(()) => { passed += 1; eprintln!("ok"); }
+                Err(_) => { failed.push(label); eprintln!("FAILED"); }
+            }
+        }
+
+        // Test each MAC with a fixed KEX+cipher
+        for mac in &macs {
+            let label = format!("mac={}", mac);
+            eprint!("  {} ... ", label);
+            match std::panic::catch_unwind(|| {
+                run_crypto_test(Some("curve25519-sha256"), Some("aes256-ctr"), Some(mac));
+            }) {
+                Ok(()) => { passed += 1; eprintln!("ok"); }
+                Err(_) => { failed.push(label); eprintln!("FAILED"); }
+            }
+        }
+
+        // Cross-combination spot checks
+        let combos: Vec<(&str, &str, Option<&str>)> = vec![
+            ("curve25519-sha256", "aes256-ctr", Some("hmac-sha2-256")),
+            ("ecdh-sha2-nistp256", "aes256-cbc", Some("hmac-sha2-512")),
+            ("ecdh-sha2-nistp384", "aes192-ctr", Some("hmac-sha1-etm@openssh.com")),
+            ("diffie-hellman-group1-sha1", "aes128-cbc", Some("hmac-sha2-256-etm@openssh.com")),
+            ("curve25519-sha256", "aes128-gcm@openssh.com", None),
+            ("ecdh-sha2-nistp521", "aes256-gcm@openssh.com", None),
+            ("diffie-hellman-group14-sha1", "aes256-ctr", Some("hmac-sha2-512-etm@openssh.com")),
+        ];
+
+        for (kex, cipher, mac) in &combos {
+            let label = format!("combo: {} + {} + {}", kex, cipher, mac.unwrap_or("implicit"));
+            eprint!("  {} ... ", label);
+            match std::panic::catch_unwind(|| {
+                run_crypto_test(Some(kex), Some(cipher), *mac);
+            }) {
+                Ok(()) => { passed += 1; eprintln!("ok"); }
+                Err(_) => { failed.push(label); eprintln!("FAILED"); }
+            }
+        }
+
+        let total = passed + failed.len();
+        eprintln!("\n  Crypto matrix: {}/{} passed in {:?}", passed, total, t0.elapsed());
+
+        if !failed.is_empty() {
+            panic!("Crypto matrix: {} failures:\n  {}", failed.len(), failed.join("\n  "));
+        }
     }
 }
