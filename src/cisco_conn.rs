@@ -318,9 +318,51 @@ impl CiscoConn {
         Ok(conn)
     }
 
-    /// Send raw bytes to the device over the SSH channel
-    async fn send(&mut self, data: &[u8]) -> Result<(), SshError> {
+    /// Send raw bytes to the device over the SSH channel.
+    pub async fn send(&mut self, data: &[u8]) -> Result<(), SshError> {
         self.transport.send_channel_data(self.channel_id, data).await
+    }
+
+    /// Receive raw data bytes from the SSH channel.
+    ///
+    /// Semantics:
+    /// - If data is already buffered or immediately available, return it RIGHT AWAY
+    ///   (do NOT wait for more data or for the timeout to expire)
+    /// - Only block up to `timeout` if there is NO data available yet
+    /// - Returns an empty Vec if the timeout expires with no data
+    /// - This means: first chunk arrives fast, caller can call again for more
+    ///
+    /// This enables the caller to do fast-paced incremental pattern matching
+    /// without being blocked waiting for a full buffer or timeout.
+    ///
+    /// Ignores non-data SSH messages (window adjust, etc.).
+    /// This is a low-level method — no prompt detection or delimiter matching.
+    pub async fn receive(&mut self, timeout: Duration) -> Result<Vec<u8>, SshError> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            match tokio::time::timeout_at(deadline, self.transport.recv_message()).await {
+                Ok(Ok(msg)) if !msg.is_empty() && msg[0] == 94 => {
+                    // SSH_MSG_CHANNEL_DATA: extract payload
+                    if msg.len() > 9 {
+                        let data_len = u32::from_be_bytes([msg[5], msg[6], msg[7], msg[8]]) as usize;
+                        if msg.len() >= 9 + data_len {
+                            return Ok(msg[9..9 + data_len].to_vec());
+                        }
+                    }
+                    return Ok(vec![]);
+                }
+                Ok(Ok(msg)) if !msg.is_empty() && msg[0] == 93 => {
+                    // SSH_MSG_CHANNEL_WINDOW_ADJUST: ignore, continue within deadline
+                    continue;
+                }
+                Ok(Ok(msg)) => {
+                    debug!("receive: ignoring msg type {}", msg.first().unwrap_or(&0));
+                    continue;
+                }
+                Ok(Err(e)) => return Err(e),
+                Err(_) => return Ok(vec![]), // timeout — no data available
+            }
+        }
     }
 
     /// Receive data from the device until a delimiter is found or timeout
@@ -442,5 +484,195 @@ mod tests {
         assert_eq!(config.timeout, Duration::from_secs(30));
         assert_eq!(config.read_timeout, Duration::from_secs(30));
         assert!(!config.prompts.is_empty());
+    }
+
+    /// Test that send() and receive() work for raw byte I/O.
+    /// Uses our test SSH server on 127.0.0.1.
+    #[test]
+    fn test_send_receive_raw() {
+        use crate::server::{HostKeyPair, AlgorithmFilter, server_handshake};
+        use bytes::{BufMut, BytesMut};
+
+        let (port_tx, port_rx) = std::sync::mpsc::channel::<u16>();
+
+        // Server: accept, handshake, echo back whatever client sends
+        let server = std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all().build().unwrap();
+            rt.block_on(async {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                port_tx.send(listener.local_addr().unwrap().port()).unwrap();
+
+                let host_key = HostKeyPair::generate_ed25519();
+                let filter = AlgorithmFilter::default();
+                let (stream, _) = listener.accept().await.unwrap();
+                let (mut io, ch) = server_handshake(stream, &host_key, &filter).await
+                    .expect("Server handshake failed");
+
+                // Read channel data from client, echo it back uppercase
+                let msg = io.recv_message().await.unwrap();
+                if !msg.is_empty() && msg[0] == 94 && msg.len() > 9 {
+                    let data_len = u32::from_be_bytes([msg[5], msg[6], msg[7], msg[8]]) as usize;
+                    let received = &msg[9..9 + data_len];
+                    let echoed: Vec<u8> = received.iter().map(|b| b.to_ascii_uppercase()).collect();
+
+                    let mut reply = BytesMut::new();
+                    reply.put_u8(94); // CHANNEL_DATA
+                    reply.put_u32(ch);
+                    reply.put_u32(echoed.len() as u32);
+                    reply.put_slice(&echoed);
+                    io.send_message(&reply).await.unwrap();
+                }
+
+                // EOF + CLOSE
+                let mut eof = BytesMut::new();
+                eof.put_u8(96); eof.put_u32(ch);
+                io.send_message(&eof).await.unwrap();
+                let mut close = BytesMut::new();
+                close.put_u8(97); close.put_u32(ch);
+                io.send_message(&close).await.unwrap();
+            });
+        });
+
+        // Client: connect, send raw bytes, receive raw bytes
+        let client = std::thread::spawn(move || {
+            let port = port_rx.recv_timeout(std::time::Duration::from_secs(30)).unwrap();
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all().build().unwrap();
+            rt.block_on(async {
+                let mut transport = crate::transport::Transport::new(
+                    tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port)).await.unwrap()
+                );
+                transport.handshake().await.unwrap();
+                transport.send_service_request("ssh-userauth").await.unwrap();
+                transport.recv_service_accept().await.unwrap();
+
+                let mut auth = crate::auth::Authenticator::new(&mut transport, "test".to_string())
+                    .with_password("test".to_string());
+                auth.available_methods.insert("password".to_string());
+                auth.authenticate().await.unwrap();
+
+                let session = crate::session::Session::open(&mut transport).await.unwrap();
+                let channel_id = session.remote_channel_id();
+                transport.send_channel_request(channel_id, "shell", true).await.unwrap();
+                let _ = transport.recv_message().await.unwrap();
+
+                // Now build a CiscoConn from the established transport
+                let mut conn = CiscoConn {
+                    config: CiscoConnConfig::default(),
+                    transport,
+                    channel_id,
+                };
+
+                // Test send()
+                conn.send(b"hello world").await.unwrap();
+
+                // Test receive() - should get uppercased echo
+                let data = conn.receive(Duration::from_secs(5)).await.unwrap();
+                assert_eq!(data, b"HELLO WORLD", "Expected uppercased echo");
+
+                // Test receive() timeout - no more data after EOF
+                // Server sent EOF+CLOSE, so either we get empty (timeout) or an error
+                let result = conn.receive(Duration::from_millis(200)).await;
+                match result {
+                    Ok(data) => assert!(data.is_empty(), "Expected empty on timeout, got {:?}", data),
+                    Err(_) => {} // Connection closed is also acceptable
+                }
+            });
+        });
+
+        server.join().expect("Server panicked");
+        client.join().expect("Client panicked");
+    }
+
+    /// Test that receive() returns data immediately when available
+    /// (doesn't wait for timeout).
+    #[test]
+    fn test_receive_returns_immediately() {
+        use crate::server::{HostKeyPair, AlgorithmFilter, server_handshake};
+        use bytes::{BufMut, BytesMut};
+
+        let (port_tx, port_rx) = std::sync::mpsc::channel::<u16>();
+
+        // Server: send two chunks with a delay between them
+        let server = std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all().build().unwrap();
+            rt.block_on(async {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                port_tx.send(listener.local_addr().unwrap().port()).unwrap();
+
+                let host_key = HostKeyPair::generate_ed25519();
+                let filter = AlgorithmFilter::default();
+                let (stream, _) = listener.accept().await.unwrap();
+                let (mut io, ch) = server_handshake(stream, &host_key, &filter).await
+                    .expect("Server handshake failed");
+
+                // Send chunk 1
+                let mut msg1 = BytesMut::new();
+                msg1.put_u8(94); msg1.put_u32(ch);
+                msg1.put_u32(6); msg1.put_slice(b"chunk1");
+                io.send_message(&msg1).await.unwrap();
+
+                // Small delay, then chunk 2
+                tokio::time::sleep(Duration::from_millis(50)).await;
+
+                let mut msg2 = BytesMut::new();
+                msg2.put_u8(94); msg2.put_u32(ch);
+                msg2.put_u32(6); msg2.put_slice(b"chunk2");
+                io.send_message(&msg2).await.unwrap();
+
+                let mut eof = BytesMut::new();
+                eof.put_u8(96); eof.put_u32(ch);
+                io.send_message(&eof).await.unwrap();
+                let mut close = BytesMut::new();
+                close.put_u8(97); close.put_u32(ch);
+                io.send_message(&close).await.unwrap();
+            });
+        });
+
+        let client = std::thread::spawn(move || {
+            let port = port_rx.recv_timeout(std::time::Duration::from_secs(30)).unwrap();
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all().build().unwrap();
+            rt.block_on(async {
+                let mut transport = crate::transport::Transport::new(
+                    tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port)).await.unwrap()
+                );
+                transport.handshake().await.unwrap();
+                transport.send_service_request("ssh-userauth").await.unwrap();
+                transport.recv_service_accept().await.unwrap();
+
+                let mut auth = crate::auth::Authenticator::new(&mut transport, "test".to_string())
+                    .with_password("test".to_string());
+                auth.available_methods.insert("password".to_string());
+                auth.authenticate().await.unwrap();
+
+                let session = crate::session::Session::open(&mut transport).await.unwrap();
+                let channel_id = session.remote_channel_id();
+                transport.send_channel_request(channel_id, "shell", true).await.unwrap();
+                let _ = transport.recv_message().await.unwrap();
+
+                let mut conn = CiscoConn {
+                    config: CiscoConnConfig::default(),
+                    transport,
+                    channel_id,
+                };
+
+                // First receive should return chunk1 immediately (long timeout but shouldn't wait)
+                let t0 = std::time::Instant::now();
+                let data1 = conn.receive(Duration::from_secs(10)).await.unwrap();
+                let elapsed = t0.elapsed();
+                assert_eq!(data1, b"chunk1");
+                assert!(elapsed < Duration::from_secs(1), "receive() should return immediately, took {:?}", elapsed);
+
+                // Second receive should return chunk2
+                let data2 = conn.receive(Duration::from_secs(10)).await.unwrap();
+                assert_eq!(data2, b"chunk2");
+            });
+        });
+
+        server.join().expect("Server panicked");
+        client.join().expect("Client panicked");
     }
 }
