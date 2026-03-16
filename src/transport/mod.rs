@@ -68,40 +68,26 @@ pub struct Transport {
 
 /// Encryption state for outgoing packets
 #[derive(Debug)]
-struct EncryptionState {
-    /// Encryption key
-    enc_key: Vec<u8>,
-    /// Initialization vector
-    iv: Vec<u8>,
-    /// MAC key
-    mac_key: Vec<u8>,
-    /// Sequence number for packet integrity (counts all packets from connection start)
-    sequence_number: u32,
-    /// AEAD invocation counter (starts at 0 after NEWKEYS, independent of sequence_number)
-    aead_counter: u64,
-    /// Encryption algorithm
-    enc_algorithm: String,
-    /// MAC algorithm
-    mac_algorithm: String,
+pub(crate) struct EncryptionState {
+    pub(crate) enc_key: Vec<u8>,
+    pub(crate) iv: Vec<u8>,
+    pub(crate) mac_key: Vec<u8>,
+    pub(crate) sequence_number: u32,
+    pub(crate) aead_counter: u64,
+    pub(crate) enc_algorithm: String,
+    pub(crate) mac_algorithm: String,
 }
 
 /// Decryption state for incoming packets
 #[derive(Debug)]
-struct DecryptionState {
-    /// Decryption key
-    dec_key: Vec<u8>,
-    /// Initialization vector
-    iv: Vec<u8>,
-    /// MAC key
-    mac_key: Vec<u8>,
-    /// Sequence number for packet integrity
-    sequence_number: u32,
-    /// AEAD invocation counter
-    aead_counter: u64,
-    /// Decryption algorithm
-    dec_algorithm: String,
-    /// MAC algorithm
-    mac_algorithm: String,
+pub(crate) struct DecryptionState {
+    pub(crate) dec_key: Vec<u8>,
+    pub(crate) iv: Vec<u8>,
+    pub(crate) mac_key: Vec<u8>,
+    pub(crate) sequence_number: u32,
+    pub(crate) aead_counter: u64,
+    pub(crate) dec_algorithm: String,
+    pub(crate) mac_algorithm: String,
 }
 
 impl Transport {
@@ -966,7 +952,7 @@ impl Transport {
 }
 
 /// Check if an encryption algorithm is an AEAD cipher (no separate MAC)
-fn is_aead_cipher(algorithm: &str) -> bool {
+pub(crate) fn is_aead_cipher(algorithm: &str) -> bool {
     matches!(algorithm, "aes128-gcm@openssh.com" | "aes256-gcm@openssh.com" | "chacha20-poly1305@openssh.com")
 }
 
@@ -976,7 +962,7 @@ const GCM_TAG_LEN: usize = 16;
 /// Construct a 12-byte GCM nonce.
 /// Per OpenSSH: use the full 12-byte IV for the first packet.
 /// For subsequent packets, increment the last 8 bytes as a big-endian counter.
-fn gcm_nonce(iv: &[u8], invocation_counter: u64) -> [u8; 12] {
+pub(crate) fn gcm_nonce(iv: &[u8], invocation_counter: u64) -> [u8; 12] {
     let mut nonce = [0u8; 12];
     nonce.copy_from_slice(&iv[..12]);
     // Add the invocation counter to the last 8 bytes
@@ -993,12 +979,12 @@ fn gcm_nonce(iv: &[u8], invocation_counter: u64) -> [u8; 12] {
 }
 
 /// Check if a MAC algorithm is an ETM (Encrypt-then-MAC) variant
-fn is_etm_mac(algorithm: &str) -> bool {
+pub(crate) fn is_etm_mac(algorithm: &str) -> bool {
     algorithm.ends_with("-etm@openssh.com")
 }
 
 /// Get the base MAC algorithm name (strip ETM suffix if present)
-fn base_mac_algorithm(algorithm: &str) -> &str {
+pub(crate) fn base_mac_algorithm(algorithm: &str) -> &str {
     if let Some(base) = algorithm.strip_suffix("-etm@openssh.com") {
         base
     } else {
@@ -1007,7 +993,7 @@ fn base_mac_algorithm(algorithm: &str) -> &str {
 }
 
 /// Compute MAC using the specified algorithm
-fn compute_mac(algorithm: &str, key: &[u8], data: &[u8]) -> Vec<u8> {
+pub(crate) fn compute_mac(algorithm: &str, key: &[u8], data: &[u8]) -> Vec<u8> {
     match base_mac_algorithm(algorithm) {
         "hmac-sha2-256" => {
             let mut hmac = HmacSha256::new(key);
@@ -1029,7 +1015,7 @@ fn compute_mac(algorithm: &str, key: &[u8], data: &[u8]) -> Vec<u8> {
 }
 
 /// Get MAC length for a given algorithm
-fn mac_length(algorithm: &str) -> usize {
+pub(crate) fn mac_length(algorithm: &str) -> usize {
     match base_mac_algorithm(algorithm) {
         "hmac-sha1" => 20,
         "hmac-sha1-96" => 12,
@@ -1042,7 +1028,7 @@ fn mac_length(algorithm: &str) -> usize {
 }
 
 /// Advance a 16-byte CTR IV by the given number of AES blocks
-fn advance_ctr_iv(iv: &mut Vec<u8>, blocks: usize) {
+pub(crate) fn advance_ctr_iv(iv: &mut Vec<u8>, blocks: usize) {
     // IV is treated as a 128-bit big-endian counter
     let mut carry = blocks as u64;
     for i in (0..iv.len()).rev() {
@@ -1056,7 +1042,7 @@ fn advance_ctr_iv(iv: &mut Vec<u8>, blocks: usize) {
 }
 
 /// Encrypt data with the specified algorithm, updating IV in place
-fn encrypt_data(algorithm: &str, key: &[u8], iv: &mut Vec<u8>, data: &[u8]) -> Result<Vec<u8>, crate::error::SshError> {
+pub(crate) fn encrypt_data(algorithm: &str, key: &[u8], iv: &mut Vec<u8>, data: &[u8]) -> Result<Vec<u8>, crate::error::SshError> {
     match algorithm {
         "aes128-cbc" | "aes192-cbc" | "aes256-cbc" => {
             let ct = aes_cbc_encrypt_raw(key, iv, data)?;
@@ -1079,7 +1065,7 @@ fn encrypt_data(algorithm: &str, key: &[u8], iv: &mut Vec<u8>, data: &[u8]) -> R
 }
 
 /// Decrypt data with the specified algorithm, updating IV in place
-fn decrypt_data(algorithm: &str, key: &[u8], iv: &mut Vec<u8>, data: &[u8]) -> Result<Vec<u8>, crate::error::SshError> {
+pub(crate) fn decrypt_data(algorithm: &str, key: &[u8], iv: &mut Vec<u8>, data: &[u8]) -> Result<Vec<u8>, crate::error::SshError> {
     match algorithm {
         "aes128-cbc" | "aes192-cbc" | "aes256-cbc" => {
             let pt = aes_cbc_decrypt_raw(key, iv, data)?;
@@ -1102,7 +1088,7 @@ fn decrypt_data(algorithm: &str, key: &[u8], iv: &mut Vec<u8>, data: &[u8]) -> R
 }
 
 // Standalone helper functions for encryption/decryption
-fn encrypt_packet_cbc(payload: &[u8], state: &mut EncryptionState) -> Result<Vec<u8>, crate::error::SshError> {
+pub(crate) fn encrypt_packet_cbc(payload: &[u8], state: &mut EncryptionState) -> Result<Vec<u8>, crate::error::SshError> {
     // Calculate padding per RFC 4253 Section 6:
     // Total of (packet_length || padding_length || payload || padding) must be multiple of
     // max(8, cipher_block_size). For AES-128-CBC, block size is 16.
@@ -1219,7 +1205,7 @@ fn encrypt_packet_cbc(payload: &[u8], state: &mut EncryptionState) -> Result<Vec
     }
 }
 
-fn decrypt_packet_cbc(encrypted_with_mac: &[u8], state: &mut DecryptionState) -> Result<Vec<u8>, crate::error::SshError> {
+pub(crate) fn decrypt_packet_cbc(encrypted_with_mac: &[u8], state: &mut DecryptionState) -> Result<Vec<u8>, crate::error::SshError> {
     // The encrypted data includes: encrypted packet + MAC
     // For HMAC-SHA1, MAC is 20 bytes
     let mac_len = 20; // HMAC-SHA1

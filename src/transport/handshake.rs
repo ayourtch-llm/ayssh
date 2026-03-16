@@ -351,14 +351,21 @@ pub fn negotiate_algorithms(client: &protocol::AlgorithmProposal, server: &proto
 
 /// Send SSH version string
 pub async fn send_version<T: AsyncWriteExt + Unpin>(stream: &mut T) -> Result<(), crate::error::SshError> {
-    let version_bytes = SSH_VERSION_STRING.as_bytes();
+    send_version_custom(stream, SSH_VERSION_STRING).await
+}
+
+/// Send a custom SSH version string (for server use)
+pub async fn send_version_custom<T: AsyncWriteExt + Unpin>(stream: &mut T, version: &str) -> Result<(), crate::error::SshError> {
+    let version_bytes = version.as_bytes();
     debug!("Sending version string: {:?}", std::str::from_utf8(version_bytes));
-    // Send version string directly without length prefix (Cisco doesn't use length prefix for version)
     stream.write_all(version_bytes).await?;
     stream.flush().await?;
     debug!("Version string sent successfully");
     Ok(())
 }
+
+/// Server version string
+pub const SSH_SERVER_VERSION_STRING: &str = "SSH-2.0-ayssh_test_server\r\n";
 
 /// Receive SSH version string
 pub async fn recv_version<T: AsyncReadExt + Unpin>(stream: &mut T) -> Result<String, crate::error::SshError> {
