@@ -72,21 +72,57 @@ impl TestSshServer {
         self.listener.local_addr().unwrap()
     }
 
-    /// Accept one connection and handle the full SSH protocol
-    pub async fn accept_one(&self) -> Result<(), SshError> {
+    /// Accept one TCP connection and return the raw stream
+    pub async fn accept_stream(&self) -> Result<TcpStream, SshError> {
         let (stream, addr) = self.listener.accept().await
             .map_err(|e| SshError::ConnectionError(format!("Accept failed: {}", e)))?;
         info!("Accepted connection from {}", addr);
-        handle_connection(stream, &self.host_key, &self.filter).await
+        Ok(stream)
+    }
+
+    /// Perform SSH handshake + auth on a stream, returning an authenticated
+    /// ServerEncryptedIO with an open channel ready for data exchange.
+    /// Returns (io, client_channel_id) on success.
+    pub async fn handshake_and_auth(&self, stream: TcpStream) -> Result<(ServerEncryptedIO, u32), SshError> {
+        server_handshake(stream, &self.host_key, &self.filter).await
+    }
+
+    /// Accept one connection, do full SSH protocol with test data, then close
+    pub async fn accept_one(&self) -> Result<(), SshError> {
+        let stream = self.accept_stream().await?;
+        let (mut io, client_channel) = self.handshake_and_auth(stream).await?;
+
+        // Send test data
+        let test_data = b"AYSSH_TEST_OK\n";
+        let mut data_msg = BytesMut::new();
+        data_msg.put_u8(94); // SSH_MSG_CHANNEL_DATA
+        data_msg.put_u32(client_channel);
+        data_msg.put_u32(test_data.len() as u32);
+        data_msg.put_slice(test_data);
+        io.send_message(&data_msg).await?;
+
+        // Send EOF + CLOSE
+        let mut eof = BytesMut::new();
+        eof.put_u8(96);
+        eof.put_u32(client_channel);
+        io.send_message(&eof).await?;
+        let mut close = BytesMut::new();
+        close.put_u8(97);
+        close.put_u32(client_channel);
+        io.send_message(&close).await?;
+
+        info!("Test connection handled successfully");
+        Ok(())
     }
 }
 
-/// Handle a single SSH connection as server
-async fn handle_connection(
+/// Perform SSH handshake + auth on a connection.
+/// Returns (ServerEncryptedIO, client_channel_id) ready for data exchange.
+pub async fn server_handshake(
     stream: TcpStream,
     host_key: &HostKeyPair,
     filter: &AlgorithmFilter,
-) -> Result<(), SshError> {
+) -> Result<(ServerEncryptedIO, u32), SshError> {
     let mut io = ServerEncryptedIO::new(stream);
     let mut send_seq: u32 = 0;
     let mut recv_seq: u32 = 0;
@@ -333,17 +369,36 @@ async fn handle_connection(
     debug!("Sent CHANNEL_OPEN_CONFIRMATION");
 
     // Handle channel requests (pty-req, shell) - accept them all
-    for _ in 0..5 {
+    for _ in 0..10 {
         let msg = io.recv_message().await?;
         if msg.is_empty() { continue; }
         match msg[0] {
             98 => {
                 // SSH_MSG_CHANNEL_REQUEST
-                debug!("Received CHANNEL_REQUEST, sending SUCCESS");
-                let mut success = BytesMut::new();
-                success.put_u8(99); // SSH_MSG_CHANNEL_SUCCESS
-                success.put_u32(client_channel);
-                io.send_message(&success).await?;
+                // Check if want_reply is set
+                let want_reply = if msg.len() > 9 {
+                    let req_len = u32::from_be_bytes([msg[5], msg[6], msg[7], msg[8]]) as usize;
+                    if msg.len() > 9 + req_len { msg[9 + req_len] != 0 } else { false }
+                } else { false };
+
+                if want_reply {
+                    let mut success = BytesMut::new();
+                    success.put_u8(99); // SSH_MSG_CHANNEL_SUCCESS
+                    success.put_u32(client_channel);
+                    io.send_message(&success).await?;
+                }
+
+                // Check if this is shell or exec request
+                if msg.len() > 9 {
+                    let req_len = u32::from_be_bytes([msg[5], msg[6], msg[7], msg[8]]) as usize;
+                    if msg.len() >= 9 + req_len {
+                        let req_type = std::str::from_utf8(&msg[9..9+req_len]).unwrap_or("");
+                        debug!("CHANNEL_REQUEST type={}", req_type);
+                        if req_type == "shell" || req_type == "exec" {
+                            break; // Shell/exec received, ready for data
+                        }
+                    }
+                }
             }
             93 => {
                 // SSH_MSG_CHANNEL_WINDOW_ADJUST
@@ -351,47 +406,14 @@ async fn handle_connection(
                 continue;
             }
             _ => {
-                debug!("Received unexpected message type {} during channel setup", msg[0]);
+                debug!("Received message type {} during channel setup", msg[0]);
                 break;
-            }
-        }
-
-        // After shell request, send test data
-        if msg.len() > 9 {
-            let req_len = u32::from_be_bytes([msg[5], msg[6], msg[7], msg[8]]) as usize;
-            if msg.len() >= 9 + req_len {
-                let req_type = std::str::from_utf8(&msg[9..9+req_len]).unwrap_or("");
-                if req_type == "shell" || req_type == "exec" {
-                    // Step 10: Send test data
-                    let test_data = b"AYSSH_TEST_OK\n";
-                    let mut data_msg = BytesMut::new();
-                    data_msg.put_u8(94); // SSH_MSG_CHANNEL_DATA
-                    data_msg.put_u32(client_channel);
-                    data_msg.put_u32(test_data.len() as u32);
-                    data_msg.put_slice(test_data);
-                    io.send_message(&data_msg).await?;
-                    debug!("Sent test data");
-
-                    // Send EOF
-                    let mut eof = BytesMut::new();
-                    eof.put_u8(96); // SSH_MSG_CHANNEL_EOF
-                    eof.put_u32(client_channel);
-                    io.send_message(&eof).await?;
-
-                    // Send CLOSE
-                    let mut close = BytesMut::new();
-                    close.put_u8(97); // SSH_MSG_CHANNEL_CLOSE
-                    close.put_u32(client_channel);
-                    io.send_message(&close).await?;
-                    debug!("Sent EOF + CLOSE");
-                    break;
-                }
             }
         }
     }
 
-    info!("Connection handled successfully");
-    Ok(())
+    info!("SSH handshake + auth + channel complete");
+    Ok((io, client_channel))
 }
 
 use tokio::io::AsyncWriteExt;

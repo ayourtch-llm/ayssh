@@ -10,4 +10,4 @@ pub mod test_server;
 
 pub use encrypted_io::ServerEncryptedIO;
 pub use host_key::HostKeyPair;
-pub use test_server::{TestSshServer, AlgorithmFilter};
+pub use test_server::{TestSshServer, AlgorithmFilter, server_handshake};
