@@ -15,6 +15,7 @@ use bytes::{Buf, BufMut, BytesMut};
 use rand::RngCore;
 use sha1::Sha1;
 use sha2::{Digest, Sha256, Sha384};
+use tracing::debug;
 
 /// Key exchange context
 #[derive(Debug)]
@@ -224,6 +225,8 @@ impl KexContext {
         // After computing shared secret, compute the session ID
         // According to RFC 4253, the session ID is the exchange hash H for the first key exchange
         let session_id = self.compute_session_id()?;
+        debug!("Session ID (first 16 bytes): {:?}", &session_id[..std::cmp::min(16, session_id.len())]);
+        debug!("Shared secret (first 16 bytes): {:?}", self.shared_secret.as_ref().map(|s| &s[..std::cmp::min(16, s.len())]).unwrap_or(&[]));
         self.session_id = Some(session_id);
         
         Ok(())
@@ -280,9 +283,9 @@ impl KexContext {
     fn update_session_hash<H: Digest>(&mut self, hasher: &mut H) -> anyhow::Result<()> {
         // K_S - shared secret (as MPINT)
         if let Some(ref ss) = self.shared_secret {
-            // Convert Vec<u8> to BigUint and encode as MPINT
+            // Convert Vec<u8> to BigUint and encode as length-prefixed MPINT
             let biguint = num_bigint::BigUint::from_bytes_be(ss);
-            let mpint = crate::crypto::dh::Mpint::encode(&biguint);
+            let mpint = crate::crypto::dh::Mpint::encode_length_prefixed(&biguint);
             hasher.update(&mpint);
         } else {
             return Err(anyhow::anyhow!("Shared secret not computed"));

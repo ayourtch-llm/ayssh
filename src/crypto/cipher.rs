@@ -347,6 +347,41 @@ fn remove_pkcs7_padding(data: &mut Vec<u8>) -> Result<(), CipherError> {
     Ok(())
 }
 
+/// Encrypt data using AES-128-CBC mode WITHOUT applying PKCS#7 padding
+///
+/// This function performs raw CBC encryption without PKCS#7 padding.
+/// It is used for SSH transport layer where the caller handles padding.
+///
+/// # Arguments
+///
+/// * `key` - 16-byte (128-bit) encryption key
+/// * `iv` - 16-byte (128-bit) initialization vector
+/// * `plaintext` - Data to encrypt (must already be padded to block size)
+///
+/// # Returns
+///
+/// * `Ok(Vec<u8>)` - Encrypted data (no padding added)
+/// * `Err(CipherError)` - Error if key/iv size is invalid or encryption fails
+pub fn aes_128_cbc_encrypt_raw(key: &[u8], iv: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, CipherError> {
+    // Validate key size
+    if key.len() != 16 {
+        return Err(CipherError::InvalidKeySize { expected: 16, actual: key.len() });
+    }
+    
+    // Validate IV size
+    if iv.len() != 16 {
+        return Err(CipherError::InvalidIvSizeCbc);
+    }
+    
+    // Check plaintext length (must be multiple of block size)
+    if plaintext.is_empty() || plaintext.len() % 16 != 0 {
+        return Err(CipherError::InvalidPadding);
+    }
+    
+    // Encrypt without adding padding
+    aes_cbc_encrypt_impl_128(key, iv, plaintext)
+}
+
 /// Encrypt data using AES-128-CBC mode
 ///
 /// AES-CBC mode is defined in RFC 4470 for SSH. It uses AES in cipher block

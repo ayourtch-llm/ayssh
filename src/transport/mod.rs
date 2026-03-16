@@ -4,7 +4,7 @@
 //! packet encryption, and session state management.
 
 use crate::channel::ChannelTransferManager;
-use crate::crypto::cipher::{aes_128_cbc_decrypt, aes_128_cbc_decrypt_raw, aes_128_cbc_encrypt, CipherError};
+use crate::crypto::cipher::{aes_128_cbc_decrypt, aes_128_cbc_decrypt_raw, aes_128_cbc_encrypt_raw, CipherError};
 use crate::crypto::hmac::HmacSha1;
 use crate::protocol;
 use bytes::BufMut;
@@ -531,6 +531,12 @@ impl Transport {
         
         // Get session keys from kex_context (stored in handshake state)
         if let Some(ref session_keys) = self.handshake.session_keys {
+            debug!("Session keys details:");
+            debug!("  enc_key_c2s: {:?}", session_keys.enc_key_c2s);
+            debug!("  enc_key_s2c: {:?}", session_keys.enc_key_s2c);
+            debug!("  client_iv: {:?}", session_keys.client_iv);
+            debug!("  server_iv: {:?}", session_keys.server_iv);
+            
             // Set up client-to-server encryption state
             self.encrypt_state = Some(EncryptionState {
                 enc_key: session_keys.enc_key_c2s.clone(),
@@ -542,6 +548,8 @@ impl Transport {
             });
             
             // Set up server-to-client decryption state
+            // Note: To decrypt packets FROM server, we need the key that server used to encrypt
+            // Server encrypts with enc_key_s2c, so we decrypt with the same key
             self.decrypt_state = Some(DecryptionState {
                 dec_key: session_keys.enc_key_s2c.clone(),
                 iv: session_keys.server_iv.clone(),
@@ -552,7 +560,6 @@ impl Transport {
             });
             
             debug!("Encryption state initialized successfully");
-            debug!("Session keys: {:?}", session_keys);
         } else {
             return Err(crate::error::SshError::ProtocolError(
                 "Session keys not available after key exchange".to_string()
@@ -624,14 +631,17 @@ impl Transport {
             debug!("Read minimum {} bytes (16 + MAC:{})", min_size, mac_len);
             debug!("Raw received bytes (first 36): {:?}", &buffer[..std::cmp::min(36, buffer.len())]);
             
+            // Save the current IV before decryption (we need it for CBC decryption)
+            let current_iv = decrypt_state.iv.clone();
+            
             // Decrypt just the first 16 bytes to get packet length (without padding removal)
             let first_block = &buffer[..16];
             debug!("Decrypting with key (first 8 bytes): {:?}", &decrypt_state.dec_key[..std::cmp::min(8, decrypt_state.dec_key.len())]);
-            debug!("Decrypting with IV (first 8 bytes): {:?}", &decrypt_state.iv[..std::cmp::min(8, decrypt_state.iv.len())]);
+            debug!("Decrypting with IV (first 8 bytes): {:?}", &current_iv[..std::cmp::min(8, current_iv.len())]);
             debug!("Ciphertext first block: {:?}", first_block);
             let decrypted_first_block = aes_128_cbc_decrypt_raw(
                 &decrypt_state.dec_key,
-                &decrypt_state.iv,
+                &current_iv,
                 first_block
             )?;
             debug!("Decrypted first block: {:?}", &decrypted_first_block[..16]);
@@ -880,10 +890,10 @@ fn encrypt_packet_cbc(payload: &[u8], state: &mut EncryptionState) -> Result<Vec
         packet.push(0);
     }
     
-    // Encrypt using AES-CBC
+    // Encrypt using AES-CBC with the current IV (no additional padding - packet is already padded)
     let encrypted = match state.enc_algorithm.as_str() {
         "aes128-cbc" => {
-            aes_128_cbc_encrypt(&state.enc_key, &state.iv, &packet)?
+            aes_128_cbc_encrypt_raw(&state.enc_key, &state.iv, &packet)?
         }
         _ => {
             return Err(crate::error::SshError::ProtocolError(

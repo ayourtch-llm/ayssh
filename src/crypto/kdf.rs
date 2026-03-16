@@ -93,6 +93,7 @@ pub fn kdf(shared_secret: &[u8], session_id: &[u8], counter: u32, desired_length
                 // K3 = HASH(K || H || K1 || K2)
                 // ...
                 // key = K1 || K2 || K3 || ...
+                // Note: For the first key exchange, H == session_id
                 
                 let mut hasher = Sha1::new();
                 // Encode shared secret as mpint (length-prefixed)
@@ -101,19 +102,20 @@ pub fn kdf(shared_secret: &[u8], session_id: &[u8], counter: u32, desired_length
                     &num_bigint::BigUint::from_bytes_be(shared_secret)
                 );
                 hasher.update(&k_mpint);
-                // H is the exchange hash
+                // H is the exchange hash (equals session_id for first KEX)
                 hasher.update(session_id);
+                // Add counter byte (X) - this is 'A', 'B', 'C', etc.
+                hasher.update(&[(counter as u8)]);
                 
                 if i == 1 {
-                    // First block: add counter byte (X) and session_id
-                    hasher.update(&[(counter as u8)]);
+                    // First block: add session_id again (as per RFC)
                     hasher.update(session_id);
                 } else {
                     // Subsequent blocks: add the entire key so far
                     hasher.update(&result);
                 }
                 
-                hasher.finalize().as_slice().to_vec()
+                hasher.finalize().to_vec()
             }
             HashAlgorithm::Sha256 => {
                 let mut hasher = digest::Context::new(&SHA256);
@@ -122,12 +124,13 @@ pub fn kdf(shared_secret: &[u8], session_id: &[u8], counter: u32, desired_length
                     &num_bigint::BigUint::from_bytes_be(shared_secret)
                 );
                 hasher.update(&k_mpint);
-                // Add H (exchange hash)
+                // Add H (exchange hash, equals session_id for first KEX)
                 hasher.update(session_id);
+                // Add counter byte (X)
+                hasher.update(&[(counter as u8)]);
                 
                 if i == 1 {
-                    // First block: add counter byte (X) and session_id
-                    hasher.update(&[(counter as u8)]);
+                    // First block: add session_id again (as per RFC)
                     hasher.update(session_id);
                 } else {
                     // Subsequent blocks: add the entire key so far
