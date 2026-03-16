@@ -429,11 +429,20 @@ mod tests {
         assert_ne!(addr.port(), 0);
     }
 
-    /// Server-client end-to-end test: full SSH protocol through encrypted data.
-    /// Each side runs on a separate OS thread with its own single-threaded
-    /// tokio runtime, avoiding any Send/Sync requirements on library types.
+    /// Basic server-client end-to-end test with default algorithms.
+    /// Basic server-client smoke test with default algorithms.
+    /// Uses run_crypto_test to avoid spawning extra threads that could
+    /// interfere with test_crypto_matrix when run in parallel.
     #[test]
     fn test_server_accepts_client_connection() {
+        run_crypto_test(None, None, None);
+    }
+
+    // Old inline test removed - replaced by run_crypto_test() above
+
+    #[test]
+    #[ignore = "dead code placeholder"]
+    fn _removed() {
         use std::sync::mpsc;
         let t0 = std::time::Instant::now();
         let (port_tx, port_rx) = mpsc::channel::<u16>();
