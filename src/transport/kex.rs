@@ -311,43 +311,43 @@ impl KexContext {
     /// All `string` fields use SSH encoding: [uint32 length][data].
     /// All `mpint` fields use SSH encoding: [uint32 length][data with sign bit].
     fn update_session_hash<H: Digest>(&mut self, hasher: &mut H) -> anyhow::Result<()> {
+        // Helper: feed an SSH "string" (4-byte big-endian length + data) into the hasher
+        fn hash_ssh_string<H: Digest>(hasher: &mut H, data: &[u8]) {
+            hasher.update(&(data.len() as u32).to_be_bytes());
+            hasher.update(data);
+        }
+
         // V_C - client version string as SSH string (without CRLF)
         if let Some(ref vc) = self.client_version {
             let vc_clean = vc.strip_suffix(b"\r\n").unwrap_or(vc.strip_suffix(b"\n").unwrap_or(vc));
-            hasher.update(&(vc_clean.len() as u32).to_be_bytes());
-            hasher.update(vc_clean);
+            hash_ssh_string(hasher, vc_clean);
         }
 
         // V_S - server version string as SSH string (without CRLF)
         if let Some(ref vs) = self.server_version {
             let vs_clean = vs.strip_suffix(b"\r\n").unwrap_or(vs.strip_suffix(b"\n").unwrap_or(vs));
-            hasher.update(&(vs_clean.len() as u32).to_be_bytes());
-            hasher.update(vs_clean);
+            hash_ssh_string(hasher, vs_clean);
         }
 
         // I_C - client KEXINIT payload as SSH string
         if let Some(ref ic) = self.client_kexinit {
-            hasher.update(&(ic.len() as u32).to_be_bytes());
-            hasher.update(ic);
+            hash_ssh_string(hasher, ic);
         }
 
         // I_S - server KEXINIT payload as SSH string
         if let Some(ref is) = self.server_kexinit {
-            hasher.update(&(is.len() as u32).to_be_bytes());
-            hasher.update(is);
+            hash_ssh_string(hasher, is);
         }
 
         // K_S - server host key as SSH string
         if let Some(ref hs) = self.server_host_key {
-            hasher.update(&(hs.len() as u32).to_be_bytes());
-            hasher.update(hs);
+            hash_ssh_string(hasher, hs);
         }
 
         // e - client DH public value as mpint (length-prefixed)
         // client_ephemeral is stored as raw MPINT bytes (from Mpint::encode), NOT length-prefixed
         if let Some(ref ec) = self.client_ephemeral {
-            hasher.update(&(ec.len() as u32).to_be_bytes());
-            hasher.update(ec);
+            hash_ssh_string(hasher, ec);
         }
 
         // f - server DH public value as mpint (already length-prefixed from wire)

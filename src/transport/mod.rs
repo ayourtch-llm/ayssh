@@ -649,8 +649,9 @@ impl Transport {
             ]) as usize;
             debug!("Extracted packet length: {}", packet_length);
             
-            // Validate packet length
-            if packet_length < 12 || packet_length > 35000 {
+            // Validate packet length: minimum is 5 per RFC 4253 §6
+            // (1 byte padding_length + 0 payload + 4 minimum padding)
+            if packet_length < 5 || packet_length > 35000 {
                 return Err(crate::error::SshError::ProtocolError(
                     format!("Invalid packet length: {}", packet_length)
                 ));
@@ -692,7 +693,9 @@ impl Transport {
             hmac.update(&mac_data);
             let expected_mac = hmac.finish();
 
-            if expected_mac.len() != received_mac.len() || !expected_mac.iter().eq(received_mac.iter()) {
+            // Constant-time MAC verification to prevent timing side-channel attacks
+            if expected_mac.len() != received_mac.len()
+                || !constant_time_eq(&expected_mac, received_mac) {
                 return Err(crate::error::SshError::ProtocolError(
                     "MAC verification failed".to_string()
                 ));
@@ -864,6 +867,18 @@ impl Transport {
     }
 }
 
+// Constant-time byte comparison to prevent timing side-channel attacks on MAC verification
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
 // Standalone helper functions for encryption/decryption
 fn encrypt_packet_cbc(payload: &[u8], state: &mut EncryptionState) -> Result<Vec<u8>, crate::error::SshError> {
     // Per RFC 4253 Section 6: the concatenation of packet_length, padding_length,
@@ -977,7 +992,8 @@ fn decrypt_packet_cbc(encrypted_with_mac: &[u8], state: &mut DecryptionState) ->
     hmac.update(&mac_data);
     let expected_mac = hmac.finish();
 
-    if !expected_mac.iter().eq(received_mac.iter()) {
+    // Constant-time MAC verification to prevent timing side-channel attacks
+    if !constant_time_eq(&expected_mac, received_mac) {
         return Err(crate::error::SshError::ProtocolError(
             "MAC verification failed".to_string()
         ));
