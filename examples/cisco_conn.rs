@@ -9,9 +9,20 @@ use std::env;
 use std::path::Path;
 use tracing::{info, error};
 use tracing_subscriber;
+use base64::Engine;
+use md5::{Md5, Digest};
 
-/// Format a public key file for Cisco IOS `key-string` configuration.
-/// Returns the IOS CLI commands needed to install the key.
+/// Compute the MD5 fingerprint of a public key (same as `ssh-keygen -l -E md5`).
+/// Returns the hex string without colons, uppercased (as Cisco IOS expects).
+fn compute_key_hash(key_base64: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let key_bytes = base64::engine::general_purpose::STANDARD.decode(key_base64)?;
+    let result = Md5::digest(&key_bytes);
+    let hex: String = result.iter().map(|b| format!("{:02X}", b)).collect();
+    Ok(hex)
+}
+
+/// Format a public key file for Cisco IOS configuration.
+/// Returns both key-string and key-hash variants for the user to choose from.
 fn format_ios_pubkey_commands(username: &str, pub_key_path: &str) -> Result<String, Box<dyn std::error::Error>> {
     let pub_key_content = std::fs::read_to_string(pub_key_path)?;
     let parts: Vec<&str> = pub_key_content.trim().splitn(3, ' ').collect();
@@ -22,8 +33,10 @@ fn format_ios_pubkey_commands(username: &str, pub_key_path: &str) -> Result<Stri
     let key_base64 = parts[1];
     let _comment = parts.get(2).unwrap_or(&"");
 
-    // Cisco IOS key-string accepts the base64 data in lines of up to 254 chars
-    // (typically 72 chars per line for readability)
+    // Compute MD5 fingerprint for key-hash method
+    let key_hash = compute_key_hash(key_base64)?;
+
+    // Format base64 key in 72-char lines for key-string method
     let mut key_lines = String::new();
     for chunk in key_base64.as_bytes().chunks(72) {
         key_lines.push_str("    ");
@@ -31,13 +44,31 @@ fn format_ios_pubkey_commands(username: &str, pub_key_path: &str) -> Result<Stri
         key_lines.push('\n');
     }
 
+    // Also show the fingerprint in colon-separated form for verification
+    let key_hash_colons: String = key_hash
+        .as_bytes()
+        .chunks(2)
+        .map(|c| std::str::from_utf8(c).unwrap())
+        .collect::<Vec<&str>>()
+        .join(":");
+
     Ok(format!(
         r#"
-=== Cisco IOS Public Key Installation ===
+=== Cisco IOS Public Key Installation (requires IOS 15.0+) ===
 Key type: {key_type}
 Key file: {pub_key_path}
+MD5 fingerprint: {key_hash_colons}
 
-Paste the following commands on the Cisco device:
+Option 1 - key-hash (shorter, single line):
+
+  configure terminal
+  ip ssh pubkey-chain
+   username {username}
+    key-hash {key_type} {key_hash}
+   exit
+  exit
+
+Option 2 - key-string (full key, multi-line):
 
   configure terminal
   ip ssh pubkey-chain

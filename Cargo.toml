@@ -56,6 +56,9 @@ sha2 = "0.10"
 # SHA-1 hash functions (for deprecated HMAC-SHA1)
 sha1 = "0.10"
 
+# MD5 hash (for SSH key fingerprints, legacy use only)
+md-5 = "0.10"
+
 # Random number generation
 rand = "0.8"
 
