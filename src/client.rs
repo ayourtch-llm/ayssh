@@ -124,6 +124,9 @@ impl SshClient {
         // Connect and perform handshake
         let mut transport = self.connect().await?;
 
+        // Perform SSH handshake (version exchange and key exchange)
+        transport.handshake().await?;
+
         // Request ssh-connection service
         transport.send_service_request("ssh-connection").await?;
         let service = transport.recv_service_accept().await?;

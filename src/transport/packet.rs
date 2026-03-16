@@ -9,8 +9,8 @@ use crate::crypto::packet as crypto_packet;
 use crate::error::SshError;
 use zeroize::Zeroizing;
 
-/// Packet header length (4 bytes length + 4 bytes padding length)
-pub const PACKET_HEADER_LEN: usize = 8;
+/// Packet header length (4 bytes length + 1 byte padding length)
+pub const PACKET_HEADER_LEN: usize = 5;
 
 /// Maximum packet size
 pub const MAX_PACKET_SIZE: usize = 256 * 1024;
@@ -61,8 +61,8 @@ impl Packet {
         // Write length (4 bytes, big-endian)
         result.extend_from_slice(&(self.length).to_be_bytes());
         
-        // Write padding length (4 bytes, big-endian)
-        result.extend_from_slice(&(self.padding_length as u32).to_be_bytes());
+        // Write padding length (1 byte)
+        result.push(self.padding_length);
         
         // Write message type
         result.push(self.msg_type);
@@ -93,7 +93,7 @@ impl Packet {
         }
 
         let length = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
-        let padding_length = u32::from_be_bytes([data[4], data[5], data[6], data[7]]) as u8;
+        let padding_length = data[4]; // padding_length is 1 byte
         
         let expected_len = PACKET_HEADER_LEN + length as usize + padding_length as usize;
         if data.len() < expected_len {
@@ -120,8 +120,8 @@ impl Packet {
         // Write length (4 bytes, big-endian)
         result.extend_from_slice(&(self.length).to_be_bytes());
         
-        // Write padding length (4 bytes, big-endian)
-        result.extend_from_slice(&(self.padding_length as u32).to_be_bytes());
+        // Write padding length (1 byte)
+        result.push(self.padding_length);
         
         // Write message type
         result.push(self.msg_type);

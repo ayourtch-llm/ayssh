@@ -8,9 +8,12 @@ use crate::transport::TransportSession;
 use bytes::{Buf, BufMut, BytesMut};
 use std::str::FromStr;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tracing::{debug};
 
-/// SSH protocol version string
-pub const SSH_VERSION_STRING: &str = "SSH-2.0-ayssh_1.0.0";
+/// SSH protocol version string with CRLF terminator
+/// Format: SSH-2.0-software_version\r\n
+/// Cisco devices expect CRLF-terminated version strings
+pub const SSH_VERSION_STRING: &str = "SSH-2.0-OpenSSH_7.4\r\n";
 
 /// Transport handshake state
 #[derive(Debug, Clone)]
@@ -50,8 +53,9 @@ pub fn parse_version_string(data: &[u8]) -> Result<(u32, String), &'static str> 
     let protocol_version_str = parts[1].split('.').next().ok_or("Invalid protocol version")?;
     let protocol_version: u32 = protocol_version_str.parse().map_err(|_| "Invalid protocol version")?;
     
-    if protocol_version != 2 {
-        return Err("Only SSH protocol version 2 is supported");
+    // Accept SSH-2.0 or SSH-1.99 (Cisco uses 1.99 for their SSH-2.0 compatible implementation)
+    if protocol_version != 2 && protocol_version != 1 {
+        return Err("Only SSH protocol version 2 or 1.99 supported");
     }
     
     let software_version = parts[2..].join("-");
@@ -63,19 +67,24 @@ pub fn parse_version_string(data: &[u8]) -> Result<(u32, String), &'static str> 
 pub fn generate_client_kexinit() -> Vec<u8> {
     let mut buf = BytesMut::with_capacity(200);
     
+    // SSH_MSG_KEXINIT message type byte (20)
+    buf.put_u8(20);
+    
     // 16 bytes of random cookie
     buf.put(&[0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07][..]);
     buf.put(&[0x08, 0x09, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15][..]);
     
     // Negotiation strings (algorithm lists)
-    let kex_algorithms = "curve25519-sha256,curve25519-sha256@libssh.org,diffie-hellman-group14-sha256,diffie-hellman-group14-sha256@libssh.org,diffie-hellman-group-exchange-sha256";
-    let host_key_algorithms = "ssh-ed25519,ecdsa-sha2-nistp256,ecdsa-sha2-nistp384,ecdsa-sha2-nistp521,rsa-sha2-512,rsa-sha2-256";
-    let enc_c2s = "chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes128-gcm@openssh.com,aes256-ctr,aes192-ctr,aes128-ctr";
-    let enc_s2c = "chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes128-gcm@openssh.com,aes256-ctr,aes192-ctr,aes128-ctr";
-    let mac_c2s = "hmac-sha2-256-etm@openssh.com,hmac-sha2-512-etm@openssh.com,hmac-sha2-256,hmac-sha2-512";
-    let mac_s2c = "hmac-sha2-256-etm@openssh.com,hmac-sha2-512-etm@openssh.com,hmac-sha2-256,hmac-sha2-512";
-    let comp_c2s = "none";
-    let comp_s2c = "none";
+    // Cisco devices typically support diffie-hellman-group1-sha1 and diffie-hellman-group14-sha1
+    // Put the older algorithms first for compatibility with older Cisco devices
+    let kex_algorithms = "diffie-hellman-group1-sha1,diffie-hellman-group14-sha1,diffie-hellman-group14-sha256,diffie-hellman-group-exchange-sha256,diffie-hellman-group-exchange-sha1,curve25519-sha256";
+    let host_key_algorithms = "ssh-rsa,ssh-dss,ecdsa-sha2-nistp256,ecdsa-sha2-nistp384,ecdsa-sha2-nistp521,ssh-ed25519,rsa-sha2-512,rsa-sha2-256";
+    let enc_c2s = "aes128-cbc,3des-cbc,aes192-cbc,aes256-cbc,aes128-ctr,aes192-ctr,aes256-ctr,arcfour256,arcfour128,arcfour";
+    let enc_s2c = "aes128-cbc,3des-cbc,aes192-cbc,aes256-cbc,aes128-ctr,aes192-ctr,aes256-ctr,arcfour256,arcfour128,arcfour";
+    let mac_c2s = "hmac-sha1,hmac-sha1-96,hmac-md5,hmac-md5-96,hmac-ripemd160,hmac-sha2-256,hmac-sha2-512";
+    let mac_s2c = "hmac-sha1,hmac-sha1-96,hmac-md5,hmac-md5-96,hmac-ripemd160,hmac-sha2-256,hmac-sha2-512";
+    let comp_c2s = "none,zlib@openssh.com";
+    let comp_s2c = "none,zlib@openssh.com";
     let lang_c2s = "";
     let lang_s2c = "";
     
@@ -95,10 +104,13 @@ pub fn generate_client_kexinit() -> Vec<u8> {
     buf.put_u8(0);
     
     // Initial kex algorithm (single string)
-    protocol::SshString::from_str("curve25519-sha256").encode(&mut buf);
+    protocol::SshString::from_str("diffie-hellman-group1-sha1").encode(&mut buf);
     
     // first_kex_packet_follows (1 byte boolean, typically 0)
     buf.put_u8(0);
+    
+    // Reserved uint32 (always 0)
+    buf.put_u32(0);
     
     buf.to_vec()
 }
@@ -106,6 +118,15 @@ pub fn generate_client_kexinit() -> Vec<u8> {
 /// Parse server KEXINIT message
 pub fn parse_server_kexinit(data: &[u8]) -> Result<protocol::AlgorithmProposal, &'static str> {
     let mut buf = data;
+    
+    // Skip message type byte (SSH_MSG_KEXINIT = 20)
+    if buf.len() < 1 {
+        return Err("KEXINIT too short");
+    }
+    let msg_type = buf.get_u8();
+    if msg_type != 20 {
+        return Err("Expected SSH_MSG_KEXINIT (20)");
+    }
     
     // Skip 16 bytes of cookie
     if buf.len() < 16 {
@@ -180,18 +201,27 @@ pub fn parse_server_kexinit(data: &[u8]) -> Result<protocol::AlgorithmProposal, 
     }
     buf.advance(1);
     
-    // Parse initial kex algorithm
-    let _initial_kex_str = protocol::SshString::decode(&mut buf)
-        .map_err(|_| "Failed to decode initial_kex")?
-        .to_str()
-        .map_err(|_| "Invalid initial_kex UTF-8")?
-        .to_string();
+    // Parse initial kex algorithm (optional - some implementations like Cisco may not include this)
+    let _initial_kex_str = if buf.len() > 0 {
+        match protocol::SshString::decode(&mut buf) {
+            Ok(s) => s.to_str().unwrap_or("").to_string(),
+            Err(_) => String::new(),
+        }
+    } else {
+        String::new()
+    };
     
     // Parse first_kex_packet_follows (1 byte boolean)
     if buf.len() < 1 {
         return Err("KEXINIT too short for first_kex_packet_follows");
     }
     let first_kex_packet_follows = buf.get_u8() != 0;
+    
+    // Skip reserved uint32 (4 bytes) - optional in some implementations
+    // Cisco may not include this field
+    if buf.len() >= 4 {
+        buf.advance(4);
+    }
     
     // Convert comma-separated strings to Vec<String>
     let kex_algorithms: Vec<String> = kex_algorithms_str
@@ -290,24 +320,43 @@ pub fn negotiate_algorithms(client: &protocol::AlgorithmProposal, server: &proto
 /// Send SSH version string
 pub async fn send_version<T: AsyncWriteExt + Unpin>(stream: &mut T) -> Result<(), crate::error::SshError> {
     let version_bytes = SSH_VERSION_STRING.as_bytes();
-    let mut msg = BytesMut::with_capacity(version_bytes.len() + 4);
-    msg.put_u32(version_bytes.len() as u32);
-    msg.put(version_bytes);
-    stream.write_all(&msg).await?;
+    debug!("Sending version string: {:?}", std::str::from_utf8(version_bytes));
+    // Send version string directly without length prefix (Cisco doesn't use length prefix for version)
+    stream.write_all(version_bytes).await?;
+    stream.flush().await?;
+    debug!("Version string sent successfully");
     Ok(())
 }
 
 /// Receive SSH version string
 pub async fn recv_version<T: AsyncReadExt + Unpin>(stream: &mut T) -> Result<String, crate::error::SshError> {
-    let mut len_buf = [0u8; 4];
-    stream.read_exact(&mut len_buf).await?;
-    let len = u32::from_be_bytes(len_buf) as usize;
+    // Cisco devices send version string without length prefix, just line-based with CRLF
+    // We'll use a BufReader to read line-by-line
+    use tokio::io::AsyncBufReadExt;
+    let mut reader = tokio::io::BufReader::new(stream);
+    let mut buf = String::new();
     
-    let mut version_bytes = vec![0u8; len];
-    stream.read_exact(&mut version_bytes).await?;
-    
-    String::from_utf8(version_bytes)
-        .map_err(|_| crate::error::SshError::ProtocolError("Invalid UTF-8 in version string".to_string()))
+    match reader.read_line(&mut buf).await {
+        Ok(n) => {
+            debug!("Read {} bytes from version line", n);
+            debug!("Raw version bytes: {:?}", buf.as_bytes());
+            
+            // Remove CRLF terminator if present
+            if buf.ends_with("\r\n") {
+                buf.pop();
+                buf.pop();
+            } else if buf.ends_with('\n') {
+                buf.pop();
+            }
+            
+            debug!("Cleaned version string: {:?}", buf);
+            Ok(buf)
+        }
+        Err(e) => {
+            debug!("Error reading version line: {}", e);
+            Err(e.into())
+        }
+    }
 }
 
 /// Perform the key exchange handshake

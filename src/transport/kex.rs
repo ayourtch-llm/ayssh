@@ -68,6 +68,15 @@ impl KexContext {
     /// Generate client's ephemeral key for the selected algorithm
     pub fn generate_client_key(&mut self, rng: &mut impl RngCore) -> anyhow::Result<()> {
         match self.algorithm {
+            protocol::KexAlgorithm::DiffieHellmanGroup1Sha1 => {
+                let group = DhGroup::group1();
+                let private_x = group.generate_private_key(rng, 256);
+                let public_y = group.compute_public_key(&private_x);
+                
+                self.client_private = Some(private_x);
+                self.client_ephemeral = Some(Mpint::encode(&public_y));
+                Ok(())
+            }
             protocol::KexAlgorithm::DiffieHellmanGroup14Sha256 |
             protocol::KexAlgorithm::DiffieHellmanGroupExchangeSha256 |
             protocol::KexAlgorithm::DiffieHellmanGroup14Sha384 |
@@ -120,6 +129,18 @@ impl KexContext {
     /// Compute the shared secret
     pub fn compute_shared_secret(&mut self) -> anyhow::Result<()> {
         match self.algorithm {
+            protocol::KexAlgorithm::DiffieHellmanGroup1Sha1 => {
+                // For DH, compute shared secret: s = server_public^client_private mod p
+                if let (Some(ref server_pub), Some(ref client_priv)) = 
+                    (&self.server_public, &self.client_private) {
+                    let group = DhGroup::group1();
+                    let shared = group.compute_shared_secret(server_pub, client_priv);
+                    self.shared_secret = Some(shared.to_bytes_be());
+                    Ok(())
+                } else {
+                    Err(anyhow::anyhow!("Missing private or public key for DH"))
+                }
+            }
             protocol::KexAlgorithm::DiffieHellmanGroup14Sha256 |
             protocol::KexAlgorithm::DiffieHellmanGroupExchangeSha256 |
             protocol::KexAlgorithm::DiffieHellmanGroup14Sha384 |
@@ -157,6 +178,40 @@ impl KexContext {
     /// Generate the session hash (H)
     pub fn generate_session_hash(&self, session_id: &[u8]) -> anyhow::Result<Vec<u8>> {
         match self.algorithm {
+            protocol::KexAlgorithm::DiffieHellmanGroup1Sha1 => {
+                // H = SHA-1(K_S || V_C || V_S || I_C || I_S || K_EXC || H_S)
+                let mut hasher = sha2::Sha1::new();
+                
+                // K_S - shared secret (as MPINT)
+                if let Some(ref ss) = self.shared_secret {
+                    hasher.update(ss);
+                }
+                
+                // V_C - client version string
+                hasher.update(b"SSH-2.0-ayssh_1.0.0");
+                
+                // V_S - server version string
+                hasher.update(b"SSH-2.0-ayssh_1.0.0");
+                
+                // I_C - client initial kex packet (KEXINIT)
+                hasher.update(session_id);
+                
+                // I_S - server initial kex packet (KEXINIT)
+                hasher.update(&[]);
+                
+                // K_EXC - exchanged key exchange parameters (e || f)
+                if let Some(ref ce) = self.client_ephemeral {
+                    hasher.update(ce);
+                }
+                if let Some(ref se) = self.server_ephemeral {
+                    hasher.update(se);
+                }
+                
+                // H_S - server host key (placeholder)
+                hasher.update(&[]);
+                
+                Ok(hasher.finalize().to_vec())
+            }
             protocol::KexAlgorithm::DiffieHellmanGroup14Sha256 |
             protocol::KexAlgorithm::DiffieHellmanGroupExchangeSha256 => {
                 // H = Hash(K_S || V_C || V_S || I_C || I_S || K_EXC || H_S)

@@ -1,6 +1,6 @@
 //! Connection module - SSH connection protocol and channel management
 
-use tracing::info;
+use tracing::{info, debug};
 
 use crate::config::Config;
 use crate::error::SshError;
@@ -42,7 +42,10 @@ impl Connection {
         info!("Connecting to {}", self.config.connection_string());
 
         let addr = self.resolve_address().await?;
+        debug!("Resolved address: {:?}", addr);
+        
         let socket = self.connect_to_address(addr).await?;
+        debug!("TCP connection established");
         
         self.transport = Some(Transport::new(socket));
         self.is_connected = true;

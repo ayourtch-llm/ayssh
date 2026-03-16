@@ -8,7 +8,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// SSH protocol version string with CRLF
 /// Format: SSH-2.0-software_version\r\n
-pub const SSH_VERSION_STRING: &str = "SSH-2.0-ayssh_1.0.0\r\n";
+/// Cisco devices are strict about version string format
+/// Using a more generic version string that Cisco accepts
+pub const SSH_VERSION_STRING: &str = "SSH-2.0-OpenSSH_7.4\r\n";
 
 /// Maximum version string length (RFC 256 bytes)
 pub const MAX_VERSION_STRING_LENGTH: usize = 256;
@@ -100,9 +102,10 @@ pub fn parse_version_string(data: &[u8]) -> Result<(u32, String), SshError> {
         .parse()
         .map_err(|_| SshError::ProtocolError("Invalid protocol version".to_string()))?;
 
-    if protocol_version != 2 {
+    // Accept SSH-2.0 or SSH-1.99 (Cisco uses 1.99 for their SSH-2.0 compatible implementation)
+    if protocol_version != 2 && protocol_version != 1 {
         return Err(SshError::ProtocolError(format!(
-            "Only SSH protocol version 2 is supported (got {})",
+            "Only SSH protocol version 2 or 1.99 supported (got {})",
             protocol_version
         )));
     }

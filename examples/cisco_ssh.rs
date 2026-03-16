@@ -5,11 +5,11 @@ use tracing_subscriber;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize logging
+    // Initialize logging with debug level to see SSH protocol details
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive(tracing::Level::INFO.into())
+                .add_directive(tracing::Level::DEBUG.into())
         )
         .init();
 

@@ -732,6 +732,23 @@ impl Session {
         transport.send_channel_data(self.channel_id, data).await?;
         Ok(())
     }
+
+    /// Send channel data
+    pub async fn send_channel_data(
+        &mut self,
+        transport: &mut crate::transport::Transport,
+        data: &[u8],
+    ) -> Result<(), crate::error::SshError> {
+        transport.send_channel_data(self.channel_id, data).await
+    }
+
+    /// Receive message from transport
+    pub async fn recv_message(
+        &mut self,
+        transport: &mut crate::transport::Transport,
+    ) -> Result<Vec<u8>, crate::error::SshError> {
+        transport.recv_message().await
+    }
 }
 
 /// Session manager for handling multiple sessions

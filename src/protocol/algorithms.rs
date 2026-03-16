@@ -292,6 +292,8 @@ impl fmt::Display for NegotiatedAlgorithms {
 /// Supported hash algorithms for DH key exchange
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HashAlgorithm {
+    /// SHA-1 (used for diffie-hellman-group1-sha1)
+    Sha1,
     /// SHA-256
     Sha256,
     /// SHA-384
@@ -304,6 +306,7 @@ impl HashAlgorithm {
     /// Get the hash output size in bytes
     pub const fn output_size(&self) -> usize {
         match self {
+            HashAlgorithm::Sha1 => 20,
             HashAlgorithm::Sha256 => 32,
             HashAlgorithm::Sha384 => 48,
             HashAlgorithm::Sha512 => 64,
@@ -314,6 +317,8 @@ impl HashAlgorithm {
 /// Supported key exchange algorithms
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KexAlgorithm {
+    /// diffie-hellman-group1-sha1 (Oakley Group 2, 1024-bit MODP)
+    DiffieHellmanGroup1Sha1,
     /// diffie-hellman-group14-sha256
     DiffieHellmanGroup14Sha256,
     /// diffie-hellman-group14-sha384
@@ -340,6 +345,7 @@ impl KexAlgorithm {
     /// Get the algorithm name as defined in SSH spec
     pub const fn name(&self) -> &'static str {
         match self {
+            KexAlgorithm::DiffieHellmanGroup1Sha1 => "diffie-hellman-group1-sha1",
             KexAlgorithm::DiffieHellmanGroup14Sha256 => "diffie-hellman-group14-sha256",
             KexAlgorithm::DiffieHellmanGroup14Sha384 => "diffie-hellman-group14-sha384",
             KexAlgorithm::DiffieHellmanGroup14Sha512 => "diffie-hellman-group14-sha512",
@@ -359,6 +365,7 @@ impl FromStr for KexAlgorithm {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
+            "diffie-hellman-group1-sha1" => Ok(KexAlgorithm::DiffieHellmanGroup1Sha1),
             "diffie-hellman-group14-sha256" => Ok(KexAlgorithm::DiffieHellmanGroup14Sha256),
             "diffie-hellman-group14-sha384" => Ok(KexAlgorithm::DiffieHellmanGroup14Sha384),
             "diffie-hellman-group14-sha512" => Ok(KexAlgorithm::DiffieHellmanGroup14Sha512),

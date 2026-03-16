@@ -21,6 +21,10 @@ pub enum MessageType {
     KexInit = 20,
     /// SSH_MSG_NEWKEYS
     Newkeys = 21,
+    /// SSH_MSG_KEXDH_INIT (Diffie-Hellman key exchange init)
+    KexDhInit = 30,
+    /// SSH_MSG_KEXDH_REPLY (Diffie-Hellman key exchange reply)
+    KexDhReply = 31,
     /// SSH_MSG_USERAUTH_REQUEST
     UserauthRequest = 50,
     /// SSH_MSG_USERAUTH_FAILURE
