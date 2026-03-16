@@ -6,6 +6,8 @@
 
 pub mod encrypted_io;
 pub mod host_key;
+pub mod test_server;
 
 pub use encrypted_io::ServerEncryptedIO;
 pub use host_key::HostKeyPair;
+pub use test_server::{TestSshServer, AlgorithmFilter};
