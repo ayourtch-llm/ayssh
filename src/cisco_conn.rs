@@ -13,8 +13,10 @@ use tracing::{debug, info};
 /// Connection type for Cisco devices
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConnectionType {
-    /// SSH connection (default)
+    /// SSH connection with password authentication
     CiscoSsh,
+    /// SSH connection with RSA public key authentication
+    CiscoSshKey,
 }
 
 /// Configuration for CiscoConn command execution
@@ -87,61 +89,60 @@ pub struct CiscoConn {
 }
 
 impl CiscoConn {
-    /// Create a new CiscoConn with default timeouts
-    ///
-    /// This method establishes a connection to the device, authenticates,
-    /// and issues the `term len 0` command to disable pagination.
-    ///
-    /// # Arguments
-    ///
-    /// * `target` - Device address (IPv4/IPv6, with optional port)
-    /// * `conntype` - Connection type (currently only CiscoSsh)
-    /// * `username` - Authentication username
-    /// * `password` - Authentication password
-    ///
-    /// # Returns
-    ///
-    /// * `Ok(CiscoConn)` - Successfully created connection
-    /// * `Err(SshError)` - Failed to create connection
+    /// Create a new CiscoConn with password authentication and default timeouts
     pub async fn new(
         target: &str,
         conntype: ConnectionType,
         username: &str,
         password: &str,
     ) -> Result<Self, SshError> {
-        Self::with_timeouts(
+        Self::connect_internal(
             target,
             conntype,
             username,
             password,
+            None,
             Duration::from_secs(30),
             Duration::from_secs(30),
         ).await
     }
 
-    /// Create a new CiscoConn with custom timeouts
-    ///
-    /// This method establishes a connection to the device, authenticates,
-    /// and issues the `term len 0` command to disable pagination.
-    ///
-    /// # Arguments
-    ///
-    /// * `target` - Device address (IPv4/IPv6, with optional port)
-    /// * `conntype` - Connection type (currently only CiscoSsh)
-    /// * `username` - Authentication username
-    /// * `password` - Authentication password
-    /// * `timeout` - Connection timeout
-    /// * `read_timeout` - Read timeout for command output
-    ///
-    /// # Returns
-    ///
-    /// * `Ok(CiscoConn)` - Successfully created connection
-    /// * `Err(SshError)` - Failed to create connection
+    /// Create a new CiscoConn with password authentication and custom timeouts
     pub async fn with_timeouts(
         target: &str,
         conntype: ConnectionType,
         username: &str,
         password: &str,
+        timeout: Duration,
+        read_timeout: Duration,
+    ) -> Result<Self, SshError> {
+        Self::connect_internal(target, conntype, username, password, None, timeout, read_timeout).await
+    }
+
+    /// Create a new CiscoConn with RSA key authentication
+    pub async fn new_with_key(
+        target: &str,
+        username: &str,
+        private_key: &[u8],
+    ) -> Result<Self, SshError> {
+        Self::connect_internal(
+            target,
+            ConnectionType::CiscoSshKey,
+            username,
+            "",
+            Some(private_key.to_vec()),
+            Duration::from_secs(30),
+            Duration::from_secs(30),
+        ).await
+    }
+
+    /// Internal connection method that handles both password and key auth
+    async fn connect_internal(
+        target: &str,
+        conntype: ConnectionType,
+        username: &str,
+        password: &str,
+        private_key: Option<Vec<u8>>,
         timeout: Duration,
         read_timeout: Duration,
     ) -> Result<Self, SshError> {
@@ -153,39 +154,62 @@ impl CiscoConn {
         ];
 
         // Create SSH client and connect
-        let mut transport = match conntype {
-            ConnectionType::CiscoSsh => {
-                let client = crate::client::SshClient::new(target.to_string(), 22)
-                    .with_username(username.to_string())
-                    .with_password(password.to_string());
+        let mut transport = {
+            let client = crate::client::SshClient::new(target.to_string(), 22)
+                .with_username(username.to_string())
+                .with_password(password.to_string());
 
-                info!("Connecting to {}...", target);
-                let mut transport = client.connect().await?;
-                transport.handshake().await?;
+            info!("Connecting to {}...", target);
+            let mut transport = client.connect().await?;
+            transport.handshake().await?;
 
-                // Request ssh-userauth service
-                transport.send_service_request("ssh-userauth").await?;
-                let _service = transport.recv_service_accept().await?;
+            // Request ssh-userauth service
+            transport.send_service_request("ssh-userauth").await?;
+            let _service = transport.recv_service_accept().await?;
 
-                // Authenticate
-                let mut authenticator = crate::auth::Authenticator::new(&mut transport, username.to_string())
-                    .with_password(password.to_string());
-                authenticator.available_methods.insert("password".to_string());
-                let auth_result = authenticator.authenticate().await?;
+            // Authenticate based on connection type
+            match conntype {
+                ConnectionType::CiscoSsh => {
+                    let mut authenticator = crate::auth::Authenticator::new(&mut transport, username.to_string())
+                        .with_password(password.to_string());
+                    authenticator.available_methods.insert("password".to_string());
+                    let auth_result = authenticator.authenticate().await?;
 
-                match auth_result {
-                    crate::auth::AuthenticationResult::Success => {
-                        info!("Authentication successful");
-                    }
-                    crate::auth::AuthenticationResult::Failure { .. } => {
-                        return Err(SshError::AuthenticationFailed(
-                            "Authentication failed".to_string()
-                        ));
+                    match auth_result {
+                        crate::auth::AuthenticationResult::Success => {
+                            info!("Password authentication successful");
+                        }
+                        crate::auth::AuthenticationResult::Failure { .. } => {
+                            return Err(SshError::AuthenticationFailed(
+                                "Password authentication failed".to_string()
+                            ));
+                        }
                     }
                 }
+                ConnectionType::CiscoSshKey => {
+                    let key_data = private_key.as_ref().ok_or_else(|| {
+                        SshError::AuthenticationFailed("Private key required for CiscoSshKey".to_string())
+                    })?;
 
-                transport
+                    let mut authenticator = crate::auth::Authenticator::new(&mut transport, username.to_string())
+                        .with_private_key(key_data.clone());
+                    authenticator.available_methods.insert("publickey".to_string());
+                    let auth_result = authenticator.authenticate().await?;
+
+                    match auth_result {
+                        crate::auth::AuthenticationResult::Success => {
+                            info!("Public key authentication successful");
+                        }
+                        crate::auth::AuthenticationResult::Failure { .. } => {
+                            return Err(SshError::AuthenticationFailed(
+                                "Public key authentication failed".to_string()
+                            ));
+                        }
+                    }
+                }
             }
+
+            transport
         };
 
         // Open session channel

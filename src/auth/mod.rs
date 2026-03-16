@@ -13,6 +13,8 @@ pub mod publickey;
 pub mod signature;
 pub mod state;
 
+use tracing::debug;
+
 pub use key::PrivateKey;
 pub use keyboard::KeyboardInteractiveAuthenticator;
 pub use methods::{AuthMethod, AuthMethodManager};
@@ -187,7 +189,7 @@ impl<'a> Authenticator<'a> {
     async fn try_publickey_auth(&mut self, private_key_pem: &[u8]) -> Result<AuthenticationResult, SshError> {
         // Parse the OpenSSH private key to get the RSA key
         let private_key = self.parse_private_key(private_key_pem)?;
-        
+
         // Extract public key blob from the RSA private key
         let public_key_blob = self.extract_public_key_blob(&private_key)?;
 
@@ -208,14 +210,18 @@ impl<'a> Authenticator<'a> {
         match msg.msg_type() {
             Some(MessageType::UserauthSuccess) => Ok(AuthenticationResult::Success),
             Some(MessageType::UserauthFailure) => self.process_auth_response(msg),
-            Some(MessageType::UserauthRequest) => {
-                // Server wants signature - use real signature encoding
-                self.send_signature(private_key).await
+            Some(MessageType::UserauthInfoRequest) => {
+                // Message 60 = SSH_MSG_USERAUTH_PK_OK in publickey context (RFC 4252 Section 7)
+                debug!("Server accepted public key, sending signature");
+                self.send_signature(private_key, &public_key_blob).await
             }
-            _ => Ok(AuthenticationResult::Failure {
-                partial_success: Vec::new(),
-                available_methods: Vec::new(),
-            }),
+            other => {
+                debug!("Unexpected pubkey auth response: {:?}", other);
+                Ok(AuthenticationResult::Failure {
+                    partial_success: Vec::new(),
+                    available_methods: Vec::new(),
+                })
+            }
         }
     }
 
@@ -272,14 +278,13 @@ impl<'a> Authenticator<'a> {
     }
 
     /// Sends signature for public key authentication using real RSA signing
-    async fn send_signature(&mut self, private_key: rsa::RsaPrivateKey) -> Result<AuthenticationResult, SshError> {
-        // Note: We need to reconstruct the message data to create the signature
-        // For now, we'll use a simplified approach - in production, we'd need to
-        // track the exact message that was sent to construct the signature data
-        
-        // For testing purposes, create dummy signature data
-        // In production, this would be constructed from the actual auth request
-        let session_id = vec![0x01; 20]; // Placeholder - should come from key exchange
+    async fn send_signature(&mut self, private_key: rsa::RsaPrivateKey, public_key_blob: &[u8]) -> Result<AuthenticationResult, SshError> {
+        // Get the real session ID from the transport layer
+        let session_id = self.transport.session_id()
+            .ok_or_else(|| SshError::ProtocolError("Session ID not available for signature".to_string()))?
+            .to_vec();
+
+        // Construct signature data per RFC 4252 Section 7
         let signature_data = create_signature_data(
             &session_id,
             &self.username,
@@ -287,16 +292,16 @@ impl<'a> Authenticator<'a> {
             "publickey",
             true,
             "ssh-rsa",
-            &[], // public key blob would be needed here
+            public_key_blob,
         );
-        
-        eprintln!("Creating RSA signature with {} bytes of data", signature_data.len());
-        
+
+        debug!("Creating RSA signature over {} bytes of data", signature_data.len());
+
         // Encode the signature using RSA signature encoder
         let signature = RsaSignatureEncoder::encode(&private_key, &signature_data)?;
-        
-        eprintln!("✓ Signature encoded successfully ({} bytes)", signature.data.len());
-        
+
+        debug!("Signature encoded successfully ({} bytes)", signature.data.len());
+
         let mut msg = Message::new();
         msg.write_byte(MessageType::UserauthRequest.value());
         msg.write_string(self.username.as_bytes());
@@ -304,7 +309,7 @@ impl<'a> Authenticator<'a> {
         msg.write_string(b"publickey");
         msg.write_bool(true); // has signature
         msg.write_string(b"ssh-rsa"); // algorithm
-        msg.write_bytes(&[]); // public key blob (simplified)
+        msg.write_bytes(public_key_blob);
         msg.write_bytes(&signature.encode()); // SSH-encoded signature
 
         self.transport.send_message(&msg.as_bytes()).await?;

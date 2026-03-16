@@ -56,6 +56,8 @@ pub struct Transport {
     send_sequence_number: u32,
     /// Server-to-client packet sequence number (counts ALL packets from connection start per RFC 4253 Section 6.4)
     recv_sequence_number: u32,
+    /// Session ID from key exchange (needed for public key auth signatures)
+    session_id: Option<Vec<u8>>,
 }
 
 /// Encryption state for outgoing packets
@@ -105,6 +107,7 @@ impl Transport {
             read_buffer: Vec::new(),
             send_sequence_number: 0,
             recv_sequence_number: 0,
+            session_id: None,
         }
     }
 
@@ -126,6 +129,11 @@ impl Transport {
     /// Get the handshake state
     pub fn handshake_state(&self) -> &handshake::HandshakeState {
         &self.handshake
+    }
+
+    /// Get the session ID from key exchange (needed for public key auth signatures)
+    pub fn session_id(&self) -> Option<&[u8]> {
+        self.session_id.as_deref()
     }
 
     /// Get the channel manager
@@ -432,6 +440,7 @@ impl Transport {
         // 12. Derive session keys
         let session_id = kex_context.session_id.clone()
             .expect("Session ID not computed");
+        self.session_id = Some(session_id.clone());
         let session_keys = kex_context.derive_session_keys(&session_id)?;
         
         // Store session keys in handshake state
