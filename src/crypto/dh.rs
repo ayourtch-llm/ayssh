@@ -15,18 +15,14 @@ use crate::crypto::kdf;
 use crate::error::SshError;
 use crate::protocol;
 
-/// MODP Group 1 (Oakley Group 2, 1024-bit) prime p
-/// RFC 2409, RFC 4253 Section 8.1
-/// This is the 1024-bit MODP group required for interoperability with older devices like Cisco
+/// MODP Group 1 (RFC 2409 Oakley Group 2, 1024-bit) prime p
+/// RFC 2409 Section 6.2, RFC 4253 Section 8.1
+/// This is the standard 1024-bit MODP group required for interoperability with older devices like Cisco
+/// Note: This is the first 1024 bits of the RFC 3526 2048-bit group
 pub const GROUP1_P: &str = "FFFFFFFF FFFFFFFF C90FDAA2 2168C234 C4C6628B 80DC1CD1 29024E08 8A67CC74 \
                              020BBEA6 3B139B22 514A0879 8E3404DD EF9519B3 CD3A431B 302B0A6D F25F1437 \
                              4FE1356D 6D51C245 E485B576 625E7EC6 F44C42E9 A637ED6B 0BFF5CB6 F406B7ED \
-                             EE386BFB 5A899FA5 AE9F2411 7C4B1FE6 49286651 ECE65381 FDB45024 E8114A17 \
-                             63B51716 9A41831E 7F97E29D 7C711714 8D171974 4D8CA31E 840E74FB FE93B157 \
-                             4E0EE54B D35AF029 63457950 96FA1634 7AE53931 7FD5D7C3 F9FFC14F 3FB00C4D \
-                             E7E5F851 2944C513 41AA34EC 9D963BCE 33C019E4 EFC98F27 2754DB20 260595ED \
-                             A588476F 85A5832F 8209346B A6FFA8CE FE91A528 FA172998 46111635 7683F674 \
-                             FCE9D606 83066D49 A5871638 BEB9C920 705ABC26 0201";
+                             EE386BFB 5A899FA5 AE9F2411 7C4B1FE6 49286651 ECE45B3D C2007CB8 A163BF05";
 
 /// MODP Group 1 generator g = 2
 pub const GROUP1_G: u32 = 2;

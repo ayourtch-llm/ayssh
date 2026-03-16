@@ -37,6 +37,16 @@ pub struct KexContext {
     pub shared_secret: Option<Vec<u8>>,
     /// Session ID (if computed)
     pub session_id: Option<Vec<u8>>,
+    /// Client version string (V_C)
+    client_version: Option<Vec<u8>>,
+    /// Server version string (V_S)
+    server_version: Option<Vec<u8>>,
+    /// Client KEXINIT payload (I_C)
+    client_kexinit: Option<Vec<u8>>,
+    /// Server KEXINIT payload (I_S)
+    server_kexinit: Option<Vec<u8>>,
+    /// Server host key (H_S)
+    server_host_key: Option<Vec<u8>>,
 }
 
 impl KexContext {
@@ -52,7 +62,31 @@ impl KexContext {
             server_ecdh_public: None,
             shared_secret: None,
             session_id: None,
+            client_version: None,
+            server_version: None,
+            client_kexinit: None,
+            server_kexinit: None,
+            server_host_key: None,
         }
+    }
+
+    /// Set the version strings and KEXINIT payloads
+    pub fn set_exchange_info(
+        &mut self,
+        client_version: &[u8],
+        server_version: &[u8],
+        client_kexinit: &[u8],
+        server_kexinit: &[u8],
+    ) {
+        self.client_version = Some(client_version.to_vec());
+        self.server_version = Some(server_version.to_vec());
+        self.client_kexinit = Some(client_kexinit.to_vec());
+        self.server_kexinit = Some(server_kexinit.to_vec());
+    }
+
+    /// Set the server host key
+    pub fn set_server_host_key(&mut self, host_key: &[u8]) {
+        self.server_host_key = Some(host_key.to_vec());
     }
 
     /// Determine the curve type for an ECDH algorithm
@@ -115,24 +149,34 @@ impl KexContext {
     }
 
     /// Process server's key exchange message
-    pub fn process_server_kex_init(&mut self, server_ephemeral: &[u8]) -> anyhow::Result<()> {
+    /// For DH algorithms, expects length-prefixed MPINT (f) from KEXDH_REPLY
+    /// For ECDH algorithms, expects the encoded public key
+    pub fn process_server_kex_init(&mut self, data: &[u8]) -> anyhow::Result<()> {
         // Check if this is an ECDH algorithm
         if let Some(curve) = self.get_curve_type() {
-            // For ECDH, server_ephemeral is the encoded public key
-            let decoded = EcdhKeyPair::decode_public_key(curve, server_ephemeral)
+            // For ECDH, data is the encoded public key
+            let decoded = EcdhKeyPair::decode_public_key(curve, data)
                 .map_err(|e| anyhow::anyhow!("{}", e))?;
             self.server_ecdh_public = Some(decoded);
-            self.server_ephemeral = Some(server_ephemeral.to_vec());
+            self.server_ephemeral = Some(data.to_vec());
         } else {
-            // For DH, decode from MPINT
-            let server_public = Mpint::decode(server_ephemeral)?;
+            // For DH, data starts with length-prefixed MPINT (f)
+            // The rest (signature) is ignored here
+            let (server_public, _remaining) = Mpint::decode_length_prefixed(data)?;
             self.server_public = Some(server_public);
-            self.server_ephemeral = Some(server_ephemeral.to_vec());
+            
+            // Store the encoded MPINT as server_ephemeral for session hash computation
+            if data.len() >= 4 {
+                let len = u32::from_be_bytes([data[0], data[1], data[2], data[3]]) as usize;
+                if data.len() >= 4 + len {
+                    self.server_ephemeral = Some(data[..4+len].to_vec());
+                }
+            }
         }
         Ok(())
     }
 
-    /// Compute the shared secret
+    /// Compute the shared secret and session ID
     pub fn compute_shared_secret(&mut self) -> anyhow::Result<()> {
         match self.algorithm {
             protocol::KexAlgorithm::DiffieHellmanGroup1Sha1 => {
@@ -142,9 +186,8 @@ impl KexContext {
                     let group = DhGroup::group1();
                     let shared = group.compute_shared_secret(server_pub, client_priv);
                     self.shared_secret = Some(shared.to_bytes_be());
-                    Ok(())
                 } else {
-                    Err(anyhow::anyhow!("Missing private or public key for DH"))
+                    return Err(anyhow::anyhow!("Missing private or public key for DH"));
                 }
             }
             protocol::KexAlgorithm::DiffieHellmanGroup14Sha256 |
@@ -159,9 +202,8 @@ impl KexContext {
                     let group = DhGroup::group14();
                     let shared = group.compute_shared_secret(server_pub, client_priv);
                     self.shared_secret = Some(shared.to_bytes_be());
-                    Ok(())
                 } else {
-                    Err(anyhow::anyhow!("Missing private or public key for DH"))
+                    return Err(anyhow::anyhow!("Missing private or public key for DH"));
                 }
             }
             protocol::KexAlgorithm::Curve25519Sha256 |
@@ -173,109 +215,126 @@ impl KexContext {
                     (&self.client_ecdh_keypair, &self.server_ecdh_public) {
                     let shared = keypair.compute_shared_secret(server_pub);
                     self.shared_secret = Some(shared);
-                    Ok(())
                 } else {
-                    Err(anyhow::anyhow!("Missing ECDH keypair or server public key"))
+                    return Err(anyhow::anyhow!("Missing ECDH keypair or server public key"));
                 }
+            }
+        }
+        
+        // After computing shared secret, compute the session ID
+        // According to RFC 4253, the session ID is the exchange hash H for the first key exchange
+        let session_id = self.compute_session_id()?;
+        self.session_id = Some(session_id);
+        
+        Ok(())
+    }
+
+    /// Compute the exchange hash (H) and set it as session ID
+    /// According to RFC 4253 Section 7.1:
+    /// H = Hash(K_S || V_C || V_S || I_C || I_S || K_C || K_S || e_C || e_S)
+    /// For client: K_C is empty (client doesn't send host key in KEX)
+    pub fn compute_session_id(&mut self) -> anyhow::Result<Vec<u8>> {
+        match self.algorithm {
+            protocol::KexAlgorithm::DiffieHellmanGroup1Sha1 => {
+                let mut hasher = Sha1::new();
+                self.update_session_hash(&mut hasher)?;
+                Ok(hasher.finalize().to_vec())
+            }
+            protocol::KexAlgorithm::DiffieHellmanGroup14Sha256 |
+            protocol::KexAlgorithm::DiffieHellmanGroupExchangeSha256 |
+            protocol::KexAlgorithm::DiffieHellmanGroup14Sha384 |
+            protocol::KexAlgorithm::DiffieHellmanGroup14Sha512 |
+            protocol::KexAlgorithm::DiffieHellmanGroup16Sha512 |
+            protocol::KexAlgorithm::DiffieHellmanGroup18Sha512 => {
+                let mut hasher = Sha256::new();
+                self.update_session_hash(&mut hasher)?;
+                Ok(hasher.finalize().to_vec())
+            }
+            protocol::KexAlgorithm::Curve25519Sha256 => {
+                let mut hasher = Sha256::new();
+                self.update_session_hash(&mut hasher)?;
+                Ok(hasher.finalize().to_vec())
+            }
+            protocol::KexAlgorithm::EcdhSha2Nistp256 => {
+                let mut hasher = Sha256::new();
+                self.update_session_hash(&mut hasher)?;
+                Ok(hasher.finalize().to_vec())
+            }
+            protocol::KexAlgorithm::EcdhSha2Nistp384 => {
+                let mut hasher = Sha384::new();
+                self.update_session_hash(&mut hasher)?;
+                Ok(hasher.finalize().to_vec())
+            }
+            protocol::KexAlgorithm::EcdhSha2Nistp521 => {
+                // SHA-512 for p521
+                use sha2::Sha512;
+                let mut hasher = Sha512::new();
+                self.update_session_hash(&mut hasher)?;
+                Ok(hasher.finalize().to_vec())
             }
         }
     }
 
-    /// Generate the session hash (H)
-    pub fn generate_session_hash(&self, session_id: &[u8]) -> anyhow::Result<Vec<u8>> {
-        match self.algorithm {
-            protocol::KexAlgorithm::DiffieHellmanGroup1Sha1 => {
-                // H = SHA-1(K_S || V_C || V_S || I_C || I_S || K_EXC || H_S)
-                let mut hasher = Sha1::new();
-                
-                // K_S - shared secret (as MPINT)
-                if let Some(ref ss) = self.shared_secret {
-                    hasher.update(ss);
-                }
-                
-                // V_C - client version string
-                hasher.update(b"SSH-2.0-ayssh_1.0.0");
-                
-                // V_S - server version string
-                hasher.update(b"SSH-2.0-ayssh_1.0.0");
-                
-                // I_C - client initial kex packet (KEXINIT)
-                hasher.update(session_id);
-                
-                // I_S - server initial kex packet (KEXINIT)
-                hasher.update(&[]);
-                
-                // K_EXC - exchanged key exchange parameters (e || f)
-                if let Some(ref ce) = self.client_ephemeral {
-                    hasher.update(ce);
-                }
-                if let Some(ref se) = self.server_ephemeral {
-                    hasher.update(se);
-                }
-                
-                // H_S - server host key (placeholder)
-                hasher.update(&[]);
-                
-                Ok(hasher.finalize().to_vec())
-            }
-            protocol::KexAlgorithm::DiffieHellmanGroup14Sha256 |
-            protocol::KexAlgorithm::DiffieHellmanGroupExchangeSha256 => {
-                // H = Hash(K_S || V_C || V_S || I_C || I_S || K_EXC || H_S)
-                let mut hasher = Sha256::new();
-                
-                // K_S - shared secret
-                if let Some(ref ss) = self.shared_secret {
-                    hasher.update(ss);
-                }
-                
-                // V_C - client version string
-                hasher.update(b"SSH-2.0-ayssh_1.0.0");
-                
-                // V_S - server version string
-                hasher.update(b"SSH-2.0-ayssh_1.0.0");
-                
-                // I_C - client initial kex packet (KEXINIT)
-                hasher.update(session_id);
-                
-                // I_S - server initial kex packet (KEXINIT)
-                hasher.update(&[]);
-                
-                // K_EXC - exchanged key exchange parameters
-                if let Some(ref ce) = self.client_ephemeral {
-                    hasher.update(ce);
-                }
-                if let Some(ref se) = self.server_ephemeral {
-                    hasher.update(se);
-                }
-                
-                // H_S - server host key (placeholder)
-                hasher.update(&[]);
-                
-                Ok(hasher.finalize().to_vec())
-            }
-            _ => {
-                // For other algorithms, use SHA256 as default
-                let mut hasher = Sha256::new();
-                
-                if let Some(ref ss) = self.shared_secret {
-                    hasher.update(ss);
-                }
-                
-                hasher.update(b"SSH-2.0-ayssh_1.0.0");
-                hasher.update(b"SSH-2.0-ayssh_1.0.0");
-                hasher.update(session_id);
-                hasher.update(&[]);
-                
-                if let Some(ref ce) = self.client_ephemeral {
-                    hasher.update(ce);
-                }
-                if let Some(ref se) = self.server_ephemeral {
-                    hasher.update(se);
-                }
-                
-                Ok(hasher.finalize().to_vec())
-            }
+    /// Update a hasher with the session hash components
+    /// H = Hash(K_S || V_C || V_S || I_C || I_S || K_C || K_S || e_C || e_S)
+    fn update_session_hash<H: Digest>(&mut self, hasher: &mut H) -> anyhow::Result<()> {
+        // K_S - shared secret (as MPINT)
+        if let Some(ref ss) = self.shared_secret {
+            // Convert Vec<u8> to BigUint and encode as MPINT
+            let biguint = num_bigint::BigUint::from_bytes_be(ss);
+            let mpint = crate::crypto::dh::Mpint::encode(&biguint);
+            hasher.update(&mpint);
+        } else {
+            return Err(anyhow::anyhow!("Shared secret not computed"));
         }
+        
+        // V_C - client version string (without CRLF)
+        if let Some(ref vc) = self.client_version {
+            let vc_clean = vc.strip_suffix(b"\r\n").unwrap_or(vc.strip_suffix(b"\n").unwrap_or(vc));
+            hasher.update(vc_clean);
+        }
+        
+        // V_S - server version string (without CRLF)
+        if let Some(ref vs) = self.server_version {
+            let vs_clean = vs.strip_suffix(b"\r\n").unwrap_or(vs.strip_suffix(b"\n").unwrap_or(vs));
+            hasher.update(vs_clean);
+        }
+        
+        // I_C - client KEXINIT payload
+        if let Some(ref ic) = self.client_kexinit {
+            hasher.update(ic);
+        }
+        
+        // I_S - server KEXINIT payload
+        if let Some(ref is) = self.server_kexinit {
+            hasher.update(is);
+        }
+        
+        // K_C - client host key (empty for client, as client doesn't authenticate here)
+        // hasher.update(&[]);  // Skip for client
+        
+        // K_S - server host key
+        if let Some(ref hs) = self.server_host_key {
+            hasher.update(hs);
+        }
+        
+        // e_C - client public key exchange key (already encoded as MPINT or curve point)
+        if let Some(ref ec) = self.client_ephemeral {
+            hasher.update(ec);
+        }
+        
+        // e_S - server public key exchange key
+        if let Some(ref es) = self.server_ephemeral {
+            hasher.update(es);
+        }
+        
+        Ok(())
+    }
+
+    /// Generate the session hash (H) - deprecated, use compute_session_id instead
+    #[deprecated(note = "Use compute_session_id instead")]
+    pub fn generate_session_hash(&mut self, _session_id: &[u8]) -> anyhow::Result<Vec<u8>> {
+        self.compute_session_id()
     }
 
     /// Derive session keys from shared secret and session hash
@@ -333,8 +392,34 @@ pub fn encode_kex_reply(server_ephemeral: &[u8]) -> Vec<u8> {
 }
 
 /// Encode a NEWKEYS message
+/// According to RFC 4253 Section 6, SSH packets have format:
+/// [packet_length (4 bytes)][padding_length (1 byte)][payload][padding]
+/// NEWKEYS is sent with old keys (unencrypted) but still needs proper packet format
 pub fn encode_newkeys() -> Vec<u8> {
-    vec![protocol::MessageType::Newkeys.value()]
+    let payload = vec![protocol::MessageType::Newkeys.value()];
+    let payload_len = payload.len();
+    
+    // Calculate padding (must be at least 4 bytes)
+    let total_without_padding = 4 + 1 + payload_len;
+    let remainder = total_without_padding % 8;
+    let padding_length = if remainder == 0 {
+        8u8
+    } else {
+        let p = (8 - remainder) as u8;
+        if p < 4 { p + 8 } else { p }
+    };
+    
+    let packet_length = payload_len as u32 + padding_length as u32 + 1;
+    
+    let mut msg = bytes::BytesMut::new();
+    msg.put_u32(packet_length);
+    msg.put_u8(padding_length);
+    msg.put_slice(&payload);
+    for _ in 0..padding_length {
+        msg.put_u8(0);
+    }
+    
+    msg.to_vec()
 }
 
 /// Decode a KEX message and extract the server's ephemeral key

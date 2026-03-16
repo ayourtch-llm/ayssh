@@ -270,9 +270,12 @@ impl Transport {
         
         debug!("Client ephemeral key size: {} bytes", client_ephemeral.len());
         
-        // Build KEXDH_INIT payload
+        // Build KEXDH_INIT payload per RFC 4253 Section 7.1
+        // Format: byte SSH_MSG_KEXDH_INIT, mpint e
+        // Note: mpint is length-prefixed (4-byte length + data)
         let mut kexdh_init_payload = bytes::BytesMut::new();
         kexdh_init_payload.put_u8(crate::protocol::MessageType::KexDhInit as u8);
+        // Add length-prefixed MPINT for the ephemeral key
         kexdh_init_payload.put_u32(client_ephemeral.len() as u32);
         kexdh_init_payload.put_slice(&client_ephemeral);
         
@@ -364,9 +367,50 @@ impl Transport {
             ));
         }
         
-        kex_context.process_server_kex_init(&reply_payload[1..])?;
+        // Extract server host key from KEXDH_REPLY
+        // Format: byte SSH_MSG_KEXDH_REPLY, string K_S (host key), mpint f, string signature
+        let mut reply_data = &reply_payload[1..];
         
-        // 11. Compute shared secret
+        // Read server host key (string type = uint32 length + data)
+        if reply_data.len() >= 4 {
+            let host_key_len = u32::from_be_bytes([reply_data[0], reply_data[1], reply_data[2], reply_data[3]]) as usize;
+            if reply_data.len() >= 4 + host_key_len {
+                let server_host_key = &reply_data[4..4+host_key_len];
+                debug!("Server host key length: {} bytes", host_key_len);
+                kex_context.set_server_host_key(server_host_key);
+            }
+        }
+        
+        // Set exchange info for session ID computation
+        // Client version string (without CRLF)
+        let client_version = crate::transport::handshake::SSH_VERSION_STRING
+            .strip_suffix("\r\n")
+            .unwrap_or(crate::transport::handshake::SSH_VERSION_STRING)
+            .as_bytes();
+        
+        // Server version string (without CRLF)  
+        let server_version_clean = server_ver
+            .strip_suffix("\r\n")
+            .unwrap_or(server_ver.strip_suffix('\n').unwrap_or(&server_ver));
+        
+        kex_context.set_exchange_info(
+            client_version,
+            server_version_clean.as_bytes(),
+            &client_kexinit,
+            kexinit_payload, // server KEXINIT payload
+        );
+        
+        // Process server's ephemeral key (skip host key string)
+        // After host key string, we have mpint f and signature
+        if reply_data.len() >= 4 {
+            let host_key_len = u32::from_be_bytes([reply_data[0], reply_data[1], reply_data[2], reply_data[3]]) as usize;
+            if reply_data.len() >= 4 + host_key_len {
+                let after_host_key = &reply_data[4+host_key_len..];
+                kex_context.process_server_kex_init(after_host_key)?;
+            }
+        }
+        
+        // 11. Compute shared secret (and session ID)
         kex_context.compute_shared_secret()?;
         
         // 12. Derive session keys
