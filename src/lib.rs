@@ -19,6 +19,7 @@
 
 pub mod auth;
 pub mod channel;
+pub mod cisco_conn;
 pub mod cisco_ssh;
 pub mod client;
 pub mod config;
@@ -45,6 +46,7 @@ pub use channel::ChannelId;
 pub use channel::ChannelType;
 pub use channel::ChannelManager;
 pub use channel::ChannelTransferManager;
+pub use cisco_conn::CiscoConn;
 pub use client::SshClient;
 pub use config::Config;
 pub use connection::Connection;

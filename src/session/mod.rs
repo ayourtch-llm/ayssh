@@ -321,8 +321,10 @@ impl InteractiveShell {
 /// SSH Session handler
 #[derive(Debug)]
 pub struct Session {
-    /// Channel ID
+    /// Local channel ID (our side)
     channel_id: u32,
+    /// Remote channel ID (server side) - use this when sending requests to the server
+    remote_channel_id: u32,
     /// Session state
     state: SessionState,
     /// Terminal type
@@ -356,6 +358,7 @@ impl Session {
 
         Self {
             channel_id: channel.local_id.to_u32(),
+            remote_channel_id: channel.remote_id.to_u32(),
             state: SessionState::Initial,
             terminal_type: None,
             dimensions: WindowDimensions::default_terminal(),
@@ -373,6 +376,7 @@ impl Session {
     pub fn new_without_shell(channel: Channel) -> Self {
         Self {
             channel_id: channel.local_id.to_u32(),
+            remote_channel_id: channel.remote_id.to_u32(),
             state: SessionState::Initial,
             terminal_type: None,
             dimensions: WindowDimensions::default_terminal(),
@@ -429,17 +433,21 @@ impl Session {
             ));
         }
 
-        // Parse channel ID
-        let mut buf = &response[1..];
+        // Parse channel confirmation per RFC 4254 Section 5.1:
+        //   uint32    recipient channel (our channel ID)
+        //   uint32    sender channel (server's channel ID)
+        //   uint32    initial window size
+        //   uint32    maximum packet size
+        let buf = &response[1..];
         let local_id = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]);
-        let _recipient_id = u32::from_be_bytes([buf[4], buf[5], buf[6], buf[7]]);
+        let remote_id = u32::from_be_bytes([buf[4], buf[5], buf[6], buf[7]]);
         let _window_size = u32::from_be_bytes([buf[8], buf[9], buf[10], buf[11]]);
         let _max_packet = u32::from_be_bytes([buf[12], buf[13], buf[14], buf[15]]);
 
-        // Create channel and session
+        // Create channel with both local and remote IDs
         let channel = Channel::new_session(
             ChannelId::new(local_id),
-            ChannelId::new(0),
+            ChannelId::new(remote_id),
         );
 
         Ok(Session::new(channel))
@@ -448,6 +456,12 @@ impl Session {
     /// Get the channel ID
     pub fn channel_id(&self) -> u32 {
         self.channel_id
+    }
+
+    /// Get the remote (server-side) channel ID
+    /// Use this when sending channel requests/data to the server
+    pub fn remote_channel_id(&self) -> u32 {
+        self.remote_channel_id
     }
 
     /// Get the current session state
