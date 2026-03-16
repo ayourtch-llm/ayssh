@@ -186,6 +186,7 @@ impl KexContext {
                     (&self.server_public, &self.client_private) {
                     let group = DhGroup::group1();
                     let shared = group.compute_shared_secret(server_pub, client_priv);
+                    // Store shared secret as raw bytes (not MPINT encoded)
                     self.shared_secret = Some(shared.to_bytes_be());
                 } else {
                     return Err(anyhow::anyhow!("Missing private or public key for DH"));
@@ -202,6 +203,7 @@ impl KexContext {
                     (&self.server_public, &self.client_private) {
                     let group = DhGroup::group14();
                     let shared = group.compute_shared_secret(server_pub, client_priv);
+                    // Store shared secret as raw bytes (not MPINT encoded)
                     self.shared_secret = Some(shared.to_bytes_be());
                 } else {
                     return Err(anyhow::anyhow!("Missing private or public key for DH"));
