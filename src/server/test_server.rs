@@ -444,67 +444,75 @@ mod tests {
     }
 
     /// Server-client end-to-end test: full SSH protocol through encrypted data.
-    /// Both sides run as cooperative async tasks on the same tokio runtime,
-    /// ensuring proper scheduling even under heavy parallel test load.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn test_server_accepts_client_connection() {
+    /// Each side runs on a separate OS thread with its own single-threaded
+    /// tokio runtime, avoiding any Send/Sync requirements on library types.
+    #[test]
+    fn test_server_accepts_client_connection() {
+        use std::sync::mpsc;
         let t0 = std::time::Instant::now();
+        let (port_tx, port_rx) = mpsc::channel::<u16>();
 
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all().build().unwrap();
+            rt.block_on(async {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                port_tx.send(listener.local_addr().unwrap().port()).unwrap();
+                let host_key = HostKeyPair::generate_ed25519();
+                let filter = AlgorithmFilter::default();
+                let (stream, _) = listener.accept().await.unwrap();
+                let (mut io, ch) = server_handshake(stream, &host_key, &filter).await
+                    .expect("Server handshake failed");
 
-        let server_task = tokio::spawn(async move {
-            let host_key = HostKeyPair::generate_ed25519();
-            let filter = AlgorithmFilter::default();
-            let (stream, _) = listener.accept().await.unwrap();
-            let (mut io, ch) = server_handshake(stream, &host_key, &filter).await
-                .expect("Server handshake failed");
+                let mut msg = BytesMut::new();
+                msg.put_u8(94); msg.put_u32(ch);
+                let data = b"AYSSH_TEST_OK\n";
+                msg.put_u32(data.len() as u32); msg.put_slice(data);
+                io.send_message(&msg).await.unwrap();
 
-            let mut msg = BytesMut::new();
-            msg.put_u8(94); msg.put_u32(ch);
-            let data = b"AYSSH_TEST_OK\n";
-            msg.put_u32(data.len() as u32); msg.put_slice(data);
-            io.send_message(&msg).await.unwrap();
-
-            let mut eof = BytesMut::new();
-            eof.put_u8(96); eof.put_u32(ch);
-            io.send_message(&eof).await.unwrap();
-
-            let mut close = BytesMut::new();
-            close.put_u8(97); close.put_u32(ch);
-            io.send_message(&close).await.unwrap();
+                let mut eof = BytesMut::new();
+                eof.put_u8(96); eof.put_u32(ch);
+                io.send_message(&eof).await.unwrap();
+                let mut close = BytesMut::new();
+                close.put_u8(97); close.put_u32(ch);
+                io.send_message(&close).await.unwrap();
+            });
         });
 
-        let client_task = tokio::spawn(async move {
-            let mut transport = crate::transport::Transport::new(
-                TcpStream::connect(format!("127.0.0.1:{}", port)).await.unwrap()
-            );
-            transport.handshake().await.expect("Client handshake failed");
-            transport.send_service_request("ssh-userauth").await.unwrap();
-            let svc = transport.recv_service_accept().await.unwrap();
-            assert_eq!(svc, "ssh-userauth");
+        let client = std::thread::spawn(move || {
+            let port = port_rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all().build().unwrap();
+            rt.block_on(async {
+                let mut transport = crate::transport::Transport::new(
+                    TcpStream::connect(format!("127.0.0.1:{}", port)).await.unwrap()
+                );
+                transport.handshake().await.expect("Client handshake failed");
+                transport.send_service_request("ssh-userauth").await.unwrap();
+                let svc = transport.recv_service_accept().await.unwrap();
+                assert_eq!(svc, "ssh-userauth");
 
-            let mut auth = crate::auth::Authenticator::new(&mut transport, "test".to_string())
-                .with_password("test".to_string());
-            auth.available_methods.insert("password".to_string());
-            let r = auth.authenticate().await.unwrap();
-            assert!(matches!(r, crate::auth::AuthenticationResult::Success));
+                let mut auth = crate::auth::Authenticator::new(&mut transport, "test".to_string())
+                    .with_password("test".to_string());
+                auth.available_methods.insert("password".to_string());
+                let r = auth.authenticate().await.unwrap();
+                assert!(matches!(r, crate::auth::AuthenticationResult::Success));
 
-            let session = crate::session::Session::open(&mut transport).await.unwrap();
-            let ch = session.remote_channel_id();
-            transport.send_channel_request(ch, "shell", true).await.unwrap();
-            let _ = transport.recv_message().await.unwrap();
+                let session = crate::session::Session::open(&mut transport).await.unwrap();
+                let ch = session.remote_channel_id();
+                transport.send_channel_request(ch, "shell", true).await.unwrap();
+                let _ = transport.recv_message().await.unwrap();
 
-            let data = transport.recv_message().await.unwrap();
-            assert!(!data.is_empty() && data[0] == 94, "Expected CHANNEL_DATA");
-            let len = u32::from_be_bytes([data[5], data[6], data[7], data[8]]) as usize;
-            let text = std::str::from_utf8(&data[9..9+len]).unwrap_or("");
-            assert!(text.contains("AYSSH_TEST_OK"), "Got {:?}", text);
+                let data = transport.recv_message().await.unwrap();
+                assert!(!data.is_empty() && data[0] == 94, "Expected CHANNEL_DATA");
+                let len = u32::from_be_bytes([data[5], data[6], data[7], data[8]]) as usize;
+                let text = std::str::from_utf8(&data[9..9+len]).unwrap_or("");
+                assert!(text.contains("AYSSH_TEST_OK"), "Got {:?}", text);
+            });
         });
 
-        let (s, c) = tokio::join!(server_task, client_task);
+        server.join().expect("Server thread panicked");
+        client.join().expect("Client thread panicked");
         eprintln!("[TEST] server-client e2e: {:?}", t0.elapsed());
-        s.expect("Server panicked");
-        c.expect("Client panicked");
     }
 }

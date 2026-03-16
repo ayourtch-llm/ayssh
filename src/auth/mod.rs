@@ -80,7 +80,7 @@ pub struct Authenticator<'a> {
     /// List of available authentication methods
     pub available_methods: HashSet<String>,
     /// Keyboard-interactive responses handler
-    keyboard_interactive_handler: Option<Box<dyn Fn(&keyboard::Challenge) -> Result<Vec<String>, SshError> + Send + Sync>>,
+    keyboard_interactive_handler: Option<Box<dyn Fn(&keyboard::Challenge) -> Result<Vec<String>, SshError> + Send>>,
 }
 
 impl<'a> Authenticator<'a> {
@@ -118,7 +118,7 @@ impl<'a> Authenticator<'a> {
     /// Sets the keyboard-interactive response handler
     pub fn with_keyboard_interactive_handler<F>(mut self, handler: F) -> Self
     where
-        F: Fn(&keyboard::Challenge) -> Result<Vec<String>, SshError> + Send + Sync + 'static,
+        F: Fn(&keyboard::Challenge) -> Result<Vec<String>, SshError> + Send + 'static,
     {
         self.keyboard_interactive_handler = Some(Box::new(handler));
         self
@@ -495,5 +495,13 @@ mod tests {
         } else {
             panic!("Expected RSA key");
         }
+    }
+
+    /// Compile-time verification that Authenticator is Send.
+    /// This enables using it in tokio::spawn and across thread boundaries.
+    #[test]
+    fn test_authenticator_is_send() {
+        fn assert_send<T: Send>() {}
+        assert_send::<super::Authenticator>();
     }
 }
