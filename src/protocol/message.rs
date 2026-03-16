@@ -140,14 +140,11 @@ impl Message {
     }
 
     /// Read a bool from the message
+    /// Per RFC 4251: All non-zero values MUST be interpreted as TRUE
     pub fn read_bool(&self, offset: usize) -> Option<bool> {
         if offset < self.data.len() {
             let byte = self.data[offset];
-            match byte {
-                0 => Some(false),
-                1 => Some(true),
-                _ => None,
-            }
+            Some(byte != 0)
         } else {
             None
         }
