@@ -440,10 +440,11 @@ impl KexContext {
             };
             let iv_len = 16; // AES block size for both CBC and CTR
             let mac_key_len = match mac_algorithm {
-                Some("hmac-sha1") | Some("hmac-sha1-96") => 20,
+                Some("hmac-sha1") | Some("hmac-sha1-96")
+                | Some("hmac-sha1-etm@openssh.com") => 20,
                 Some("hmac-md5") | Some("hmac-md5-96") => 16,
-                Some("hmac-sha2-256") => 32,
-                Some("hmac-sha2-512") => 64,
+                Some("hmac-sha2-256") | Some("hmac-sha2-256-etm@openssh.com") => 32,
+                Some("hmac-sha2-512") | Some("hmac-sha2-512-etm@openssh.com") => 64,
                 _ => {
                     // Fallback: use old hardcoded defaults per KEX algorithm
                     match self.algorithm {

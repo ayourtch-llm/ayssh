@@ -608,126 +608,120 @@ impl Transport {
         }
 
         // Extract needed values from decrypt_state before calling async methods
-        let mac_len = {
+        let (mac_len, etm, mac_algo, dec_algo) = {
             let ds = self.decrypt_state.as_ref().unwrap();
-            match ds.mac_algorithm.as_str() {
-                "hmac-sha1" => 20,
-                "hmac-sha1-96" => 12,
-                "hmac-md5" => 16,
-                "hmac-md5-96" => 12,
-                "hmac-sha2-256" => 32,
-                "hmac-sha2-512" => 64,
-                _ => 20,
+            (
+                mac_length(&ds.mac_algorithm),
+                is_etm_mac(&ds.mac_algorithm),
+                ds.mac_algorithm.clone(),
+                ds.dec_algorithm.clone(),
+            )
+        };
+
+        let decrypted = if etm {
+            // ETM mode: length is in cleartext, MAC over seq || length || ciphertext
+            let length_bytes = self.read_exact_buffered(4).await?;
+            let packet_length = u32::from_be_bytes([
+                length_bytes[0], length_bytes[1], length_bytes[2], length_bytes[3],
+            ]) as usize;
+            debug!("ETM: cleartext packet_length: {}", packet_length);
+
+            if packet_length < 1 || packet_length > 35000 {
+                return Err(crate::error::SshError::ProtocolError(
+                    format!("Invalid packet length: {}", packet_length),
+                ));
             }
-        };
 
-        // Step 1: Read and decrypt the first AES block (16 bytes) to get packet_length
-        let first_block_ciphertext = self.read_exact_buffered(16).await?;
+            // Read encrypted data (packet_length bytes) + MAC
+            let encrypted = self.read_exact_buffered(packet_length).await?;
+            let received_mac = self.read_exact_buffered(mac_len).await?;
 
-        let (current_iv, dec_key, dec_algo) = {
-            let ds = self.decrypt_state.as_ref().unwrap();
-            (ds.iv.clone(), ds.dec_key.clone(), ds.dec_algorithm.clone())
-        };
+            // Verify MAC BEFORE decrypting (Encrypt-then-MAC)
+            let mut mac_data = Vec::with_capacity(4 + 4 + encrypted.len());
+            mac_data.extend_from_slice(&{
+                let ds = self.decrypt_state.as_ref().unwrap();
+                ds.sequence_number.to_be_bytes()
+            });
+            mac_data.extend_from_slice(&length_bytes);
+            mac_data.extend_from_slice(&encrypted);
 
-        let decrypted_first_block = match dec_algo.as_str() {
-            "aes128-cbc" | "aes192-cbc" | "aes256-cbc" => aes_cbc_decrypt_raw(&dec_key, &current_iv, &first_block_ciphertext)?,
-            "aes128-ctr" | "aes192-ctr" | "aes256-ctr" => {
-                use crate::crypto::cipher::aes_ctr_decrypt;
-                aes_ctr_decrypt(&dec_key, &current_iv, &first_block_ciphertext)?
+            let expected_mac = compute_mac(&mac_algo, &{
+                let ds = self.decrypt_state.as_ref().unwrap();
+                ds.mac_key.clone()
+            }, &mac_data);
+
+            if expected_mac.len() != received_mac.len() || !expected_mac.iter().zip(received_mac.iter()).all(|(a, b)| a == b) {
+                return Err(crate::error::SshError::ProtocolError("ETM MAC verification failed".to_string()));
             }
-            other => return Err(crate::error::SshError::ProtocolError(
-                format!("Unsupported decryption algorithm: {}", other),
-            )),
-        };
+            debug!("ETM MAC verification successful");
 
-        // Extract packet_length from first 4 bytes of decrypted data
-        let packet_length = u32::from_be_bytes([
-            decrypted_first_block[0],
-            decrypted_first_block[1],
-            decrypted_first_block[2],
-            decrypted_first_block[3],
-        ]) as usize;
-        debug!("Extracted packet_length: {}", packet_length);
+            // Decrypt the data
+            let decrypt_state = self.decrypt_state.as_mut().unwrap();
+            let plaintext = decrypt_data(&decrypt_state.dec_algorithm, &decrypt_state.dec_key, &mut decrypt_state.iv, &encrypted)?;
+            decrypt_state.sequence_number = decrypt_state.sequence_number.wrapping_add(1);
 
-        if packet_length < 1 || packet_length > 35000 {
-            return Err(crate::error::SshError::ProtocolError(
-                format!("Invalid packet length: {}", packet_length),
-            ));
-        }
+            // Reconstruct full packet: length || plaintext
+            let mut full = Vec::with_capacity(4 + plaintext.len());
+            full.extend_from_slice(&length_bytes);
+            full.extend_from_slice(&plaintext);
+            full
+        } else {
+            // Standard mode: decrypt first block to get length, then decrypt rest
+            let first_block_ct = self.read_exact_buffered(16).await?;
 
-        // Step 2: Total encrypted size is 4 + packet_length
-        // We already read 16 bytes, so read the remaining encrypted bytes + MAC
-        let total_encrypted = 4 + packet_length;
-        // For CTR mode, total_encrypted may not be block-aligned, but we still
-        // need to round up to block boundary for the encrypted data on the wire
-        let total_encrypted_padded = match dec_algo.as_str() {
-            "aes128-cbc" | "aes192-cbc" | "aes256-cbc" => total_encrypted, // CBC: already block-aligned by SSH padding
-            _ => total_encrypted,            // CTR: stream cipher, no alignment needed
-        };
-        let remaining_encrypted = total_encrypted_padded - 16;
-        let remaining_to_read = remaining_encrypted + mac_len;
-        let rest = self.read_exact_buffered(remaining_to_read).await?;
+            let (current_iv, dec_key) = {
+                let ds = self.decrypt_state.as_ref().unwrap();
+                (ds.iv.clone(), ds.dec_key.clone())
+            };
 
-        // Reassemble the full ciphertext
-        let mut full_ciphertext = Vec::with_capacity(total_encrypted_padded);
-        full_ciphertext.extend_from_slice(&first_block_ciphertext);
-        full_ciphertext.extend_from_slice(&rest[..remaining_encrypted]);
-
-        // Extract MAC
-        let received_mac = &rest[remaining_encrypted..];
-        debug!("Total encrypted: {} bytes, MAC: {} bytes", total_encrypted_padded, received_mac.len());
-
-        // Step 3: Decrypt the full ciphertext
-        let decrypt_state = self.decrypt_state.as_mut().unwrap();
-        let decrypted = match decrypt_state.dec_algorithm.as_str() {
-            "aes128-cbc" | "aes192-cbc" | "aes256-cbc" => aes_cbc_decrypt_raw(&decrypt_state.dec_key, &decrypt_state.iv, &full_ciphertext)?,
-            "aes128-ctr" | "aes192-ctr" | "aes256-ctr" => {
-                use crate::crypto::cipher::aes_ctr_decrypt;
-                let pt = aes_ctr_decrypt(&decrypt_state.dec_key, &decrypt_state.iv, &full_ciphertext)?;
-                pt
-            }
-            other => return Err(crate::error::SshError::ProtocolError(
-                format!("Unsupported decryption algorithm: {}", other),
-            )),
-        };
-        debug!("Decrypted {} bytes, first 20: {:?}", decrypted.len(), &decrypted[..std::cmp::min(20, decrypted.len())]);
-
-        // Update IV for next packet
-        match decrypt_state.dec_algorithm.as_str() {
-            "aes128-cbc" | "aes192-cbc" | "aes256-cbc" => {
-                // CBC: IV = last ciphertext block
-                if full_ciphertext.len() >= 16 {
-                    decrypt_state.iv = full_ciphertext[full_ciphertext.len() - 16..].to_vec();
+            let decrypted_first = match dec_algo.as_str() {
+                "aes128-cbc" | "aes192-cbc" | "aes256-cbc" => aes_cbc_decrypt_raw(&dec_key, &current_iv, &first_block_ct)?,
+                "aes128-ctr" | "aes192-ctr" | "aes256-ctr" => {
+                    use crate::crypto::cipher::aes_ctr_decrypt;
+                    aes_ctr_decrypt(&dec_key, &current_iv, &first_block_ct)?
                 }
+                other => return Err(crate::error::SshError::ProtocolError(
+                    format!("Unsupported decryption algorithm: {}", other),
+                )),
+            };
+
+            let packet_length = u32::from_be_bytes([
+                decrypted_first[0], decrypted_first[1], decrypted_first[2], decrypted_first[3],
+            ]) as usize;
+            debug!("Extracted packet_length: {}", packet_length);
+
+            if packet_length < 1 || packet_length > 35000 {
+                return Err(crate::error::SshError::ProtocolError(
+                    format!("Invalid packet length: {}", packet_length),
+                ));
             }
-            "aes128-ctr" | "aes192-ctr" | "aes256-ctr" => {
-                // CTR: advance counter by number of blocks
-                let blocks = (full_ciphertext.len() + 15) / 16;
-                advance_ctr_iv(&mut decrypt_state.iv, blocks);
+
+            let total_encrypted = 4 + packet_length;
+            let remaining_encrypted = total_encrypted - 16;
+            let rest = self.read_exact_buffered(remaining_encrypted + mac_len).await?;
+
+            let mut full_ct = Vec::with_capacity(total_encrypted);
+            full_ct.extend_from_slice(&first_block_ct);
+            full_ct.extend_from_slice(&rest[..remaining_encrypted]);
+            let received_mac = &rest[remaining_encrypted..];
+
+            let decrypt_state = self.decrypt_state.as_mut().unwrap();
+            let decrypted = decrypt_data(&decrypt_state.dec_algorithm, &decrypt_state.dec_key, &mut decrypt_state.iv, &full_ct)?;
+
+            // Verify MAC over seq || plaintext
+            let mut mac_data = Vec::with_capacity(4 + decrypted.len());
+            mac_data.extend_from_slice(&decrypt_state.sequence_number.to_be_bytes());
+            mac_data.extend_from_slice(&decrypted);
+
+            let expected_mac = compute_mac(&decrypt_state.mac_algorithm, &decrypt_state.mac_key, &mac_data);
+            if expected_mac.len() != received_mac.len() || !expected_mac.iter().zip(received_mac.iter()).all(|(a, b)| a == b) {
+                return Err(crate::error::SshError::ProtocolError("MAC verification failed".to_string()));
             }
-            _ => {}
-        }
+            debug!("MAC verification successful (seq={})", decrypt_state.sequence_number);
 
-        // Step 4: Verify HMAC over sequence_number + unencrypted packet (RFC 4253 Section 6.4)
-        let mut mac_data = Vec::with_capacity(4 + decrypted.len());
-        mac_data.extend_from_slice(&decrypt_state.sequence_number.to_be_bytes());
-        mac_data.extend_from_slice(&decrypted);
-
-        let expected_mac = compute_mac(&decrypt_state.mac_algorithm, &decrypt_state.mac_key, &mac_data);
-
-        if expected_mac.len() != received_mac.len() || !expected_mac.iter().zip(received_mac.iter()).all(|(a, b)| a == b) {
-            debug!("MAC mismatch! seq={}, algo={}, expected={:?}, received={:?}",
-                   decrypt_state.sequence_number, decrypt_state.mac_algorithm,
-                   &expected_mac[..std::cmp::min(8, expected_mac.len())],
-                   &received_mac[..std::cmp::min(8, received_mac.len())]);
-            return Err(crate::error::SshError::ProtocolError(
-                "MAC verification failed".to_string(),
-            ));
-        }
-        debug!("MAC verification successful (seq={})", decrypt_state.sequence_number);
-
-        // Update sequence number
-        decrypt_state.sequence_number = decrypt_state.sequence_number.wrapping_add(1);
+            decrypt_state.sequence_number = decrypt_state.sequence_number.wrapping_add(1);
+            decrypted
+        };
 
         // Extract payload from decrypted packet:
         // decrypted = [packet_length: 4][padding_length: 1][payload: N][padding: P]
@@ -888,9 +882,23 @@ impl Transport {
     }
 }
 
+/// Check if a MAC algorithm is an ETM (Encrypt-then-MAC) variant
+fn is_etm_mac(algorithm: &str) -> bool {
+    algorithm.ends_with("-etm@openssh.com")
+}
+
+/// Get the base MAC algorithm name (strip ETM suffix if present)
+fn base_mac_algorithm(algorithm: &str) -> &str {
+    if let Some(base) = algorithm.strip_suffix("-etm@openssh.com") {
+        base
+    } else {
+        algorithm
+    }
+}
+
 /// Compute MAC using the specified algorithm
 fn compute_mac(algorithm: &str, key: &[u8], data: &[u8]) -> Vec<u8> {
-    match algorithm {
+    match base_mac_algorithm(algorithm) {
         "hmac-sha2-256" => {
             let mut hmac = HmacSha256::new(key);
             hmac.update(data);
@@ -910,6 +918,19 @@ fn compute_mac(algorithm: &str, key: &[u8], data: &[u8]) -> Vec<u8> {
     }
 }
 
+/// Get MAC length for a given algorithm
+fn mac_length(algorithm: &str) -> usize {
+    match base_mac_algorithm(algorithm) {
+        "hmac-sha1" => 20,
+        "hmac-sha1-96" => 12,
+        "hmac-md5" => 16,
+        "hmac-md5-96" => 12,
+        "hmac-sha2-256" => 32,
+        "hmac-sha2-512" => 64,
+        _ => 20,
+    }
+}
+
 /// Advance a 16-byte CTR IV by the given number of AES blocks
 fn advance_ctr_iv(iv: &mut Vec<u8>, blocks: usize) {
     // IV is treated as a 128-bit big-endian counter
@@ -921,6 +942,52 @@ fn advance_ctr_iv(iv: &mut Vec<u8>, blocks: usize) {
         if carry == 0 {
             break;
         }
+    }
+}
+
+/// Encrypt data with the specified algorithm, updating IV in place
+fn encrypt_data(algorithm: &str, key: &[u8], iv: &mut Vec<u8>, data: &[u8]) -> Result<Vec<u8>, crate::error::SshError> {
+    match algorithm {
+        "aes128-cbc" | "aes192-cbc" | "aes256-cbc" => {
+            let ct = aes_cbc_encrypt_raw(key, iv, data)?;
+            if ct.len() >= 16 {
+                *iv = ct[ct.len() - 16..].to_vec();
+            }
+            Ok(ct)
+        }
+        "aes128-ctr" | "aes192-ctr" | "aes256-ctr" => {
+            use crate::crypto::cipher::aes_ctr_encrypt;
+            let ct = aes_ctr_encrypt(key, iv, data)?;
+            let blocks = (data.len() + 15) / 16;
+            advance_ctr_iv(iv, blocks);
+            Ok(ct)
+        }
+        _ => Err(crate::error::SshError::ProtocolError(
+            format!("Unsupported encryption algorithm: {}", algorithm)
+        )),
+    }
+}
+
+/// Decrypt data with the specified algorithm, updating IV in place
+fn decrypt_data(algorithm: &str, key: &[u8], iv: &mut Vec<u8>, data: &[u8]) -> Result<Vec<u8>, crate::error::SshError> {
+    match algorithm {
+        "aes128-cbc" | "aes192-cbc" | "aes256-cbc" => {
+            let pt = aes_cbc_decrypt_raw(key, iv, data)?;
+            if data.len() >= 16 {
+                *iv = data[data.len() - 16..].to_vec();
+            }
+            Ok(pt)
+        }
+        "aes128-ctr" | "aes192-ctr" | "aes256-ctr" => {
+            use crate::crypto::cipher::aes_ctr_decrypt;
+            let pt = aes_ctr_decrypt(key, iv, data)?;
+            let blocks = (data.len() + 15) / 16;
+            advance_ctr_iv(iv, blocks);
+            Ok(pt)
+        }
+        _ => Err(crate::error::SshError::ProtocolError(
+            format!("Unsupported decryption algorithm: {}", algorithm)
+        )),
     }
 }
 
@@ -958,47 +1025,44 @@ fn encrypt_packet_cbc(payload: &[u8], state: &mut EncryptionState) -> Result<Vec
         packet.push(0);
     }
 
-    // Compute HMAC over sequence number + unencrypted packet (per RFC 4253 Section 6.4)
-    // MAC = H(seq_num || unencrypted_packet)
-    let mut mac_data = Vec::with_capacity(4 + packet.len());
-    mac_data.extend_from_slice(&state.sequence_number.to_be_bytes());
-    mac_data.extend_from_slice(&packet);
+    let etm = is_etm_mac(&state.mac_algorithm);
 
-    let mac = compute_mac(&state.mac_algorithm, &state.mac_key, &mac_data);
+    if etm {
+        // ETM mode: length in cleartext, encrypt rest, MAC over seq || length || ciphertext
+        let length_bytes = &packet[..4]; // cleartext length field
+        let to_encrypt = &packet[4..]; // padding_length + payload + padding
 
-    // Encrypt the packet
-    let encrypted = match state.enc_algorithm.as_str() {
-        "aes128-cbc" | "aes192-cbc" | "aes256-cbc" => {
-            let ct = aes_cbc_encrypt_raw(&state.enc_key, &state.iv, &packet)?;
-            // Update IV for next packet (last 16 bytes of ciphertext)
-            if ct.len() >= 16 {
-                state.iv = ct[ct.len() - 16..].to_vec();
-            }
-            ct
-        }
-        "aes128-ctr" | "aes192-ctr" | "aes256-ctr" => {
-            use crate::crypto::cipher::aes_ctr_encrypt;
-            let ct = aes_ctr_encrypt(&state.enc_key, &state.iv, &packet)?;
-            // For CTR mode, advance the counter by the number of blocks encrypted
-            let blocks = (packet.len() + 15) / 16;
-            advance_ctr_iv(&mut state.iv, blocks);
-            ct
-        }
-        _ => {
-            return Err(crate::error::SshError::ProtocolError(
-                format!("Unsupported encryption algorithm: {}", state.enc_algorithm)
-            ));
-        }
-    };
-    
-    // Update sequence number
-    state.sequence_number = state.sequence_number.wrapping_add(1);
-    
-    // Combine encrypted data and MAC
-    let mut result = encrypted;
-    result.extend_from_slice(&mac);
-    
-    Ok(result)
+        let ciphertext = encrypt_data(&state.enc_algorithm, &state.enc_key, &mut state.iv, to_encrypt)?;
+
+        // MAC over sequence_number || cleartext_length || ciphertext
+        let mut mac_data = Vec::with_capacity(4 + 4 + ciphertext.len());
+        mac_data.extend_from_slice(&state.sequence_number.to_be_bytes());
+        mac_data.extend_from_slice(length_bytes);
+        mac_data.extend_from_slice(&ciphertext);
+        let mac = compute_mac(&state.mac_algorithm, &state.mac_key, &mac_data);
+
+        state.sequence_number = state.sequence_number.wrapping_add(1);
+
+        let mut result = Vec::with_capacity(4 + ciphertext.len() + mac.len());
+        result.extend_from_slice(length_bytes);
+        result.extend_from_slice(&ciphertext);
+        result.extend_from_slice(&mac);
+        Ok(result)
+    } else {
+        // Standard mode: encrypt entire packet, MAC over seq || plaintext
+        let mut mac_data = Vec::with_capacity(4 + packet.len());
+        mac_data.extend_from_slice(&state.sequence_number.to_be_bytes());
+        mac_data.extend_from_slice(&packet);
+        let mac = compute_mac(&state.mac_algorithm, &state.mac_key, &mac_data);
+
+        let encrypted = encrypt_data(&state.enc_algorithm, &state.enc_key, &mut state.iv, &packet)?;
+
+        state.sequence_number = state.sequence_number.wrapping_add(1);
+
+        let mut result = encrypted;
+        result.extend_from_slice(&mac);
+        Ok(result)
+    }
 }
 
 fn decrypt_packet_cbc(encrypted_with_mac: &[u8], state: &mut DecryptionState) -> Result<Vec<u8>, crate::error::SshError> {
