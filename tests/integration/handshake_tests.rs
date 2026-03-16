@@ -2,7 +2,8 @@
 //!
 //! Tests the complete SSH handshake flow from version exchange to established state
 
-use ssh_client::protocol::{AlgorithmProposal, KexAlgorithm, HashAlgorithm};
+use ssh_client::protocol::{AlgorithmProposal, KexAlgorithm, HashAlgorithm as ProtocolHashAlgorithm};
+use ssh_client::crypto::kdf::HashAlgorithm;
 use ssh_client::transport::{
     HandshakeState, TransportStateMachine, State, generate_client_kexinit, compute_session_id, hash_algorithm_for_kex
 };
@@ -82,9 +83,9 @@ fn test_complete_handshake_flow() {
     let mac_key_len = 32; // HMAC-SHA256
     let iv_len = 16; // AES block size
     
-    let enc_key = kdf(&session_id, &session_id, 1, enc_key_len);
-    let mac_key = kdf(&session_id, &session_id, 2, mac_key_len);
-    let iv = kdf(&session_id, &session_id, 3, iv_len);
+    let enc_key = kdf(&session_id, &session_id, 1, enc_key_len, HashAlgorithm::Sha256);
+    let mac_key = kdf(&session_id, &session_id, 2, mac_key_len, HashAlgorithm::Sha256);
+    let iv = kdf(&session_id, &session_id, 3, iv_len, HashAlgorithm::Sha256);
     
     assert_eq!(enc_key.len(), enc_key_len);
     assert_eq!(mac_key.len(), mac_key_len);
@@ -172,7 +173,7 @@ fn test_session_id_uniqueness() {
     let client_kexinit = generate_client_kexinit();
     let server_kexinit = generate_client_kexinit();
     
-    let hash_algorithm = HashAlgorithm::Sha256;
+    let hash_algorithm = ProtocolHashAlgorithm::Sha256;
     
     // Different shared secrets produce different session IDs
     let session_id1 = compute_session_id(
@@ -206,20 +207,20 @@ fn test_session_id_uniqueness() {
 fn test_kex_algorithm_hash_mapping() {
     use ssh_client::protocol::KexAlgorithm;
     
-    assert_eq!(hash_algorithm_for_kex(KexAlgorithm::DiffieHellmanGroup14Sha256), HashAlgorithm::Sha256);
-    assert_eq!(hash_algorithm_for_kex(KexAlgorithm::DiffieHellmanGroup16Sha512), HashAlgorithm::Sha384);
-    assert_eq!(hash_algorithm_for_kex(KexAlgorithm::EcdhSha2Nistp521), HashAlgorithm::Sha512);
+    assert_eq!(hash_algorithm_for_kex(KexAlgorithm::DiffieHellmanGroup14Sha256), ProtocolHashAlgorithm::Sha256);
+    assert_eq!(hash_algorithm_for_kex(KexAlgorithm::DiffieHellmanGroup16Sha512), ProtocolHashAlgorithm::Sha384);
+    assert_eq!(hash_algorithm_for_kex(KexAlgorithm::EcdhSha2Nistp521), ProtocolHashAlgorithm::Sha512);
 }
 
 #[test]
 fn test_key_derivation_determinism() {
     let session_id = vec![0xAB; 32];
     
-    let enc_key1 = kdf(&session_id, &session_id, 1, 32);
-    let enc_key2 = kdf(&session_id, &session_id, 1, 32);
-    
+    let enc_key1 = kdf(&session_id, &session_id, 1, 32, HashAlgorithm::Sha256);
+    let enc_key2 = kdf(&session_id, &session_id, 1, 32, HashAlgorithm::Sha256);
+
     assert_eq!(enc_key1, enc_key2);
-    
-    let enc_key3 = kdf(&session_id, &session_id, 2, 32);
+
+    let enc_key3 = kdf(&session_id, &session_id, 2, 32, HashAlgorithm::Sha256);
     assert_ne!(enc_key1, enc_key3);
 }

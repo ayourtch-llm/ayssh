@@ -165,7 +165,7 @@ mod tests {
         let counter = 1u32;
         let desired_length = 32;
         
-        let result = kdf(shared_secret, session_id, counter, desired_length);
+        let result = kdf(shared_secret, session_id, counter, desired_length, HashAlgorithm::Sha256);
         assert_eq!(result.len(), desired_length);
     }
 
@@ -176,7 +176,7 @@ mod tests {
         let counter = 1u32;
         let desired_length = 64; // More than one SHA256 block
         
-        let result = kdf(shared_secret, session_id, counter, desired_length);
+        let result = kdf(shared_secret, session_id, counter, desired_length, HashAlgorithm::Sha256);
         assert_eq!(result.len(), desired_length);
     }
 
@@ -187,7 +187,7 @@ mod tests {
         let counter = 1u32;
         let desired_length = 32;
         
-        let result = kdf(shared_secret, session_id, counter, desired_length);
+        let result = kdf(shared_secret, session_id, counter, desired_length, HashAlgorithm::Sha256);
         assert_eq!(result.len(), desired_length);
     }
 
@@ -195,8 +195,8 @@ mod tests {
     fn test_kdf_counter_increment() {
         let shared_secret = b"secret";
         let session_id = b"session";
-        let result1 = kdf(shared_secret, session_id, 1, 32);
-        let result2 = kdf(shared_secret, session_id, 2, 32);
+        let result1 = kdf(shared_secret, session_id, 1, 32, HashAlgorithm::Sha256);
+        let result2 = kdf(shared_secret, session_id, 2, 32, HashAlgorithm::Sha256);
         
         assert_ne!(result1, result2);
     }
@@ -208,8 +208,8 @@ mod tests {
         let counter = 1u32;
         let desired_length = 32;
         
-        let result1 = kdf(shared_secret, session_id, counter, desired_length);
-        let result2 = kdf(shared_secret, session_id, counter, desired_length);
+        let result1 = kdf(shared_secret, session_id, counter, desired_length, HashAlgorithm::Sha256);
+        let result2 = kdf(shared_secret, session_id, counter, desired_length, HashAlgorithm::Sha256);
         
         assert_eq!(result1, result2);
     }
@@ -221,7 +221,7 @@ mod tests {
         let counter = 1u32;
         let desired_length = 0;
         
-        let result = kdf(shared_secret, session_id, counter, desired_length);
+        let result = kdf(shared_secret, session_id, counter, desired_length, HashAlgorithm::Sha256);
         assert_eq!(result.len(), 0);
     }
 
@@ -232,7 +232,7 @@ mod tests {
         let counter = 1u32;
         let desired_length = 1;
         
-        let result = kdf(shared_secret, session_id, counter, desired_length);
+        let result = kdf(shared_secret, session_id, counter, desired_length, HashAlgorithm::Sha256);
         assert_eq!(result.len(), 1);
     }
 
@@ -244,8 +244,8 @@ mod tests {
         let counter = 1u32;
         let desired_length = 32;
         
-        let result1 = kdf(shared_secret, session_id1, counter, desired_length);
-        let result2 = kdf(shared_secret, session_id2, counter, desired_length);
+        let result1 = kdf(shared_secret, session_id1, counter, desired_length, HashAlgorithm::Sha256);
+        let result2 = kdf(shared_secret, session_id2, counter, desired_length, HashAlgorithm::Sha256);
         
         assert_ne!(result1, result2);
     }
@@ -257,7 +257,7 @@ mod tests {
         let counter = 1u32;
         let desired_length = 32;
         
-        let result = kdf(shared_secret, session_id, counter, desired_length);
+        let result = kdf(shared_secret, session_id, counter, desired_length, HashAlgorithm::Sha256);
         
         // Should not be all zeros
         assert!(!result.iter().all(|&b| b == 0));

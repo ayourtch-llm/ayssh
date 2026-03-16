@@ -11,18 +11,21 @@ use crate::protocol::{HashAlgorithm, KexAlgorithm};
 
 /// Compute the SSH session identifier H
 ///
-/// The session identifier is computed as:
-/// H = hash(K || V_C || V_S || I_C || I_S || K_S || X_C || Y_S)
+/// Per RFC 4253 Section 7.2, the exchange hash H is computed as:
+/// H = hash(V_C || V_S || I_C || I_S || K_S || e || f || K)
+///
+/// For ECDH (RFC 5656), this becomes:
+/// H = hash(V_C || V_S || I_C || I_S || K_S || Q_C || Q_S || K)
 ///
 /// Where:
-/// - K = Shared secret (from DH or ECDH exchange)
-/// - V_C = Client version string
-/// - V_S = Server version string
-/// - I_C = Initial client kex packet
-/// - I_S = Initial server kex packet
-/// - K_S = Server host key
-/// - X_C = Client's public key
-/// - Y_S = Server's public key
+/// - V_C = Client version string (excluding CRLF)
+/// - V_S = Server version string (excluding CRLF)
+/// - I_C = Payload of client's KEXINIT message
+/// - I_S = Payload of server's KEXINIT message
+/// - K_S = Server's public host key
+/// - Q_C / e = Client's ephemeral public key
+/// - Q_S / f = Server's ephemeral public key
+/// - K = Shared secret, encoded as mpint (from DH or ECDH exchange)
 ///
 /// # Arguments
 ///
@@ -78,10 +81,15 @@ pub fn compute_session_id(
     server_public_key: &[u8],
     hash_algorithm: HashAlgorithm,
 ) -> Vec<u8> {
+    // Encode K (shared secret) as mpint per RFC 4253 Section 7.2
+    let k_mpint = Mpint::encode_length_prefixed(
+        &num_bigint::BigUint::from_bytes_be(shared_secret)
+    );
+
     match hash_algorithm {
         HashAlgorithm::Sha256 => {
             let mut h = Sha256::new();
-            h.update(shared_secret);
+            // RFC 4253 Section 7.2: H = hash(V_C || V_S || I_C || I_S || K_S || e || f || K)
             h.update(client_version);
             h.update(server_version);
             h.update(client_kex_init);
@@ -89,11 +97,11 @@ pub fn compute_session_id(
             h.update(server_host_key);
             h.update(client_public_key);
             h.update(server_public_key);
+            h.update(&k_mpint);  // K (shared secret) as mpint, comes LAST
             h.finalize().to_vec()
         }
         HashAlgorithm::Sha384 => {
             let mut h = Sha384::new();
-            h.update(shared_secret);
             h.update(client_version);
             h.update(server_version);
             h.update(client_kex_init);
@@ -101,11 +109,11 @@ pub fn compute_session_id(
             h.update(server_host_key);
             h.update(client_public_key);
             h.update(server_public_key);
+            h.update(&k_mpint);  // K (shared secret) as mpint, comes LAST
             h.finalize().to_vec()
         }
         HashAlgorithm::Sha512 => {
             let mut h = Sha512::new();
-            h.update(shared_secret);
             h.update(client_version);
             h.update(server_version);
             h.update(client_kex_init);
@@ -113,11 +121,11 @@ pub fn compute_session_id(
             h.update(server_host_key);
             h.update(client_public_key);
             h.update(server_public_key);
+            h.update(&k_mpint);  // K (shared secret) as mpint, comes LAST
             h.finalize().to_vec()
         }
         HashAlgorithm::Sha1 => {
             let mut h = Sha1::new();
-            h.update(shared_secret);
             h.update(client_version);
             h.update(server_version);
             h.update(client_kex_init);
@@ -125,6 +133,7 @@ pub fn compute_session_id(
             h.update(server_host_key);
             h.update(client_public_key);
             h.update(server_public_key);
+            h.update(&k_mpint);  // K (shared secret) as mpint, comes LAST
             h.finalize().to_vec()
         }
     }
@@ -442,5 +451,57 @@ mod tests {
 
         assert_eq!(session_id.len(), 32);
         assert!(!session_id.is_empty());
+    }
+
+    #[test]
+    fn test_session_id_order_per_rfc_4253() {
+        // Verify that the hash computation follows RFC 4253 Section 7.2:
+        // H = hash(V_C || V_S || I_C || I_S || K_S || e || f || K)
+        // where K is encoded as mpint and comes LAST
+
+        let shared_secret = vec![0x01; 32];  // K
+        let client_version = b"SSH-2.0-client";  // V_C
+        let server_version = b"SSH-2.0-server";  // V_S
+        let client_kex_init = vec![0x02];  // I_C
+        let server_kex_init = vec![0x03];  // I_S
+        let server_host_key = vec![0x04];  // K_S
+        let client_public_key = vec![0x05];  // e / Q_C
+        let server_public_key = vec![0x06];  // f / Q_S
+
+        let session_id1 = compute_session_id(
+            &shared_secret,
+            client_version,
+            server_version,
+            &client_kex_init,
+            &server_kex_init,
+            &server_host_key,
+            &client_public_key,
+            &server_public_key,
+            HashAlgorithm::Sha256,
+        );
+
+        // Change only the shared secret - should produce completely different session ID
+        let shared_secret2 = vec![0xFF; 32];
+        let session_id2 = compute_session_id(
+            &shared_secret2,
+            client_version,
+            server_version,
+            &client_kex_init,
+            &server_kex_init,
+            &server_host_key,
+            &client_public_key,
+            &server_public_key,
+            HashAlgorithm::Sha256,
+        );
+
+        // Session IDs should be completely different (avalanche effect)
+        assert_ne!(session_id1, session_id2);
+
+        // Count differing bytes - should be close to 50% for good hash
+        let diff_count = session_id1.iter()
+            .zip(session_id2.iter())
+            .filter(|(a, b)| a != b)
+            .count();
+        assert!(diff_count > 10, "Expected significant difference in session IDs");
     }
 }

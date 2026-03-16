@@ -273,15 +273,23 @@ impl Ed25519SignatureEncoder {
 }
 
 /// Create signature data for authentication (RFC 4252 Section 7)
-/// The signature is computed over:
-/// - session_id (20 bytes)
-/// - SSH_MSG_USERAUTH_REQUEST (1 byte = 0x32)
-/// - username (string)
-/// - service (string)
-/// - method (string)
-/// - has_signature (boolean)
-/// - public_key_algorithm (string)
-/// - public_key_blob (string)
+///
+/// Per RFC 4252 Section 7, the signature is computed over the following data,
+/// encoded as SSH strings (4-byte length prefix + data):
+///
+/// ```text
+/// string    session identifier
+/// byte      SSH_MSG_USERAUTH_REQUEST (50)
+/// string    user name
+/// string    service name ("ssh-connection")
+/// string    "publickey"
+/// boolean   TRUE
+/// string    public key algorithm name
+/// string    public key to be used for authentication
+/// ```
+///
+/// This function returns the **concatenated** SSH-encoded data, NOT a hash.
+/// The signature algorithms will hash this data as needed.
 pub fn create_signature_data(
     session_id: &[u8],
     username: &str,
@@ -291,33 +299,41 @@ pub fn create_signature_data(
     public_key_algorithm: &str,
     public_key_blob: &[u8],
 ) -> Vec<u8> {
-    let mut hasher = Sha256::new();
-    
-    // Session ID (20 bytes from key exchange)
-    hasher.update(session_id);
-    
-    // Message type (SSH_MSG_USERAUTH_REQUEST = 50 = 0x32)
-    hasher.update(&[0x32]);
-    
-    // Username (string)
-    hasher.update(username.as_bytes());
-    
-    // Service (string)
-    hasher.update(service.as_bytes());
-    
-    // Method (string)
-    hasher.update(method.as_bytes());
-    
-    // Has signature (boolean)
-    hasher.update(&[if has_signature { 0x01 } else { 0x00 }]);
-    
-    // Public key algorithm (string)
-    hasher.update(public_key_algorithm.as_bytes());
-    
-    // Public key blob (string)
-    hasher.update(public_key_blob);
-    
-    hasher.finalize().to_vec()
+    use bytes::{BufMut, BytesMut};
+
+    let mut buf = BytesMut::new();
+
+    // string session identifier (4-byte length + data)
+    buf.put_u32(session_id.len() as u32);
+    buf.put_slice(session_id);
+
+    // byte SSH_MSG_USERAUTH_REQUEST (50 = 0x32)
+    buf.put_u8(0x32);
+
+    // string user name (4-byte length + data)
+    buf.put_u32(username.len() as u32);
+    buf.put_slice(username.as_bytes());
+
+    // string service name (4-byte length + data)
+    buf.put_u32(service.len() as u32);
+    buf.put_slice(service.as_bytes());
+
+    // string "publickey" (4-byte length + data)
+    buf.put_u32(method.len() as u32);
+    buf.put_slice(method.as_bytes());
+
+    // boolean TRUE (1 = TRUE, 0 = FALSE)
+    buf.put_u8(if has_signature { 1 } else { 0 });
+
+    // string public key algorithm name (4-byte length + data)
+    buf.put_u32(public_key_algorithm.len() as u32);
+    buf.put_slice(public_key_algorithm.as_bytes());
+
+    // string public key blob (4-byte length + data)
+    buf.put_u32(public_key_blob.len() as u32);
+    buf.put_slice(public_key_blob);
+
+    buf.to_vec()
 }
 
 #[cfg(test)]
@@ -399,7 +415,7 @@ mod tests {
         let has_signature = false;
         let public_key_algorithm = "ssh-rsa";
         let public_key_blob = vec![0x02; 100];
-        
+
         let sig_data = create_signature_data(
             &session_id,
             username,
@@ -409,7 +425,50 @@ mod tests {
             public_key_algorithm,
             &public_key_blob,
         );
-        
-        assert_eq!(sig_data.len(), 32); // SHA-256 hash is always 32 bytes
+
+        // Verify the signature data is NOT a hash, but the concatenated SSH-encoded data
+        // Expected length:
+        // - 4 + 20 = 24 bytes (session_id as string)
+        // - 1 byte (message type 0x32)
+        // - 4 + 8 = 12 bytes (username "testuser")
+        // - 4 + 14 = 18 bytes (service "ssh-connection" - 14 chars)
+        // - 4 + 9 = 13 bytes (method "publickey")
+        // - 1 byte (boolean FALSE = 0)
+        // - 4 + 7 = 11 bytes (algorithm "ssh-rsa")
+        // - 4 + 100 = 104 bytes (public_key_blob)
+        // Total = 24 + 1 + 12 + 18 + 13 + 1 + 11 + 104 = 184 bytes
+        assert_eq!(sig_data.len(), 184);
+
+        // Verify the structure by checking key components
+        let mut offset = 0;
+
+        // Check session_id string prefix (4-byte length = 20)
+        assert_eq!(&sig_data[offset..offset+4], &(20u32.to_be_bytes()));
+        offset += 4;
+        // Check session_id data (20 bytes of 0x01)
+        assert_eq!(&sig_data[offset..offset+20], &vec![0x01u8; 20]);
+        offset += 20;
+
+        // Check message type (0x32 = 50)
+        assert_eq!(sig_data[offset], 0x32);
+        offset += 1;
+
+        // Check username string prefix (4-byte length = 8)
+        assert_eq!(&sig_data[offset..offset+4], &(8u32.to_be_bytes()));
+        offset += 4;
+        // Check username data
+        assert_eq!(&sig_data[offset..offset+8], b"testuser");
+        offset += 8;
+
+        // Check service "ssh-connection" string prefix (4-byte length = 14)
+        assert_eq!(&sig_data[offset..offset+4], &(14u32.to_be_bytes()));
+        offset += 4;
+        // Check service data
+        assert_eq!(&sig_data[offset..offset+14], b"ssh-connection");
+        offset += 14;
+
+        // Check boolean FALSE at the expected position
+        // The boolean is at position: 24 + 1 + 12 + 18 = 55
+        assert_eq!(sig_data[55], 0); // FALSE
     }
 }

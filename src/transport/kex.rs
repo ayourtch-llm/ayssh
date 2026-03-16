@@ -691,8 +691,8 @@ mod tests {
         // Derive session keys
         let keys = context.derive_session_keys(&hash).unwrap();
         
-        assert_eq!(keys.enc_key.len(), 32); // AES-256
-        assert_eq!(keys.mac_key.len(), 32); // SHA-256
+        assert_eq!(keys.enc_key_c2s.len(), 32); // AES-256
+        assert_eq!(keys.mac_key_c2s.len(), 32); // SHA-256
         assert_eq!(keys.client_iv.len(), 12);
         assert_eq!(keys.server_iv.len(), 12);
     }
@@ -774,7 +774,7 @@ mod tests {
         assert!(context.server_ephemeral.is_some());
         assert!(context.shared_secret.is_some());
         assert!(context.session_id.is_some());
-        assert_eq!(session_keys.enc_key.len(), 32);
-        assert_eq!(session_keys.mac_key.len(), 32);
+        assert_eq!(session_keys.enc_key_c2s.len(), 32);
+        assert_eq!(session_keys.mac_key_c2s.len(), 32);
     }
 }

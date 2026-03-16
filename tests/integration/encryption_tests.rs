@@ -2,7 +2,7 @@
 
 use ssh_client::transport::cipher::CipherState;
 use ssh_client::crypto::cipher::CipherError;
-use ssh_client::crypto::kdf::kdf;
+use ssh_client::crypto::kdf::{kdf, HashAlgorithm};
 
 #[test]
 fn test_cipher_initialization() {
@@ -58,8 +58,8 @@ fn test_key_derivation_consistency() {
     let shared_secret = b"dh_shared_secret_data";
     let session_id = b"ssh_session_id_hash";
     
-    let enc_key1 = kdf(shared_secret, session_id, 1, 32);
-    let enc_key2 = kdf(shared_secret, session_id, 1, 32);
+    let enc_key1 = kdf(shared_secret, session_id, 1, 32, HashAlgorithm::Sha256);
+    let enc_key2 = kdf(shared_secret, session_id, 1, 32, HashAlgorithm::Sha256);
     
     assert_eq!(enc_key1, enc_key2);
 }

@@ -2,7 +2,7 @@
 //!
 //! These tests verify the KDF implementation according to RFC 4253 Section 7.
 
-use ssh_client::crypto::kdf::kdf;
+use ssh_client::crypto::kdf::{kdf, HashAlgorithm};
 
 /// Test simple KDF derivation (32 bytes output)
 #[test]
@@ -12,7 +12,7 @@ fn test_kdf_simple() {
     let counter = 1u32;
     let desired_length = 32;
     
-    let result = kdf(shared_secret, session_id, counter, desired_length);
+    let result = kdf(shared_secret, session_id, counter, desired_length, HashAlgorithm::Sha256);
     assert_eq!(result.len(), desired_length);
 }
 
@@ -24,7 +24,7 @@ fn test_kdf_multiblock() {
     let counter = 1u32;
     let desired_length = 64; // More than one SHA256 block
     
-    let result = kdf(shared_secret, session_id, counter, desired_length);
+    let result = kdf(shared_secret, session_id, counter, desired_length, HashAlgorithm::Sha256);
     assert_eq!(result.len(), desired_length);
 }
 
@@ -36,7 +36,7 @@ fn test_kdf_empty_secret() {
     let counter = 1u32;
     let desired_length = 32;
     
-    let result = kdf(shared_secret, session_id, counter, desired_length);
+    let result = kdf(shared_secret, session_id, counter, desired_length, HashAlgorithm::Sha256);
     assert_eq!(result.len(), desired_length);
 }
 
@@ -45,8 +45,8 @@ fn test_kdf_empty_secret() {
 fn test_kdf_counter_increment() {
     let shared_secret = b"secret";
     let session_id = b"session";
-    let result1 = kdf(shared_secret, session_id, 1, 32);
-    let result2 = kdf(shared_secret, session_id, 2, 32);
+    let result1 = kdf(shared_secret, session_id, 1, 32, HashAlgorithm::Sha256);
+    let result2 = kdf(shared_secret, session_id, 2, 32, HashAlgorithm::Sha256);
     
     assert_ne!(result1, result2);
 }
@@ -60,7 +60,7 @@ fn test_kdf_ssh_encryption_key() {
     let counter = 1u32;
     let desired_length = 32; // AES-256 key
     
-    let result = kdf(shared_secret, session_id, counter, desired_length);
+    let result = kdf(shared_secret, session_id, counter, desired_length, HashAlgorithm::Sha256);
     assert_eq!(result.len(), 32);
 }
 
@@ -72,7 +72,7 @@ fn test_kdf_zero_counter() {
     let counter = 0u32;
     let desired_length = 32;
     
-    let result = kdf(shared_secret, session_id, counter, desired_length);
+    let result = kdf(shared_secret, session_id, counter, desired_length, HashAlgorithm::Sha256);
     assert_eq!(result.len(), desired_length);
 }
 
@@ -84,7 +84,7 @@ fn test_kdf_large_counter() {
     let counter = u32::MAX;
     let desired_length = 32;
     
-    let result = kdf(shared_secret, session_id, counter, desired_length);
+    let result = kdf(shared_secret, session_id, counter, desired_length, HashAlgorithm::Sha256);
     assert_eq!(result.len(), desired_length);
 }
 
@@ -96,8 +96,8 @@ fn test_kdf_determinism() {
     let counter = 1u32;
     let desired_length = 32;
     
-    let result1 = kdf(shared_secret, session_id, counter, desired_length);
-    let result2 = kdf(shared_secret, session_id, counter, desired_length);
+    let result1 = kdf(shared_secret, session_id, counter, desired_length, HashAlgorithm::Sha256);
+    let result2 = kdf(shared_secret, session_id, counter, desired_length, HashAlgorithm::Sha256);
     
     assert_eq!(result1, result2);
 }
@@ -111,8 +111,8 @@ fn test_kdf_different_session_id() {
     let counter = 1u32;
     let desired_length = 32;
     
-    let result1 = kdf(shared_secret, session_id1, counter, desired_length);
-    let result2 = kdf(shared_secret, session_id2, counter, desired_length);
+    let result1 = kdf(shared_secret, session_id1, counter, desired_length, HashAlgorithm::Sha256);
+    let result2 = kdf(shared_secret, session_id2, counter, desired_length, HashAlgorithm::Sha256);
     
     assert_ne!(result1, result2);
 }
@@ -125,7 +125,7 @@ fn test_kdf_long_secret() {
     let counter = 1u32;
     let desired_length = 32;
     
-    let result = kdf(&shared_secret, session_id, counter, desired_length);
+    let result = kdf(&shared_secret, session_id, counter, desired_length, HashAlgorithm::Sha256);
     assert_eq!(result.len(), desired_length);
 }
 
@@ -137,7 +137,7 @@ fn test_kdf_long_session_id() {
     let counter = 1u32;
     let desired_length = 32;
     
-    let result = kdf(shared_secret, &session_id, counter, desired_length);
+    let result = kdf(shared_secret, &session_id, counter, desired_length, HashAlgorithm::Sha256);
     assert_eq!(result.len(), desired_length);
 }
 
@@ -149,7 +149,7 @@ fn test_kdf_aes128_key() {
     let counter = 1u32;
     let desired_length = 16; // AES-128 key
     
-    let result = kdf(shared_secret, session_id, counter, desired_length);
+    let result = kdf(shared_secret, session_id, counter, desired_length, HashAlgorithm::Sha256);
     assert_eq!(result.len(), 16);
 }
 
@@ -161,7 +161,7 @@ fn test_kdf_mac_key() {
     let counter = 2u32; // MAC key uses counter 2
     let desired_length = 32; // HMAC-SHA256 key
     
-    let result = kdf(shared_secret, session_id, counter, desired_length);
+    let result = kdf(shared_secret, session_id, counter, desired_length, HashAlgorithm::Sha256);
     assert_eq!(result.len(), 32);
 }
 
@@ -173,7 +173,7 @@ fn test_kdf_non_zero_output() {
     let counter = 1u32;
     let desired_length = 32;
     
-    let result = kdf(shared_secret, session_id, counter, desired_length);
+    let result = kdf(shared_secret, session_id, counter, desired_length, HashAlgorithm::Sha256);
     
     // Should not be all zeros
     assert!(!result.iter().all(|&b| b == 0));
@@ -187,7 +187,7 @@ fn test_kdf_zero_length() {
     let counter = 1u32;
     let desired_length = 0;
     
-    let result = kdf(shared_secret, session_id, counter, desired_length);
+    let result = kdf(shared_secret, session_id, counter, desired_length, HashAlgorithm::Sha256);
     assert_eq!(result.len(), 0);
 }
 
@@ -199,6 +199,6 @@ fn test_kdf_one_byte() {
     let counter = 1u32;
     let desired_length = 1;
     
-    let result = kdf(shared_secret, session_id, counter, desired_length);
+    let result = kdf(shared_secret, session_id, counter, desired_length, HashAlgorithm::Sha256);
     assert_eq!(result.len(), 1);
 }
