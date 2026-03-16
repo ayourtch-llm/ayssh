@@ -22,6 +22,7 @@ pub mod channel;
 pub mod cisco_conn;
 pub mod cisco_ssh;
 pub mod client;
+pub mod server;
 pub mod unix_conn;
 pub mod config;
 pub mod connection;
