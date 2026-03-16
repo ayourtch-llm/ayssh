@@ -69,9 +69,14 @@ pub fn parse_version_string(data: &[u8]) -> Result<(u32, String), &'static str> 
     let protocol_version_str = parts[1].split('.').next().ok_or("Invalid protocol version")?;
     let protocol_version: u32 = protocol_version_str.parse().map_err(|_| "Invalid protocol version")?;
     
-    // Accept SSH-2.0 or SSH-1.99 (Cisco uses 1.99 for their SSH-2.0 compatible implementation)
-    if protocol_version != 2 && protocol_version != 1 {
-        return Err("Only SSH protocol version 2 or 1.99 supported");
+    // Accept SSH-2.0 or SSH-1.99 (RFC 4253 Section 5.1: Clients using protocol 2.0
+    // MUST be able to identify "1.99" as identical to "2.0")
+    // Cisco devices send SSH-1.99-Cisco-1.25 for their SSH2-compatible implementation.
+    let full_proto_version = parts[1]; // e.g. "2.0" or "1.99"
+    if protocol_version == 2 || full_proto_version == "1.99" {
+        // OK - SSH 2.0 compatible
+    } else {
+        return Err("Only SSH protocol version 2.0 or 1.99 supported");
     }
     
     let software_version = parts[2..].join("-");
@@ -476,8 +481,15 @@ mod tests {
 
     #[test]
     fn test_parse_version_string_invalid_protocol() {
-        let version = b"SSH-1.99-libssh_0.9.6";
-        assert!(parse_version_string(version).is_err());
+        // SSH-1.99 MUST be accepted as identical to 2.0 per RFC 4253 Section 5.1
+        let version = b"SSH-1.99-Cisco-1.25";
+        let (proto, software) = parse_version_string(version).unwrap();
+        assert_eq!(proto, 1); // major version is 1, but 1.99 is accepted
+        assert_eq!(software, "Cisco-1.25");
+
+        // SSH-1.0 should be rejected
+        let version_old = b"SSH-1.0-OldServer";
+        assert!(parse_version_string(version_old).is_err());
     }
 
     #[test]
@@ -550,10 +562,13 @@ mod tests {
     fn test_negotiate_algorithms() {
         let client = parse_server_kexinit(&generate_client_kexinit()).unwrap();
         let server = parse_server_kexinit(&generate_client_kexinit()).unwrap();
-        
+
         let negotiated = negotiate_algorithms(&client, &server);
-        
-        assert_eq!(negotiated.kex, "curve25519-sha256");
+
+        // According to RFC 4253 Section 7.1: "The first algorithm in each list
+        // that is also in the other's list is chosen."
+        // The client's KEX list starts with "diffie-hellman-group1-sha1"
+        assert_eq!(negotiated.kex, "diffie-hellman-group1-sha1");
         assert_eq!(negotiated.compression, "none");
     }
 }

@@ -62,10 +62,10 @@ impl Packet {
     pub fn new(payload: Vec<u8>) -> Self {
         let padding_len = calculate_padding(payload.len());
         let mut padding = vec![0u8; padding_len];
-        
+
         // Fill padding with random data
         rand::thread_rng().fill(&mut padding[..]);
-        
+
         Packet {
             length: payload.len() as u32,
             padlen: padding_len as u8,
@@ -84,10 +84,10 @@ impl Packet {
     /// Create a packet with explicit padding length
     pub fn new_with_padding(payload: Vec<u8>, padding_len: usize) -> Self {
         let mut padding = vec![0u8; padding_len];
-        
+
         // Fill padding with random data
         rand::thread_rng().fill(&mut padding[..]);
-        
+
         Packet {
             length: payload.len() as u32,
             padlen: padding_len as u8,
@@ -98,39 +98,36 @@ impl Packet {
 
     /// Serialize the packet to bytes (before encryption)
     pub fn serialize(&self) -> Vec<u8> {
-        let mut result = Vec::with_capacity(HEADER_SIZE + self.length as usize + self.padding.len());
-        
+        let mut result =
+            Vec::with_capacity(HEADER_SIZE + self.length as usize + self.padding.len());
+
         // Write length (4 bytes, big-endian)
         result.extend_from_slice(&(self.length).to_be_bytes());
-        
+
         // Write padding length (1 byte)
         result.push(self.padlen);
-        
+
         // Write payload
         result.extend_from_slice(&self.payload);
-        
+
         // Write padding
         result.extend_from_slice(&self.padding);
-        
+
         result
     }
 
     /// Deserialize a packet from bytes (before encryption)
     pub fn deserialize(data: &[u8]) -> Result<Self, SshError> {
         if data.len() < HEADER_SIZE {
-            return Err(SshError::CryptoError(
-                "Packet data too short".to_string(),
-            ));
+            return Err(SshError::CryptoError("Packet data too short".to_string()));
         }
 
         let length = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
         let padlen = data[4]; // padding length is 1 byte
-        
+
         let expected_len = HEADER_SIZE + length as usize + padlen as usize;
         if data.len() < expected_len {
-            return Err(SshError::CryptoError(
-                "Packet data incomplete".to_string(),
-            ));
+            return Err(SshError::CryptoError("Packet data incomplete".to_string()));
         }
 
         let payload_start = HEADER_SIZE;
@@ -166,25 +163,24 @@ impl Packet {
 pub fn calculate_padding(payload_len: usize) -> usize {
     // Total size without padding: length field (4) + padlen field (4) + payload
     let total_without_padding = HEADER_SIZE + payload_len;
-    
+
     // Calculate how much padding we need to align to 8-byte boundaries
     // We want: (total_without_padding + padding) % 8 == 0
     let remainder = total_without_padding % BLOCK_ALIGNMENT;
-    
-    let padding_needed = if remainder == 0 {
-        // Already aligned, but minimum padding is 4 bytes
-        MIN_PADDING
+
+    // Start with minimum padding to align to block boundary
+    let mut padding_needed = if remainder == 0 {
+        0 // Already aligned
     } else {
-        let padding = BLOCK_ALIGNMENT - remainder;
-        // If padding_needed < MIN_PADDING, we need to add more to reach MIN_PADDING
-        // while maintaining 8-byte alignment
-        if padding < MIN_PADDING {
-            MIN_PADDING
-        } else {
-            padding
-        }
+        BLOCK_ALIGNMENT - remainder
     };
-    
+
+    // Ensure minimum padding of 4 bytes
+    // If we need less than 4 bytes for alignment, add BLOCK_ALIGNMENT
+    if padding_needed < MIN_PADDING {
+        padding_needed += BLOCK_ALIGNMENT;
+    }
+
     // Ensure padding doesn't exceed MAX_PADDING
     if padding_needed > MAX_PADDING {
         MAX_PADDING
@@ -203,7 +199,13 @@ mod tests {
         for payload_len in 0..1000 {
             let padding = calculate_padding(payload_len);
             let total = HEADER_SIZE + payload_len + padding;
-            assert_eq!(total % 8, 0, "Payload len {}: total {} not aligned to 8", payload_len, total);
+            assert_eq!(
+                total % 8,
+                0,
+                "Payload len {}: total {} not aligned to 8",
+                payload_len,
+                total
+            );
             assert!(padding >= MIN_PADDING, "Padding {} < MIN_PADDING", padding);
             assert!(padding <= MAX_PADDING, "Padding {} > MAX_PADDING", padding);
         }
@@ -211,12 +213,52 @@ mod tests {
 
     #[test]
     fn test_small_payloads() {
-        // Test small payloads that are commonly used
-        assert_eq!(calculate_padding(0), 4);  // HEADER=8, padding=4, total=12, 12%8=4 != 0... wait
-        
-        // Let's verify: HEADER_SIZE=8, payload=0, padding=4
-        // total = 8 + 0 + 4 = 12, 12 % 8 = 4 != 0
-        // This is WRONG!
+        // RFC 4253 Section 6: total of (packet_length || padding_length || payload || random padding)
+        // must be a multiple of 8 (or cipher block size). HEADER_SIZE = 4 + 1 = 5.
+        //
+        // payload=0: total_without_pad=5, need 11 padding -> 5+11=16 (multiple of 8), 11>=4 OK
+        assert_eq!(calculate_padding(0), 11);
+
+        // payload=1: total_without_pad=6, need 10 padding -> 6+10=16, 10>=4 OK
+        assert_eq!(calculate_padding(1), 10);
+
+        // payload=2: total_without_pad=7, need 9 padding -> 7+9=16, 9>=4 OK
+        assert_eq!(calculate_padding(2), 9);
+
+        // payload=3: total_without_pad=8, need 8 padding -> 8+8=16, 8>=4 OK
+        // (0 padding would align, but <4, so +8)
+        assert_eq!(calculate_padding(3), 8);
+
+        // payload=10: total_without_pad=15, need 1 to align -> 1<4, +8=9 -> 15+9=24 OK
+        assert_eq!(calculate_padding(10), 9);
+
+        // payload=11: total_without_pad=16, need 0 to align -> 0<4, +8=8 -> 16+8=24 OK
+        assert_eq!(calculate_padding(11), 8);
+
+        // Verify all small payloads satisfy constraints
+        for payload_len in 0..32 {
+            let padding = calculate_padding(payload_len);
+            let total = HEADER_SIZE + payload_len + padding;
+            assert_eq!(
+                total % 8,
+                0,
+                "payload={}: total={} not aligned",
+                payload_len,
+                total
+            );
+            assert!(
+                padding >= MIN_PADDING,
+                "payload={}: padding={} < 4",
+                payload_len,
+                padding
+            );
+            assert!(
+                padding <= MAX_PADDING,
+                "payload={}: padding={} > 255",
+                payload_len,
+                padding
+            );
+        }
     }
 }
 
@@ -253,10 +295,10 @@ impl PacketWriter {
     pub fn build(&self) -> Packet {
         let padding_len = calculate_padding(self.payload.len());
         let mut padding = vec![0u8; padding_len];
-        
+
         // Fill padding with random data
         rand::thread_rng().fill(&mut padding[..]);
-        
+
         Packet {
             length: self.payload.len() as u32,
             padlen: padding_len as u8,
@@ -288,19 +330,15 @@ impl<'a> PacketReader<'a> {
     /// Create a packet reader from serialized packet data
     pub fn new(data: &'a [u8]) -> Result<Self, SshError> {
         if data.len() < HEADER_SIZE {
-            return Err(SshError::CryptoError(
-                "Packet data too short".to_string(),
-            ));
+            return Err(SshError::CryptoError("Packet data too short".to_string()));
         }
 
         let length = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
         let padlen = data[4]; // padding length is 1 byte
-        
+
         let expected_len = HEADER_SIZE + length as usize + padlen as usize;
         if data.len() < expected_len {
-            return Err(SshError::CryptoError(
-                "Packet data incomplete".to_string(),
-            ));
+            return Err(SshError::CryptoError("Packet data incomplete".to_string()));
         }
 
         let payload_start = HEADER_SIZE;

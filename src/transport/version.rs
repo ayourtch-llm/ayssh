@@ -102,11 +102,16 @@ pub fn parse_version_string(data: &[u8]) -> Result<(u32, String), SshError> {
         .parse()
         .map_err(|_| SshError::ProtocolError("Invalid protocol version".to_string()))?;
 
-    // Accept SSH-2.0 or SSH-1.99 (Cisco uses 1.99 for their SSH-2.0 compatible implementation)
-    if protocol_version != 2 && protocol_version != 1 {
+    // Accept SSH-2.0 or SSH-1.99 (RFC 4253 Section 5.1: Clients using protocol 2.0
+    // MUST be able to identify "1.99" as identical to "2.0")
+    // Cisco devices send SSH-1.99-Cisco-1.25 for their SSH2-compatible implementation.
+    let full_proto_version = parts[1]; // e.g. "2.0" or "1.99"
+    if protocol_version == 2 || full_proto_version == "1.99" {
+        // OK - SSH 2.0 compatible
+    } else {
         return Err(SshError::ProtocolError(format!(
-            "Only SSH protocol version 2 or 1.99 supported (got {})",
-            protocol_version
+            "Only SSH protocol version 2.0 or 1.99 supported (got {})",
+            full_proto_version
         )));
     }
 
@@ -135,13 +140,8 @@ pub fn parse_server_version(data: &[u8]) -> Result<String, SshError> {
 
 /// Validate client version string
 pub fn validate_client_version(data: &[u8]) -> Result<(), SshError> {
-    let (protocol_version, software_version) = parse_version_string(data)?;
-    
-    if protocol_version != 2 {
-        return Err(SshError::ProtocolError(
-            "Client must support SSH protocol version 2".to_string(),
-        ));
-    }
+    // parse_version_string already validates that the version is 2.0 or 1.99
+    let (_, software_version) = parse_version_string(data)?;
 
     if software_version.is_empty() {
         return Err(SshError::ProtocolError(
@@ -193,6 +193,16 @@ mod tests {
         let data = b"SSH-1.0-OpenSSH_8.4\r\n";
         let result = parse_version_string(data);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_version_cisco_199() {
+        // RFC 4253 Section 5.1: SSH-1.99 MUST be accepted as identical to 2.0
+        // Cisco devices send SSH-1.99-Cisco-1.25
+        let data = b"SSH-1.99-Cisco-1.25\r\n";
+        let (protocol_version, software_version) = parse_version_string(data).unwrap();
+        assert_eq!(protocol_version, 1); // major version is 1
+        assert_eq!(software_version, "Cisco-1.25");
     }
 
     #[test]

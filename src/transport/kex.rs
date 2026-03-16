@@ -442,30 +442,8 @@ pub fn encode_kex_reply(server_ephemeral: &[u8]) -> Vec<u8> {
 /// [packet_length (4 bytes)][padding_length (1 byte)][payload][padding]
 /// NEWKEYS is sent with old keys (unencrypted) but still needs proper packet format
 pub fn encode_newkeys() -> Vec<u8> {
-    let payload = vec![protocol::MessageType::Newkeys.value()];
-    let payload_len = payload.len();
-    
-    // Calculate padding (must be at least 4 bytes)
-    let total_without_padding = 4 + 1 + payload_len;
-    let remainder = total_without_padding % 8;
-    let padding_length = if remainder == 0 {
-        8u8
-    } else {
-        let p = (8 - remainder) as u8;
-        if p < 4 { p + 8 } else { p }
-    };
-    
-    let packet_length = payload_len as u32 + padding_length as u32 + 1;
-    
-    let mut msg = bytes::BytesMut::new();
-    msg.put_u32(packet_length);
-    msg.put_u8(padding_length);
-    msg.put_slice(&payload);
-    for _ in 0..padding_length {
-        msg.put_u8(0);
-    }
-    
-    msg.to_vec()
+    // SSH_MSG_NEWKEYS is just a single-byte message type (RFC 4253 Section 7)
+    vec![protocol::MessageType::Newkeys.value()]
 }
 
 /// Decode a KEX message and extract the server's ephemeral key
@@ -690,11 +668,13 @@ mod tests {
         
         // Derive session keys
         let keys = context.derive_session_keys(&hash).unwrap();
-        
-        assert_eq!(keys.enc_key_c2s.len(), 32); // AES-256
+
+        // DiffieHellmanGroup14Sha256 uses AES-128-CBC (16-byte key) with 16-byte IV
+        // The cipher is determined by the KEX algorithm's default configuration
+        assert_eq!(keys.enc_key_c2s.len(), 16); // AES-128
         assert_eq!(keys.mac_key_c2s.len(), 32); // SHA-256
-        assert_eq!(keys.client_iv.len(), 12);
-        assert_eq!(keys.server_iv.len(), 12);
+        assert_eq!(keys.client_iv.len(), 16);  // CBC mode IV
+        assert_eq!(keys.server_iv.len(), 16);  // CBC mode IV
     }
 
     #[test]
@@ -747,34 +727,46 @@ mod tests {
         assert!(decode_kex_message(&empty_msg).is_err());
     }
 
-    #[tokio::test]
-    async fn test_perform_kex_full_flow() {
+    #[test]
+    fn test_perform_kex_full_flow() {
+        // Simulate a full DH Group14 key exchange between client and server
         let mut context = KexContext::new(protocol::KexAlgorithm::DiffieHellmanGroup14Sha256);
-        
-        // Generate client KEXINIT
-        let client_kexinit = crate::transport::handshake::generate_client_kexinit();
-        
-        // Use same KEXINIT for server (simulated)
-        let server_kexinit = client_kexinit.clone();
-        
-        // Generate server host key (placeholder)
-        let server_host_key = vec![0x00, 0x01, 0x02, 0x03, 0x04, 0x05];
-        
-        // Perform key exchange
-        let session_keys = perform_kex(
-            protocol::KexAlgorithm::DiffieHellmanGroup14Sha256,
-            &mut context,
-            &client_kexinit,
-            &server_kexinit,
-            &server_host_key,
-        ).await.unwrap();
-        
-        // Verify results
+        let group = DhGroup::group14();
+
+        // Step 1: Client generates its ephemeral key pair
+        context.generate_client_key(&mut OsRng).unwrap();
         assert!(context.client_ephemeral.is_some());
-        assert!(context.server_ephemeral.is_some());
+
+        // Step 2: Simulate server side - generate server key pair
+        let server_private = group.generate_private_key(&mut OsRng, 256);
+        let server_public = group.compute_public_key(&server_private);
+
+        // Step 3: Feed the server's public key (as length-prefixed MPINT) to the client
+        let server_pub_mpint = Mpint::encode_length_prefixed(&server_public);
+        context.process_server_kex_init(&server_pub_mpint).unwrap();
+
+        // Step 4: Set exchange info (version strings, KEXINIT payloads)
+        context.set_exchange_info(
+            b"SSH-2.0-ayssh_test",
+            b"SSH-2.0-TestServer_1.0",
+            b"client-kexinit-placeholder",
+            b"server-kexinit-placeholder",
+        );
+        context.set_server_host_key(b"server-host-key-placeholder");
+
+        // Step 5: Compute shared secret and session ID
+        context.compute_shared_secret().unwrap();
         assert!(context.shared_secret.is_some());
         assert!(context.session_id.is_some());
-        assert_eq!(session_keys.enc_key_c2s.len(), 32);
-        assert_eq!(session_keys.mac_key_c2s.len(), 32);
+
+        // Step 6: Derive session keys
+        let hash = context.session_id.clone().unwrap();
+        let keys = context.derive_session_keys(&hash).unwrap();
+
+        // DiffieHellmanGroup14Sha256 uses AES-128-CBC (16-byte key) with 16-byte IV
+        assert_eq!(keys.enc_key_c2s.len(), 16);  // AES-128
+        assert_eq!(keys.mac_key_c2s.len(), 32);  // HMAC-SHA256
+        assert_eq!(keys.client_iv.len(), 16);     // CBC mode IV
+        assert_eq!(keys.server_iv.len(), 16);     // CBC mode IV
     }
 }

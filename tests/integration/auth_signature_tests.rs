@@ -1,24 +1,23 @@
 //! Authentication tests using real SSH keys
 
-use ssh_client::auth::{
-    create_signature_data, Ed25519SignatureEncoder, EcdsaSignatureEncoder,
-    PrivateKey, PublicKeyAuthenticator, RsaSignatureEncoder, SSH_SIG_ALGORITHM_ED25519,
-    SSH_SIG_ALGORITHM_RSA,
-};
 use ed25519_dalek::SigningKey as Ed25519SigningKey;
 use rsa::RsaPrivateKey;
 use sha2::{Digest, Sha256};
+use ssh_client::auth::{
+    create_signature_data, EcdsaSignatureEncoder, Ed25519SignatureEncoder, PrivateKey,
+    PublicKeyAuthenticator, RsaSignatureEncoder, SSH_SIG_ALGORITHM_ED25519, SSH_SIG_ALGORITHM_RSA,
+};
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bytes::BytesMut;
+    use ssh_client::auth::key::KeyType;
     use ssh_client::auth::key::PublicKey;
     use ssh_client::protocol::message::Message;
     use ssh_client::protocol::messages::MessageType;
     use ssh_client::transport::Transport;
-    use bytes::BytesMut;
     use std::io::Cursor;
-    use ssh_client::auth::key::KeyType;
 
     #[test]
     fn test_ed25519_key_parsing() {
@@ -73,20 +72,25 @@ IZOdthyU9ISB5NAvqQAAAA50ZXN0QGxvY2FsaG9zdAECAw==
         let pem_content = include_str!("../test_ed25519_key");
 
         let private_key = PrivateKey::parse_pem(pem_content).unwrap();
-        
+
         if let PrivateKey::Ed25519(key) = private_key {
             let data = b"test signature data";
             let signature = Ed25519SignatureEncoder::encode(&key, data).unwrap();
-            
+
             assert_eq!(signature.algorithm, SSH_SIG_ALGORITHM_ED25519);
             assert!(!signature.data.is_empty());
-            
+
             // Verify signature
             let public_key = key.verifying_key();
             // Signature format: [4-byte len][11-byte "ssh-ed25519"][4-byte len][64-byte sig]
             // Total header = 4 + 11 + 4 = 19 bytes
             let sig_bytes = &signature.data[19..]; // Skip algorithm string header
-            assert_eq!(sig_bytes.len(), 64, "Expected 64-byte signature, got {}", sig_bytes.len());
+            assert_eq!(
+                sig_bytes.len(),
+                64,
+                "Expected 64-byte signature, got {}",
+                sig_bytes.len()
+            );
             let sig_array = sig_bytes.try_into().unwrap();
             let sig = ed25519_dalek::Signature::from_bytes(&sig_array);
             use ed25519_dalek::Verifier;
@@ -127,14 +131,14 @@ IZOdthyU9ISB5NAvqQAAAA50ZXN0QGxvY2FsaG9zdAECAw==
 -----END OPENSSH PRIVATE KEY-----"#;
 
         let private_key = PrivateKey::parse_pem(pem_content).unwrap();
-        
+
         if let PrivateKey::Rsa(key) = private_key {
             let data = b"test signature data";
             let signature = RsaSignatureEncoder::encode(&key, data).unwrap();
-            
+
             assert_eq!(signature.algorithm, SSH_SIG_ALGORITHM_RSA);
             assert!(!signature.data.is_empty());
-            
+
             // Note: Full verification would require extracting public key from RSA key
             // For now, we just verify encoding works
         } else {
@@ -144,6 +148,8 @@ IZOdthyU9ISB5NAvqQAAAA50ZXN0QGxvY2FsaG9zdAECAw==
 
     #[test]
     fn test_signature_data_creation() {
+        // create_signature_data returns SSH-encoded data, NOT a hash
+        // Per RFC 4252 Section 7, this is the data that gets signed
         let session_id = vec![0x01; 20];
         let username = "testuser";
         let service = "ssh-connection";
@@ -162,7 +168,15 @@ IZOdthyU9ISB5NAvqQAAAA50ZXN0QGxvY2FsaG9zdAECAw==
             &public_key_blob,
         );
 
-        assert_eq!(sig_data.len(), 32); // SHA-256 hash is always 32 bytes
+        // Verify structure: session_id(20+4) + msg_type(1) + username(8+4) + service(14+4) + method(9+4) + has_sig(1) + algo(11+4) + blob(32+4)
+        let expected_len = 4 + 20 + 1 + 4 + 8 + 4 + 14 + 4 + 9 + 1 + 4 + 11 + 4 + 32;
+        assert_eq!(sig_data.len(), expected_len);
+
+        // Verify session_id is at start
+        assert_eq!(&sig_data[4..24], &session_id);
+
+        // Verify message type byte
+        assert_eq!(sig_data[24], 0x32); // SSH_MSG_USERAUTH_REQUEST
     }
 
     #[test]
@@ -177,7 +191,7 @@ n9p8mt+gFq/ph2hiSlTQAAAADnRlc3RAbG9jYWxob3N0AQIDBAUGBw==
 
         let private_key = PrivateKey::parse_pem(pem_content).unwrap();
         let hash = private_key.public_key_hash().unwrap();
-        
+
         assert_eq!(hash.len(), 32); // SHA-256 hash
     }
 
@@ -193,7 +207,7 @@ n9p8mt+gFq/ph2hiSlTQAAAADnRlc3RAbG9jYWxob3N0AQIDBAUGBw==
 
         let private_key = PrivateKey::parse_pem(pem_content).unwrap();
         let public_key = private_key.to_public_key().unwrap();
-        
+
         assert_eq!(public_key.algorithm, "ssh-ed25519");
         assert!(!public_key.blob.is_empty());
     }
@@ -202,10 +216,8 @@ n9p8mt+gFq/ph2hiSlTQAAAADnRlc3RAbG9jYWxob3N0AQIDBAUGBw==
     fn test_ed25519_auth_message_format() {
         let session_id = vec![0x01; 20];
         let username = "testuser";
-        let private_key = PrivateKey::Ed25519(Ed25519SigningKey::from_bytes(
-            &[0u8; 32]
-        ));
-        
+        let private_key = PrivateKey::Ed25519(Ed25519SigningKey::from_bytes(&[0u8; 32]));
+
         let public_key = private_key.to_public_key().unwrap();
         let sig_data = create_signature_data(
             &session_id,
@@ -216,15 +228,16 @@ n9p8mt+gFq/ph2hiSlTQAAAADnRlc3RAbG9jYWxob3N0AQIDBAUGBw==
             &public_key.algorithm,
             &public_key.blob,
         );
-        
+
         let signature = Ed25519SignatureEncoder::encode(
             match private_key {
                 PrivateKey::Ed25519(ref key) => key,
                 _ => panic!("Expected Ed25519 key"),
             },
             &sig_data,
-        ).unwrap();
-        
+        )
+        .unwrap();
+
         // Build SSH_MSG_USERAUTH_REQUEST message
         let mut msg = Message::new();
         msg.write_byte(MessageType::UserauthRequest.value());
@@ -235,7 +248,7 @@ n9p8mt+gFq/ph2hiSlTQAAAADnRlc3RAbG9jYWxob3N0AQIDBAUGBw==
         msg.write_string(public_key.algorithm.as_bytes());
         msg.write_bytes(&public_key.blob);
         msg.write_bytes(&signature.encode());
-        
+
         // Verify message can be parsed back
         let msg_bytes = msg.as_bytes();
         let parsed = Message::from(msg_bytes.to_vec());
@@ -246,21 +259,21 @@ n9p8mt+gFq/ph2hiSlTQAAAADnRlc3RAbG9jYWxob3N0AQIDBAUGBw==
     fn test_rsa_auth_message_format() {
         let session_id = vec![0x01; 20];
         let username = "testuser";
-        
+
         // Use the test key file
         let pem_content = include_str!("../test_rsa_key");
-        
+
         let private_key = PrivateKey::parse_pem(pem_content).unwrap();
-        
+
         if let PrivateKey::Rsa(key) = private_key {
             use rsa::traits::PublicKeyParts;
-            
+
             let public_key = PublicKey {
                 key_type: KeyType::Rsa,
                 blob: vec![0x02; 100], // Placeholder for actual public key blob
                 algorithm: "ssh-rsa".to_string(),
             };
-            
+
             let sig_data = create_signature_data(
                 &session_id,
                 username,
@@ -270,9 +283,9 @@ n9p8mt+gFq/ph2hiSlTQAAAADnRlc3RAbG9jYWxob3N0AQIDBAUGBw==
                 &public_key.algorithm,
                 &public_key.blob,
             );
-            
+
             let signature = RsaSignatureEncoder::encode(&key, &sig_data).unwrap();
-            
+
             // Build SSH_MSG_USERAUTH_REQUEST message
             let mut msg = Message::new();
             msg.write_byte(MessageType::UserauthRequest.value());
@@ -283,7 +296,7 @@ n9p8mt+gFq/ph2hiSlTQAAAADnRlc3RAbG9jYWxob3N0AQIDBAUGBw==
             msg.write_string(public_key.algorithm.as_bytes());
             msg.write_bytes(&public_key.blob);
             msg.write_bytes(&signature.encode());
-            
+
             // Verify message can be parsed back
             let msg_bytes = msg.as_bytes();
             let parsed = Message::from(msg_bytes.to_vec());
