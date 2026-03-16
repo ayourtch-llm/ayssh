@@ -122,8 +122,29 @@ impl Transport {
         // Format: [packet_length (4 bytes)][padding_length (1 byte)][kexinit_payload][padding]
         // The KEXINIT payload includes: message_type(1) + cookie(16) + algorithm lists...
         let kexinit_payload = &client_kexinit;
-        let padding_length = 8u8; // Minimum padding per RFC 4253
+        
+       // Calculate padding to ensure 8-byte alignment per RFC 4253 Section 6
+        // Total size (4 + 1 + payload + padding) must be multiple of 8
+        // Minimum padding is 4 bytes
+        let payload_len = kexinit_payload.len();
+        let total_without_padding = 4 + 1 + payload_len; // length field + padding_length field + payload
+        let remainder = total_without_padding % 8;
+        let mut padding_length = if remainder == 0 {
+            8u8 // Already aligned, but need at least 4 bytes padding, and 8 maintains alignment
+        } else {
+            (8 - remainder) as u8
+        };
+        
+        // Ensure minimum padding of 4 bytes per RFC 4253
+        // If calculated padding is less than 4, add 8 to maintain alignment
+        if padding_length < 4 {
+            padding_length += 8;
+        }
+        
         let packet_length = kexinit_payload.len() as u32 + padding_length as u32 + 1; // +1 for padding_length byte
+        
+        debug!("KEXINIT: payload len={}, padding len={}, calculated packet_length={}, total size={}", 
+               kexinit_payload.len(), padding_length, packet_length, 4 + 1 + payload_len + padding_length as usize);
         
         let mut kexinit_msg = bytes::BytesMut::new();
         kexinit_msg.put_u32(packet_length);
@@ -133,6 +154,9 @@ impl Transport {
         for _ in 0..padding_length {
             kexinit_msg.put_u8(0);
         }
+        
+        debug!("KEXINIT: sending {} bytes total, first 10 bytes: {:?}", 
+               kexinit_msg.len(), &kexinit_msg[..std::cmp::min(10, kexinit_msg.len())]);
         
         self.stream_mut().write_all(&kexinit_msg).await?;
         debug!("Sent client KEXINIT packet ({} bytes total)", kexinit_msg.len());
@@ -240,21 +264,49 @@ impl Transport {
         let mut rng = rand::thread_rng();
         kex_context.generate_client_key(&mut rng)?;
         
-        // 9. Send KEXINIT message with client ephemeral key
+        // 9. Send KEXDH_INIT message with client ephemeral key
         let client_ephemeral = kex_context.client_ephemeral.clone()
             .expect("Client ephemeral key not generated");
         
-        let mut kexinit_msg2 = bytes::BytesMut::new();
-        kexinit_msg2.put_u8(crate::protocol::MessageType::KexInit as u8);
-        kexinit_msg2.put_u32(client_ephemeral.len() as u32);
-        kexinit_msg2.put_slice(&client_ephemeral);
-        debug!("Sending KEXINIT message ({} bytes)", kexinit_msg2.len());
-        self.stream_mut().write_all(&kexinit_msg2).await?;
+        debug!("Client ephemeral key size: {} bytes", client_ephemeral.len());
         
-        // 10. Receive KEX_REPLY from server - Cisco sends without length prefix
+        // Build KEXDH_INIT payload
+        let mut kexdh_init_payload = bytes::BytesMut::new();
+        kexdh_init_payload.put_u8(crate::protocol::MessageType::KexDhInit as u8);
+        kexdh_init_payload.put_u32(client_ephemeral.len() as u32);
+        kexdh_init_payload.put_slice(&client_ephemeral);
+        
+        // Wrap in SSH binary packet format per RFC 4253 Section 6
+        // Format: [packet_length (4 bytes)][padding_length (1 byte)][payload][padding]
+        let payload_len = kexdh_init_payload.len();
+        let total_without_padding = 4 + 1 + payload_len;
+        let remainder = total_without_padding % 8;
+        let padding_length = if remainder == 0 {
+            8u8
+        } else {
+            let p = (8 - remainder) as u8;
+            if p < 4 { p + 8 } else { p }
+        };
+        
+        let packet_length = payload_len as u32 + padding_length as u32 + 1;
+        
+        let mut kexdh_init_msg = bytes::BytesMut::new();
+        kexdh_init_msg.put_u32(packet_length);
+        kexdh_init_msg.put_u8(padding_length);
+        kexdh_init_msg.put_slice(&kexdh_init_payload);
+        for _ in 0..padding_length {
+            kexdh_init_msg.put_u8(0);
+        }
+        
+        debug!("Sending KEXDH_INIT packet (payload={}, padding={}, total={})", 
+               payload_len, padding_length, kexdh_init_msg.len());
+        self.stream_mut().write_all(&kexdh_init_msg).await?;
+        
+        // 10. Receive KEXDH_REPLY from server
         let mut reply_bytes = Vec::new();
         let mut reply_buffer = vec![0u8; 1024];
         
+        // First read the packet length (4 bytes)
         loop {
             match tokio::time::timeout(
                 std::time::Duration::from_secs(5),
@@ -262,23 +314,27 @@ impl Transport {
             ).await {
                 Ok(Ok(0)) => {
                     return Err(crate::error::SshError::ConnectionError(
-                        "Connection closed while reading KEX_REPLY".to_string()
+                        "Connection closed while reading KEXDH_REPLY packet length".to_string()
                     ));
                 }
                 Ok(Ok(n)) => {
-                    debug!("Received {} bytes for KEX_REPLY", n);
                     reply_bytes.extend_from_slice(&reply_buffer[..n]);
                     
-                    // Check if we have a valid KEX_INIT message (starts with message type byte)
-                    if reply_bytes.len() >= 5 && reply_bytes[0] == crate::protocol::MessageType::KexInit as u8 {
-                        debug!("Received valid KEX_INIT message ({} bytes)", reply_bytes.len());
-                        debug!("KEX_REPLY raw bytes (first 20): {:?}", &reply_bytes[..std::cmp::min(20, reply_bytes.len())]);
-                        break;
+                    if reply_bytes.len() >= 4 {
+                        let packet_len = u32::from_be_bytes([
+                            reply_bytes[0], reply_bytes[1], reply_bytes[2], reply_bytes[3]
+                        ]) as usize;
+                        debug!("KEXDH_REPLY packet length: {} bytes", packet_len);
+                        
+                        if reply_bytes.len() >= packet_len + 4 {
+                            debug!("Successfully received KEXDH_REPLY packet");
+                            break;
+                        }
                     }
                     
                     if reply_bytes.len() > 2000 {
                         return Err(crate::error::SshError::ProtocolError(
-                            format!("Could not parse KEX_REPLY after {} bytes", reply_bytes.len())
+                            format!("Could not parse KEXDH_REPLY packet after {} bytes", reply_bytes.len())
                         ));
                     }
                 }
@@ -291,13 +347,24 @@ impl Transport {
             }
         }
         
-        if reply_bytes[0] != crate::protocol::MessageType::KexInit as u8 {
+        // Extract payload from packet
+        let packet_len = u32::from_be_bytes([reply_bytes[0], reply_bytes[1], reply_bytes[2], reply_bytes[3]]) as usize;
+        let padding_len = reply_bytes[4] as usize;
+        let payload_start = 5;
+        let payload_end = 5 + packet_len - padding_len;
+        
+        debug!("KEXDH_REPLY packet_len: {}, padding_len: {}, payload: {}-{}", 
+               packet_len, padding_len, payload_start, payload_end);
+        
+        let reply_payload = &reply_bytes[payload_start..payload_end];
+        
+        if reply_payload[0] != crate::protocol::MessageType::KexDhReply as u8 {
             return Err(crate::error::SshError::ProtocolError(
-                "Expected KEX_INIT from server".to_string()
+                format!("Expected KEXDH_REPLY (31), got {}", reply_payload[0])
             ));
         }
         
-        kex_context.process_server_kex_init(&reply_bytes[1..])?;
+        kex_context.process_server_kex_init(&reply_payload[1..])?;
         
         // 11. Compute shared secret
         kex_context.compute_shared_secret()?;

@@ -3,6 +3,7 @@
 //! Implements SSH session identifier (H) computation as defined in RFC 4253 Section 7.2.
 //! The session identifier is used for key derivation and host key verification.
 
+use sha1::Sha1;
 use sha2::{Digest, Sha256, Sha384, Sha512};
 
 use crate::crypto::dh::Mpint;
@@ -104,6 +105,18 @@ pub fn compute_session_id(
         }
         HashAlgorithm::Sha512 => {
             let mut h = Sha512::new();
+            h.update(shared_secret);
+            h.update(client_version);
+            h.update(server_version);
+            h.update(client_kex_init);
+            h.update(server_kex_init);
+            h.update(server_host_key);
+            h.update(client_public_key);
+            h.update(server_public_key);
+            h.finalize().to_vec()
+        }
+        HashAlgorithm::Sha1 => {
+            let mut h = Sha1::new();
             h.update(shared_secret);
             h.update(client_version);
             h.update(server_version);

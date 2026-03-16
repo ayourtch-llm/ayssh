@@ -13,6 +13,7 @@ use crate::crypto::kdf;
 use crate::protocol;
 use bytes::{Buf, BufMut, BytesMut};
 use rand::RngCore;
+use sha1::Sha1;
 use sha2::{Digest, Sha256, Sha384};
 
 /// Key exchange context
@@ -65,16 +66,21 @@ impl KexContext {
         }
     }
 
-    /// Generate client's ephemeral key for the selected algorithm
+   /// Generate client's ephemeral key for the selected algorithm
     pub fn generate_client_key(&mut self, rng: &mut impl RngCore) -> anyhow::Result<()> {
         match self.algorithm {
             protocol::KexAlgorithm::DiffieHellmanGroup1Sha1 => {
                 let group = DhGroup::group1();
-                let private_x = group.generate_private_key(rng, 256);
+                tracing::debug!("DH Group1 prime bits: {}", group.p.bits());
+                // For 1024-bit group, use 1024 bits for private key
+                let private_x = group.generate_private_key(rng, 1024);
                 let public_y = group.compute_public_key(&private_x);
+                
+                tracing::debug!("DH Group1: private key bits={}, public key bits={}", private_x.bits(), public_y.bits());
                 
                 self.client_private = Some(private_x);
                 self.client_ephemeral = Some(Mpint::encode(&public_y));
+                tracing::debug!("DH Group1: ephemeral encoded size={} bytes", self.client_ephemeral.as_ref().unwrap().len());
                 Ok(())
             }
             protocol::KexAlgorithm::DiffieHellmanGroup14Sha256 |
@@ -180,7 +186,7 @@ impl KexContext {
         match self.algorithm {
             protocol::KexAlgorithm::DiffieHellmanGroup1Sha1 => {
                 // H = SHA-1(K_S || V_C || V_S || I_C || I_S || K_EXC || H_S)
-                let mut hasher = sha2::Sha1::new();
+                let mut hasher = Sha1::new();
                 
                 // K_S - shared secret (as MPINT)
                 if let Some(ref ss) = self.shared_secret {

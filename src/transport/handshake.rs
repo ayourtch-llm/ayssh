@@ -100,12 +100,6 @@ pub fn generate_client_kexinit() -> Vec<u8> {
     protocol::SshString::from_str(lang_c2s).encode(&mut buf);
     protocol::SshString::from_str(lang_s2c).encode(&mut buf);
     
-    // Reserved byte (always 0)
-    buf.put_u8(0);
-    
-    // Initial kex algorithm (single string)
-    protocol::SshString::from_str("diffie-hellman-group1-sha1").encode(&mut buf);
-    
     // first_kex_packet_follows (1 byte boolean, typically 0)
     buf.put_u8(0);
     
@@ -195,33 +189,17 @@ pub fn parse_server_kexinit(data: &[u8]) -> Result<protocol::AlgorithmProposal, 
         .map_err(|_| "Invalid lang_s2c UTF-8")?
         .to_string();
     
-    // Skip reserved byte
-    if buf.len() < 1 {
-        return Err("KEXINIT too short for reserved byte");
-    }
-    buf.advance(1);
-    
-    // Parse initial kex algorithm (optional - some implementations like Cisco may not include this)
-    let _initial_kex_str = if buf.len() > 0 {
-        match protocol::SshString::decode(&mut buf) {
-            Ok(s) => s.to_str().unwrap_or("").to_string(),
-            Err(_) => String::new(),
-        }
-    } else {
-        String::new()
-    };
-    
-    // Parse first_kex_packet_follows (1 byte boolean)
+    // Parse first_kex_packet_follows (1 byte boolean) per RFC 4253
     if buf.len() < 1 {
         return Err("KEXINIT too short for first_kex_packet_follows");
     }
     let first_kex_packet_follows = buf.get_u8() != 0;
     
-    // Skip reserved uint32 (4 bytes) - optional in some implementations
-    // Cisco may not include this field
-    if buf.len() >= 4 {
-        buf.advance(4);
+    // Skip reserved uint32 (4 bytes) per RFC 4253
+    if buf.len() < 4 {
+        return Err("KEXINIT too short for reserved uint32");
     }
+    buf.advance(4);
     
     // Convert comma-separated strings to Vec<String>
     let kex_algorithms: Vec<String> = kex_algorithms_str
