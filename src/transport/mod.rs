@@ -686,36 +686,36 @@ impl Transport {
             // Split buffer into encrypted portion and MAC
             let encrypted = &buffer[..packet_length];
             let received_mac = &buffer[packet_length..];
-            
-            // Verify HMAC over sequence number + encrypted data
-            let mut mac_data = Vec::with_capacity(4 + encrypted.len());
+
+            // Decrypt the entire encrypted portion first (per RFC 4253, MAC is over unencrypted data)
+            let decrypt_state = self.decrypt_state.as_mut().unwrap();
+            let decrypted = aes_128_cbc_decrypt(&decrypt_state.dec_key, &decrypt_state.iv, encrypted)?;
+            debug!("Decrypted successfully, got {} bytes", decrypted.len());
+
+            // Update IV for next packet (last 16 bytes of ciphertext for AES)
+            if encrypted.len() >= 16 {
+                decrypt_state.iv = encrypted[encrypted.len() - 16..].to_vec();
+            }
+
+            // Verify HMAC over sequence number + decrypted packet (per RFC 4253 Section 6.4)
+            let mut mac_data = Vec::with_capacity(4 + decrypted.len());
             mac_data.extend_from_slice(&decrypt_state.sequence_number.to_be_bytes());
-            mac_data.extend_from_slice(encrypted);
-            
+            mac_data.extend_from_slice(&decrypted);
+
             let mut hmac = HmacSha1::new(&decrypt_state.mac_key);
             hmac.update(&mac_data);
             let expected_mac = hmac.finish();
-            
+
             if !expected_mac.iter().eq(received_mac.iter()) {
                 return Err(crate::error::SshError::ProtocolError(
                     "MAC verification failed".to_string()
                 ));
             }
             debug!("MAC verification successful");
-            
-            // Decrypt the entire encrypted portion
-            let decrypt_state = self.decrypt_state.as_mut().unwrap();
-            let decrypted = aes_128_cbc_decrypt(&decrypt_state.dec_key, &decrypt_state.iv, encrypted)?;
-            debug!("Decrypted successfully, got {} bytes", decrypted.len());
-            
-            // Update IV for next packet (last 16 bytes of ciphertext for AES)
-            if encrypted.len() >= 16 {
-                decrypt_state.iv = encrypted[encrypted.len() - 16..].to_vec();
-            }
-            
+
             // Update sequence number
             decrypt_state.sequence_number = decrypt_state.sequence_number.wrapping_add(1);
-            
+
             Ok(decrypted)
         } else {
             // Read unencrypted (shouldn't happen after handshake)
@@ -889,7 +889,17 @@ fn encrypt_packet_cbc(payload: &[u8], state: &mut EncryptionState) -> Result<Vec
     for _ in 0..padding_length {
         packet.push(0);
     }
-    
+
+    // Compute HMAC over sequence number + unencrypted packet (per RFC 4253 Section 6.4)
+    // MAC = H(seq_num || unencrypted_packet)
+    let mut mac_data = Vec::with_capacity(4 + packet.len());
+    mac_data.extend_from_slice(&state.sequence_number.to_be_bytes());
+    mac_data.extend_from_slice(&packet);
+
+    let mut hmac = HmacSha1::new(&state.mac_key);
+    hmac.update(&mac_data);
+    let mac = hmac.finish();
+
     // Encrypt using AES-CBC with the current IV (no additional padding - packet is already padded)
     let encrypted = match state.enc_algorithm.as_str() {
         "aes128-cbc" => {
@@ -901,15 +911,6 @@ fn encrypt_packet_cbc(payload: &[u8], state: &mut EncryptionState) -> Result<Vec
             ));
         }
     };
-    
-    // Compute HMAC over sequence number + encrypted data
-    let mut mac_data = Vec::with_capacity(4 + encrypted.len());
-    mac_data.extend_from_slice(&state.sequence_number.to_be_bytes());
-    mac_data.extend_from_slice(&encrypted);
-    
-    let mut hmac = HmacSha1::new(&state.mac_key);
-    hmac.update(&mac_data);
-    let mac = hmac.finish();
     
     // Update IV for next packet (last 16 bytes of ciphertext for AES)
     // RFC 4253: "initialization vectors SHOULD be passed from the end of one packet to the beginning of the next packet"
@@ -936,28 +937,10 @@ fn decrypt_packet_cbc(encrypted_with_mac: &[u8], state: &mut DecryptionState) ->
             "Packet too short for MAC".to_string()
         ));
     }
-    
+
     let (encrypted, received_mac) = encrypted_with_mac.split_at(encrypted_with_mac.len() - mac_len);
-    
-    // Verify HMAC
-    let mut mac_data = Vec::with_capacity(4 + encrypted.len());
-    mac_data.extend_from_slice(&state.sequence_number.to_be_bytes());
-    mac_data.extend_from_slice(encrypted);
-    
-    let mut hmac = HmacSha1::new(&state.mac_key);
-    hmac.update(&mac_data);
-    let expected_mac = hmac.finish();
-    
-    if !expected_mac.iter().eq(received_mac.iter()) {
-        return Err(crate::error::SshError::ProtocolError(
-            "MAC verification failed".to_string()
-        ));
-    }
-    
-    // Update sequence number
-    state.sequence_number = state.sequence_number.wrapping_add(1);
-    
-    // Decrypt using AES-CBC
+
+    // Decrypt using AES-CBC first (per RFC 4253, MAC is over unencrypted data)
     let decrypted = match state.dec_algorithm.as_str() {
         "aes128-cbc" => {
             aes_128_cbc_decrypt(&state.dec_key, &state.iv, encrypted)?
@@ -968,13 +951,31 @@ fn decrypt_packet_cbc(encrypted_with_mac: &[u8], state: &mut DecryptionState) ->
             ));
         }
     };
-    
+
     // Update IV for next packet (last 16 bytes of ciphertext for AES)
     // RFC 4253: "initialization vectors SHOULD be passed from the end of one packet to the beginning of the next packet"
     if encrypted.len() >= 16 {
         state.iv = encrypted[encrypted.len() - 16..].to_vec();
     }
-    
+
+    // Verify HMAC over sequence number + unencrypted packet (per RFC 4253 Section 6.4)
+    let mut mac_data = Vec::with_capacity(4 + decrypted.len());
+    mac_data.extend_from_slice(&state.sequence_number.to_be_bytes());
+    mac_data.extend_from_slice(&decrypted);
+
+    let mut hmac = HmacSha1::new(&state.mac_key);
+    hmac.update(&mac_data);
+    let expected_mac = hmac.finish();
+
+    if !expected_mac.iter().eq(received_mac.iter()) {
+        return Err(crate::error::SshError::ProtocolError(
+            "MAC verification failed".to_string()
+        ));
+    }
+
+    // Update sequence number
+    state.sequence_number = state.sequence_number.wrapping_add(1);
+
     Ok(decrypted)
 }
 
