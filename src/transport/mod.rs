@@ -552,6 +552,7 @@ impl Transport {
             });
             
             debug!("Encryption state initialized successfully");
+            debug!("Session keys: {:?}", session_keys);
         } else {
             return Err(crate::error::SshError::ProtocolError(
                 "Session keys not available after key exchange".to_string()
@@ -621,6 +622,7 @@ impl Transport {
             let mut buffer = vec![0u8; min_size];
             self.stream.read_exact(&mut buffer).await?;
             debug!("Read minimum {} bytes (16 + MAC:{})", min_size, mac_len);
+            debug!("Raw received bytes (first 36): {:?}", &buffer[..std::cmp::min(36, buffer.len())]);
             
             // Decrypt just the first 16 bytes to get packet length (without padding removal)
             let first_block = &buffer[..16];

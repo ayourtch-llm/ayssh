@@ -389,8 +389,21 @@ impl KexContext {
     }
 }
 
+impl std::fmt::Debug for SessionKeys {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SessionKeys")
+            .field("enc_key_c2s", &format!("[{} bytes]", self.enc_key_c2s.len()))
+            .field("enc_key_s2c", &format!("[{} bytes]", self.enc_key_s2c.len()))
+            .field("mac_key_c2s", &format!("[{} bytes]", self.mac_key_c2s.len()))
+            .field("mac_key_s2c", &format!("[{} bytes]", self.mac_key_s2c.len()))
+            .field("client_iv", &format!("[{} bytes]", self.client_iv.len()))
+            .field("server_iv", &format!("[{} bytes]", self.server_iv.len()))
+            .finish()
+    }
+}
+
 /// Session keys derived from key exchange
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct SessionKeys {
     /// Encryption key client to server
     pub enc_key_c2s: Vec<u8>,
