@@ -5,6 +5,7 @@
 
 pub mod cipher;
 pub mod chacha20_poly1305;
+pub mod ssh_chacha20;
 pub mod dh;
 pub mod ecdh;
 pub mod hmac;

@@ -629,41 +629,78 @@ impl Transport {
         let mac_len = if aead { GCM_TAG_LEN } else { mac_length(&mac_algo) };
 
         let decrypted = if aead {
-            // AEAD mode (AES-GCM): length in cleartext, GCM tag is auth
-            let length_bytes = self.read_exact_buffered(4).await?;
-            let packet_length = u32::from_be_bytes([
-                length_bytes[0], length_bytes[1], length_bytes[2], length_bytes[3],
-            ]) as usize;
-            debug!("AEAD: cleartext packet_length: {}", packet_length);
+            if dec_algo == "chacha20-poly1305@openssh.com" {
+                // ChaCha20-Poly1305: length IS encrypted
+                let encrypted_length_bytes = self.read_exact_buffered(4).await?;
+                let enc_len: [u8; 4] = encrypted_length_bytes.try_into().unwrap();
 
-            if packet_length < 1 || packet_length > 35000 {
-                return Err(crate::error::SshError::ProtocolError(
-                    format!("Invalid packet length: {}", packet_length),
-                ));
+                let decrypt_state = self.decrypt_state.as_ref().unwrap();
+                let packet_length = crate::crypto::ssh_chacha20::decrypt_length(
+                    &decrypt_state.dec_key, decrypt_state.sequence_number as u64, &enc_len,
+                ).map_err(|e| crate::error::SshError::CryptoError(e))? as usize;
+                debug!("ChaCha20: decrypted packet_length: {}", packet_length);
+
+                if packet_length < 1 || packet_length > 35000 {
+                    return Err(crate::error::SshError::ProtocolError(
+                        format!("Invalid packet length: {}", packet_length),
+                    ));
+                }
+
+                // Read encrypted payload + 16-byte Poly1305 tag
+                let rest = self.read_exact_buffered(packet_length + 16).await?;
+                let encrypted_payload = &rest[..packet_length];
+                let tag: [u8; 16] = rest[packet_length..].try_into().unwrap();
+
+                let decrypt_state = self.decrypt_state.as_mut().unwrap();
+                let plaintext = crate::crypto::ssh_chacha20::decrypt(
+                    &decrypt_state.dec_key, decrypt_state.sequence_number as u64,
+                    &enc_len, encrypted_payload, &tag,
+                ).map_err(|e| crate::error::SshError::CryptoError(e))?;
+                debug!("ChaCha20 decrypted {} bytes", plaintext.len());
+
+                decrypt_state.sequence_number = decrypt_state.sequence_number.wrapping_add(1);
+
+                // Reconstruct full packet: length(cleartext) || plaintext
+                let length_bytes = (packet_length as u32).to_be_bytes();
+                let mut full = Vec::with_capacity(4 + plaintext.len());
+                full.extend_from_slice(&length_bytes);
+                full.extend_from_slice(&plaintext);
+                full
+            } else {
+                // AES-GCM: length in cleartext, GCM tag is auth
+                let length_bytes = self.read_exact_buffered(4).await?;
+                let packet_length = u32::from_be_bytes([
+                    length_bytes[0], length_bytes[1], length_bytes[2], length_bytes[3],
+                ]) as usize;
+                debug!("AEAD: cleartext packet_length: {}", packet_length);
+
+                if packet_length < 1 || packet_length > 35000 {
+                    return Err(crate::error::SshError::ProtocolError(
+                        format!("Invalid packet length: {}", packet_length),
+                    ));
+                }
+
+                let ciphertext_with_tag = self.read_exact_buffered(packet_length + GCM_TAG_LEN).await?;
+
+                let decrypt_state = self.decrypt_state.as_mut().unwrap();
+                let nonce = gcm_nonce(&decrypt_state.iv, decrypt_state.aead_counter);
+
+                use crate::crypto::cipher::aes_gcm_decrypt_with_aad;
+                let plaintext = aes_gcm_decrypt_with_aad(
+                    &decrypt_state.dec_key, &nonce, &length_bytes, &ciphertext_with_tag,
+                ).map_err(|_| crate::error::SshError::ProtocolError(
+                    "AEAD authentication failed".to_string(),
+                ))?;
+                debug!("AEAD decrypted {} bytes", plaintext.len());
+
+                decrypt_state.sequence_number = decrypt_state.sequence_number.wrapping_add(1);
+                decrypt_state.aead_counter += 1;
+
+                let mut full = Vec::with_capacity(4 + plaintext.len());
+                full.extend_from_slice(&length_bytes);
+                full.extend_from_slice(&plaintext);
+                full
             }
-
-            // Read encrypted data + GCM tag
-            let ciphertext_with_tag = self.read_exact_buffered(packet_length + GCM_TAG_LEN).await?;
-
-            let decrypt_state = self.decrypt_state.as_mut().unwrap();
-            let nonce = gcm_nonce(&decrypt_state.iv, decrypt_state.aead_counter);
-
-            use crate::crypto::cipher::aes_gcm_decrypt_with_aad;
-            let plaintext = aes_gcm_decrypt_with_aad(
-                &decrypt_state.dec_key, &nonce, &length_bytes, &ciphertext_with_tag,
-            ).map_err(|_| crate::error::SshError::ProtocolError(
-                "AEAD authentication failed".to_string(),
-            ))?;
-            debug!("AEAD decrypted {} bytes", plaintext.len());
-
-            decrypt_state.sequence_number = decrypt_state.sequence_number.wrapping_add(1);
-            decrypt_state.aead_counter += 1;
-
-            // Reconstruct full packet: length || plaintext
-            let mut full = Vec::with_capacity(4 + plaintext.len());
-            full.extend_from_slice(&length_bytes);
-            full.extend_from_slice(&plaintext);
-            full
         } else if etm {
             // ETM mode: length is in cleartext, MAC over seq || length || ciphertext
             let length_bytes = self.read_exact_buffered(4).await?;
@@ -1077,11 +1114,13 @@ fn encrypt_packet_cbc(payload: &[u8], state: &mut EncryptionState) -> Result<Vec
         _ => 8,
     };
     let payload_len = payload.len();
-    // For AEAD/ETM modes, length field is not encrypted, so alignment
-    // applies only to the encrypted portion (padding_len + payload + padding).
-    // For standard modes, the length field IS encrypted.
-    let aead_or_etm = is_aead_cipher(&state.enc_algorithm) || is_etm_mac(&state.mac_algorithm);
-    let total_without_padding = if aead_or_etm {
+    // For ETM and AES-GCM modes, length field is cleartext (not encrypted),
+    // so alignment applies only to the encrypted portion.
+    // For ChaCha20-Poly1305, the length IS encrypted (with separate key),
+    // and alignment includes it (same as standard mode).
+    let length_cleartext = (is_etm_mac(&state.mac_algorithm) && !is_aead_cipher(&state.enc_algorithm))
+        || (is_aead_cipher(&state.enc_algorithm) && state.enc_algorithm != "chacha20-poly1305@openssh.com");
+    let total_without_padding = if length_cleartext {
         1 + payload_len // only padding_len + payload (no length field)
     } else {
         4 + 1 + payload_len // length field + padding_len + payload
@@ -1112,23 +1151,36 @@ fn encrypt_packet_cbc(payload: &[u8], state: &mut EncryptionState) -> Result<Vec
     let etm = !aead && is_etm_mac(&state.mac_algorithm);
 
     if aead {
-        // AEAD mode (AES-GCM): length in cleartext as AAD, encrypt rest, GCM tag is the auth
-        let length_bytes = &packet[..4];
-        let to_encrypt = &packet[4..];
-        let nonce = gcm_nonce(&state.iv, state.aead_counter);
+        if state.enc_algorithm == "chacha20-poly1305@openssh.com" {
+            // ChaCha20-Poly1305: length IS encrypted
+            let length_bytes: [u8; 4] = packet[..4].try_into().unwrap();
+            let payload = &packet[4..];
 
-        use crate::crypto::cipher::aes_gcm_encrypt_with_aad;
-        let ciphertext_with_tag = aes_gcm_encrypt_with_aad(
-            &state.enc_key, &nonce, length_bytes, to_encrypt,
-        )?;
+            let result = crate::crypto::ssh_chacha20::encrypt(
+                &state.enc_key, state.sequence_number as u64, &length_bytes, payload,
+            ).map_err(|e| crate::error::SshError::CryptoError(e))?;
 
-        state.sequence_number = state.sequence_number.wrapping_add(1);
-        state.aead_counter += 1;
+            state.sequence_number = state.sequence_number.wrapping_add(1);
+            Ok(result)
+        } else {
+            // AES-GCM: length in cleartext as AAD
+            let length_bytes = &packet[..4];
+            let to_encrypt = &packet[4..];
+            let nonce = gcm_nonce(&state.iv, state.aead_counter);
 
-        let mut result = Vec::with_capacity(4 + ciphertext_with_tag.len());
-        result.extend_from_slice(length_bytes);
-        result.extend_from_slice(&ciphertext_with_tag);
-        Ok(result)
+            use crate::crypto::cipher::aes_gcm_encrypt_with_aad;
+            let ciphertext_with_tag = aes_gcm_encrypt_with_aad(
+                &state.enc_key, &nonce, length_bytes, to_encrypt,
+            )?;
+
+            state.sequence_number = state.sequence_number.wrapping_add(1);
+            state.aead_counter += 1;
+
+            let mut result = Vec::with_capacity(4 + ciphertext_with_tag.len());
+            result.extend_from_slice(length_bytes);
+            result.extend_from_slice(&ciphertext_with_tag);
+            Ok(result)
+        }
     } else if etm {
         // ETM mode: length in cleartext, encrypt rest, MAC over seq || length || ciphertext
         let length_bytes = &packet[..4]; // cleartext length field

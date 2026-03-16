@@ -95,53 +95,40 @@ pub fn kdf(
         let hash_output = match hash_algo {
             HashAlgorithm::Sha1 => {
                 // RFC 4253 Section 7.2:
-                // K1 = HASH(K || H || X || session_id)   (X is e.g., "A")
-                // K2 = HASH(K || H || K1)
-                // K3 = HASH(K || H || K1 || K2)
-                // ...
+                // K1 = HASH(K || H || X || session_id)
+                // K2 = HASH(K || H || K1)           ← NO X here!
+                // K3 = HASH(K || H || K1 || K2)     ← NO X here!
                 // key = K1 || K2 || K3 || ...
-                // Note: For the first key exchange, H == session_id
 
                 let mut hasher = Sha1::new();
-                // Encode shared secret as mpint (length-prefixed)
-                // First convert to BigUint to handle sign bit correctly
                 let k_mpint = crate::crypto::dh::Mpint::encode_length_prefixed(
                     &num_bigint::BigUint::from_bytes_be(shared_secret),
                 );
-                hasher.update(&k_mpint);
-                // H is the exchange hash (equals session_id for first KEX)
-                hasher.update(session_id);
-                // Add counter byte (X) - this is 'A', 'B', 'C', etc.
-                hasher.update(&[(counter as u8)]);
+                hasher.update(&k_mpint); // K
+                hasher.update(session_id); // H
 
                 if i == 1 {
-                    // First block: add session_id again (as per RFC)
-                    hasher.update(session_id);
+                    hasher.update(&[(counter as u8)]); // X (only in K1!)
+                    hasher.update(session_id); // session_id
                 } else {
-                    // Subsequent blocks: add the entire key so far
-                    hasher.update(&result);
+                    hasher.update(&result); // K1 || K2 || ... (NO X)
                 }
 
                 hasher.finalize().to_vec()
             }
             HashAlgorithm::Sha256 => {
                 let mut hasher = digest::Context::new(&SHA256);
-                // Encode shared secret as mpint (length-prefixed)
                 let k_mpint = crate::crypto::dh::Mpint::encode_length_prefixed(
                     &num_bigint::BigUint::from_bytes_be(shared_secret),
                 );
-                hasher.update(&k_mpint);
-                // Add H (exchange hash, equals session_id for first KEX)
-                hasher.update(session_id);
-                // Add counter byte (X)
-                hasher.update(&[(counter as u8)]);
+                hasher.update(&k_mpint); // K
+                hasher.update(session_id); // H
 
                 if i == 1 {
-                    // First block: add session_id again (as per RFC)
-                    hasher.update(session_id);
+                    hasher.update(&[(counter as u8)]); // X (only in K1!)
+                    hasher.update(session_id); // session_id
                 } else {
-                    // Subsequent blocks: add the entire key so far
-                    hasher.update(&result);
+                    hasher.update(&result); // K1 || K2 || ... (NO X)
                 }
 
                 hasher.finish().as_ref().to_vec()

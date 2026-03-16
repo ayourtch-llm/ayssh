@@ -59,6 +59,12 @@ sha1 = { version = "0.10", features = ["oid"] }
 # MD5 hash (for SSH key fingerprints, legacy use only)
 md-5 = "0.10"
 
+# ChaCha20 stream cipher (for chacha20-poly1305@openssh.com)
+chacha20 = "0.9"
+
+# Poly1305 MAC (for chacha20-poly1305@openssh.com)
+poly1305 = "0.8"
+
 # Random number generation
 rand = "0.8"
 
