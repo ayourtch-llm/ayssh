@@ -144,7 +144,7 @@ pub async fn server_handshake(
     debug!("Sent server KEXINIT ({} bytes)", server_kexinit.len());
 
     // Step 3: Receive client KEXINIT
-    let client_kexinit_packet = io.read_unencrypted_packet(10).await?;
+    let client_kexinit_packet = io.read_unencrypted_packet(30).await?;
     recv_seq += 1;
     let pkt_len = u32::from_be_bytes([
         client_kexinit_packet[0], client_kexinit_packet[1],
@@ -162,6 +162,7 @@ pub async fn server_handshake(
     // For negotiation, the CLIENT's proposal takes priority (first match wins)
     let negotiated = negotiate_algorithms(&client_proposal, &server_proposal);
     info!("Negotiated: kex={}, enc={}, mac={}", negotiated.kex, negotiated.enc_c2s, negotiated.mac_c2s);
+    eprintln!("[SERVER-HS] Negotiated: kex={}, enc={}, mac={}", negotiated.kex, negotiated.enc_c2s, negotiated.mac_c2s);
 
     // Step 5: Key exchange (receive KEXDH_INIT, send KEXDH_REPLY)
     let kex_algorithm = KexAlgorithm::from_str(&negotiated.kex)
@@ -186,7 +187,7 @@ pub async fn server_handshake(
     kex_context.set_server_host_key(&host_key.public_key_blob());
 
     // Receive KEXDH_INIT (message type 30)
-    let kexdh_init_packet = io.read_unencrypted_packet(10).await?;
+    let kexdh_init_packet = io.read_unencrypted_packet(30).await?;
     recv_seq += 1;
     let ki_pkt_len = u32::from_be_bytes([
         kexdh_init_packet[0], kexdh_init_packet[1],
@@ -281,7 +282,7 @@ pub async fn server_handshake(
     debug!("Sent NEWKEYS");
 
     // Receive client NEWKEYS
-    let newkeys_packet = io.read_unencrypted_packet(10).await?;
+    let newkeys_packet = io.read_unencrypted_packet(30).await?;
     recv_seq += 1;
     if newkeys_packet.len() >= 6 && newkeys_packet[5] == 21 {
         debug!("Received client NEWKEYS");
@@ -316,6 +317,7 @@ pub async fn server_handshake(
         mac_algorithm: negotiated.mac_c2s.clone(),
     });
     info!("Encryption established: enc={}, mac={}", negotiated.enc_c2s, negotiated.mac_c2s);
+    eprintln!("[SERVER-HS] Encryption established");
 
     // Step 7: Handle SERVICE_REQUEST
     let service_req = io.recv_message().await?;
@@ -323,6 +325,7 @@ pub async fn server_handshake(
         return Err(SshError::ProtocolError(format!("Expected SERVICE_REQUEST (5), got {}", service_req.get(0).unwrap_or(&0))));
     }
     debug!("Received SERVICE_REQUEST");
+    eprintln!("[SERVER-HS] Received SERVICE_REQUEST");
 
     // Send SERVICE_ACCEPT
     let mut accept = BytesMut::new();
@@ -429,48 +432,95 @@ mod tests {
         assert_ne!(addr.port(), 0);
     }
 
-    #[tokio::test]
-    #[ignore = "WIP: server-client handshake needs debugging"]
-    async fn test_server_accepts_client_connection() {
-        let server = TestSshServer::new(0).await.unwrap();
-        let port = server.local_addr().port();
+    /// Server-client end-to-end test: full SSH protocol through encrypted data.
+    /// Server runs on a separate OS thread to avoid scheduling interference
+    /// with the test framework's parallel test execution.
+    #[test]
+    fn test_server_accepts_client_connection() {
+        // Bind on main thread so port is known before spawning
+        let std_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = std_listener.local_addr().unwrap().port();
+        std_listener.set_nonblocking(true).unwrap();
 
-        // Run server in a separate tokio task
-        let server_handle = tokio::spawn(async move {
-            match server.accept_one().await {
-                Ok(()) => info!("Server: connection handled OK"),
-                Err(e) => error!("Server error: {}", e),
-            }
+        // Server: separate thread + runtime (avoids Send issues with tokio::spawn)
+        let server_handle = std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            rt.block_on(async {
+                let listener = tokio::net::TcpListener::from_std(std_listener).unwrap();
+                let host_key = HostKeyPair::generate_ed25519();
+                let filter = AlgorithmFilter::default();
+
+                let (stream, _addr) = listener.accept().await.unwrap();
+                let (mut io, client_channel) = server_handshake(stream, &host_key, &filter).await
+                    .expect("Server handshake failed");
+
+                let mut data_msg = BytesMut::new();
+                data_msg.put_u8(94);
+                data_msg.put_u32(client_channel);
+                let test_data = b"AYSSH_TEST_OK\n";
+                data_msg.put_u32(test_data.len() as u32);
+                data_msg.put_slice(test_data);
+                io.send_message(&data_msg).await.unwrap();
+
+                let mut eof = BytesMut::new();
+                eof.put_u8(96);
+                eof.put_u32(client_channel);
+                io.send_message(&eof).await.unwrap();
+
+                let mut close = BytesMut::new();
+                close.put_u8(97);
+                close.put_u32(client_channel);
+                io.send_message(&close).await.unwrap();
+            });
         });
 
-        // Give server a moment to start accepting
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        // Run client in a separate thread with its own tokio runtime
-        // to avoid async scheduling issues
+        // Client: separate thread + runtime
         let client_handle = std::thread::spawn(move || {
-            let rt = tokio::runtime::Runtime::new().unwrap();
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
             rt.block_on(async {
+                eprintln!("[CLIENT] Connecting to port {}...", port);
                 let mut transport = crate::transport::Transport::new(
-                    TcpStream::connect(format!("127.0.0.1:{}", port)).await.unwrap()
+                    TcpStream::connect(format!("127.0.0.1:{}", port)).await
+                        .expect("Failed to connect to server")
                 );
-                transport.handshake().await.expect("Client handshake failed");
+                eprintln!("[CLIENT] Connected, starting handshake...");
+
+                transport.handshake().await.expect("[CLIENT] Handshake failed");
+                eprintln!("[CLIENT] Handshake OK");
 
                 transport.send_service_request("ssh-userauth").await.unwrap();
                 let service = transport.recv_service_accept().await.unwrap();
                 assert_eq!(service, "ssh-userauth");
+                eprintln!("[CLIENT] Service accepted");
 
                 let mut auth = crate::auth::Authenticator::new(&mut transport, "test".to_string())
                     .with_password("test".to_string());
                 auth.available_methods.insert("password".to_string());
                 let auth_result = auth.authenticate().await.unwrap();
                 assert!(matches!(auth_result, crate::auth::AuthenticationResult::Success));
+                eprintln!("[CLIENT] Auth OK");
 
-                info!("Client: handshake + auth succeeded!");
+                let session = crate::session::Session::open(&mut transport).await.unwrap();
+                let channel_id = session.remote_channel_id();
+                transport.send_channel_request(channel_id, "shell", true).await.unwrap();
+                let _ = transport.recv_message().await.unwrap(); // CHANNEL_SUCCESS
+
+                let data = transport.recv_message().await.unwrap();
+                assert!(!data.is_empty() && data[0] == 94, "Expected CHANNEL_DATA");
+                let data_len = u32::from_be_bytes([data[5], data[6], data[7], data[8]]) as usize;
+                let text = std::str::from_utf8(&data[9..9+data_len]).unwrap_or("");
+                assert!(text.contains("AYSSH_TEST_OK"), "Expected AYSSH_TEST_OK, got {:?}", text);
+                eprintln!("[CLIENT] Got AYSSH_TEST_OK - full protocol test passed!");
             });
         });
 
+        server_handle.join().expect("Server thread panicked");
         client_handle.join().expect("Client thread panicked");
-        let _ = server_handle.await;
     }
 }

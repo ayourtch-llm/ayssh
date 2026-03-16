@@ -288,7 +288,7 @@ impl Transport {
         debug!("Sent client KEXINIT packet ({} bytes total, seq={})", kexinit_msg.len(), self.send_sequence_number - 1);
         
         // 5. Receive server KEXINIT using buffered packet reader
-        let server_kexinit_bytes = self.read_unencrypted_packet(5).await?;
+        let server_kexinit_bytes = self.read_unencrypted_packet(30).await?;
         debug!("Successfully received server KEXINIT packet ({} bytes)", server_kexinit_bytes.len());
         
         // Extract the KEXINIT payload from the packet
@@ -388,7 +388,7 @@ impl Transport {
         self.send_sequence_number = self.send_sequence_number.wrapping_add(1);
         
         // 10. Receive KEXDH_REPLY from server using buffered packet reader
-        let reply_bytes = self.read_unencrypted_packet(5).await?;
+        let reply_bytes = self.read_unencrypted_packet(30).await?;
         debug!("Successfully received KEXDH_REPLY packet ({} bytes)", reply_bytes.len());
         
         // Extract payload from packet
@@ -473,7 +473,7 @@ impl Transport {
         debug!("Sent NEWKEYS (seq={})", self.send_sequence_number - 1);
         
         // 14. Receive NEWKEYS from server using buffered packet reader
-        let newkeys_bytes = self.read_unencrypted_packet(5).await?;
+        let newkeys_bytes = self.read_unencrypted_packet(30).await?;
 
         // Validate NEWKEYS message type (byte 5 = after 4-byte length + 1-byte padding_length)
         if newkeys_bytes.len() < 6 || newkeys_bytes[5] != crate::protocol::MessageType::Newkeys as u8 {
