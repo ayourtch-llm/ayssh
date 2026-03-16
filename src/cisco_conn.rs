@@ -71,7 +71,7 @@ impl Default for CiscoConnConfig {
 /// #[tokio::main]
 /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ///     let mut conn = CiscoConn::new(
-///         "192.168.1.1",
+///         "127.0.0.1",
 ///         ConnectionType::CiscoSsh,
 ///         "admin",
 ///         "password"
@@ -384,69 +384,17 @@ impl CiscoConn {
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn test_new_client() {
-        let result = CiscoConn::new(
-            "192.168.1.1",
-            ConnectionType::CiscoSsh,
-            "admin",
-            "password",
-        ).await;
-
-        // We expect this to fail without a real device, but the API should accept the parameters
-        assert!(result.is_err() || result.is_ok());
+    #[test]
+    fn test_connection_type_variants() {
+        assert_ne!(ConnectionType::CiscoSsh, ConnectionType::CiscoSshKey);
     }
 
-    #[tokio::test]
-    async fn test_new_client_with_timeouts() {
-        let timeout = Duration::from_secs(60);
-        let read_timeout = Duration::from_secs(20);
-
-        let result = CiscoConn::with_timeouts(
-            "192.168.1.1:22",
-            ConnectionType::CiscoSsh,
-            "admin",
-            "password",
-            timeout,
-            read_timeout,
-        ).await;
-
-        assert!(result.is_err() || result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_connection_type_enum() {
-        let result = CiscoConn::new(
-            "router.local",
-            ConnectionType::CiscoSsh,
-            "user",
-            "pass",
-        ).await;
-
-        assert!(result.is_err() || result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_config_defaults() {
-        let result = CiscoConn::new(
-            "192.168.1.1",
-            ConnectionType::CiscoSsh,
-            "admin",
-            "password",
-        ).await;
-
-        assert!(result.is_err() || result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_ipv6_address() {
-        let result = CiscoConn::new(
-            "[::1]:22",
-            ConnectionType::CiscoSsh,
-            "admin",
-            "password",
-        ).await;
-
-        assert!(result.is_err() || result.is_ok());
+    #[test]
+    fn test_config_defaults() {
+        let config = CiscoConnConfig::default();
+        assert_eq!(config.conntype, ConnectionType::CiscoSsh);
+        assert_eq!(config.timeout, Duration::from_secs(30));
+        assert_eq!(config.read_timeout, Duration::from_secs(30));
+        assert!(!config.prompts.is_empty());
     }
 }

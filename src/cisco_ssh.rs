@@ -70,7 +70,7 @@ impl Default for CiscoSSHConfig {
 /// #[tokio::main]
 /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ///     let conn = CiscoSSH::new(
-///         "192.168.1.1",
+///         "127.0.0.1",
 ///         ConnectionType::CiscoSSH,
 ///         "admin",
 ///         "password"
@@ -230,86 +230,12 @@ impl CiscoSSH {
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn test_new_client() {
-        // Note: This test creates a connection but we can't verify it without a real device
-        // The test verifies the constructor accepts the correct parameters
-        let result = CiscoSSH::new(
-            "192.168.1.1",
-            ConnectionType::CiscoSSH,
-            "admin",
-            "password",
-        ).await;
-        
-        // We expect this to fail without a real device, but the API should accept the parameters
-        assert!(result.is_err() || result.is_ok()); // Either way, API is valid
-    }
-
-    #[tokio::test]
-    async fn test_new_client_with_timeouts() {
-        let timeout = Duration::from_secs(60);
-        let read_timeout = Duration::from_secs(20);
-
-        let result = CiscoSSH::with_timeouts(
-            "192.168.1.1:22",
-            ConnectionType::CiscoSSH,
-            "admin",
-            "password",
-            timeout,
-            read_timeout,
-        ).await;
-        
-        // Verify constructor accepts correct parameters
-        assert!(result.is_err() || result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_connection_type_enum() {
-        let result = CiscoSSH::new(
-            "router.local",
-            ConnectionType::CiscoSSH,
-            "user",
-            "pass",
-        ).await;
-        
-        assert!(result.is_err() || result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_config_defaults() {
-        let result = CiscoSSH::new(
-            "192.168.1.1",
-            ConnectionType::CiscoSSH,
-            "admin",
-            "password",
-        ).await;
-        
-        assert!(result.is_err() || result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_ipv6_address() {
-        let result = CiscoSSH::new(
-            "[::1]:22",
-            ConnectionType::CiscoSSH,
-            "admin",
-            "password",
-        ).await;
-        
-        assert!(result.is_err() || result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_empty_command() {
-        // This test would need a real device to run properly
-        // For now, we just verify the API accepts empty strings
-        let conn = CiscoSSH::new(
-            "192.168.1.1",
-            ConnectionType::CiscoSSH,
-            "admin",
-            "password",
-        ).await;
-        
-        assert!(conn.is_err() || conn.is_ok());
+    #[test]
+    fn test_config_defaults() {
+        let config = CiscoSSHConfig::default();
+        assert_eq!(config.conntype, ConnectionType::CiscoSSH);
+        assert_eq!(config.timeout, Duration::from_secs(30));
+        assert_eq!(config.read_timeout, Duration::from_secs(30));
+        assert!(!config.prompts.is_empty());
     }
 }

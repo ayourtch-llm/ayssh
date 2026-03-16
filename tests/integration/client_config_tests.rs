@@ -32,7 +32,7 @@ fn test_client_custom_port() {
 fn test_client_valid_hostname() {
     let valid_hosts = vec![
         "localhost",
-        "192.168.1.1",
+        "127.0.0.1",
         "example.com",
         "ssh.example.org",
         "subdomain.example.com",
@@ -121,7 +121,7 @@ fn test_client_various_configurations() {
 fn test_client_ipv4_address() {
     let ipv4_addresses = vec![
         "127.0.0.1",
-        "192.168.1.1",
+        "127.0.0.1",
         "10.0.0.1",
         "172.16.0.1",
     ];
@@ -138,7 +138,7 @@ fn test_client_ipv4_address() {
 fn test_client_ipv6_address() {
     let ipv6_addresses = vec![
         "::1",
-        "::ffff:192.168.1.1",
+        "::ffff:127.0.0.1",
         "2001:db8::1",
     ];
     
@@ -228,7 +228,7 @@ fn test_client_configuration_consistency() {
     let test_cases = vec![
         ("host1.com", 22, "host1.com", 22),
         ("host2.com", 2222, "host2.com", 2222),
-        ("192.168.1.1", 8080, "192.168.1.1", 8080),
+        ("127.0.0.1", 8080, "127.0.0.1", 8080),
         ("::1", 65535, "::1", 65535),
     ];
     

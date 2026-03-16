@@ -51,8 +51,8 @@ async fn test_client_connect_with_auth_fails_without_server() {
 /// Test 6: Verify Client with different host
 #[test]
 fn test_client_different_host() {
-    let client = SshClient::new("192.168.1.1".to_string(), 22);
-    assert_eq!(client.host(), "192.168.1.1");
+    let client = SshClient::new("127.0.0.1".to_string(), 22);
+    assert_eq!(client.host(), "127.0.0.1");
 }
 
 /// Test 7: Verify Client with different port

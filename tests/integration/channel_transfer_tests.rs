@@ -8,7 +8,7 @@ use std::io::{Cursor, Read, Write};
 fn test_channel_transfer_manager_create_session() {
     let mut manager = ChannelTransferManager::new();
     
-    let channel_id = manager.create_session_channel("192.168.1.100", 12345);
+    let channel_id = manager.create_session_channel("127.0.0.100", 12345);
     
     assert_eq!(channel_id.to_u32(), 0);
     
@@ -19,7 +19,7 @@ fn test_channel_transfer_manager_create_session() {
 #[test]
 fn test_channel_transfer_manager_send_data() {
     let mut manager = ChannelTransferManager::new();
-    let channel_id = manager.create_session_channel("192.168.1.100", 12345);
+    let channel_id = manager.create_session_channel("127.0.0.100", 12345);
     
     let data = b"Hello, SSH!";
     let encoded = manager.send_data(channel_id, data).expect("Should encode data");
@@ -52,7 +52,7 @@ fn test_channel_transfer_manager_send_data() {
 #[test]
 fn test_channel_transfer_manager_send_eof() {
     let mut manager = ChannelTransferManager::new();
-    let channel_id = manager.create_session_channel("192.168.1.100", 12345);
+    let channel_id = manager.create_session_channel("127.0.0.100", 12345);
     
     let encoded = manager.send_eof(channel_id).expect("Should encode EOF");
     
@@ -73,7 +73,7 @@ fn test_channel_transfer_manager_send_eof() {
 #[test]
 fn test_channel_transfer_manager_send_close() {
     let mut manager = ChannelTransferManager::new();
-    let channel_id = manager.create_session_channel("192.168.1.100", 12345);
+    let channel_id = manager.create_session_channel("127.0.0.100", 12345);
     
     let encoded = manager.send_close(channel_id).expect("Should encode close");
     
@@ -94,7 +94,7 @@ fn test_channel_transfer_manager_send_close() {
 #[test]
 fn test_channel_transfer_manager_window_enforcement() {
     let mut manager = ChannelTransferManager::new();
-    let channel_id = manager.create_session_channel("192.168.1.100", 12345);
+    let channel_id = manager.create_session_channel("127.0.0.100", 12345);
     
     // Get the channel to check its window size
     let channel = manager.get_channel(channel_id).expect("Channel should exist");

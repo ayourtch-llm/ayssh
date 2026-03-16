@@ -37,7 +37,7 @@ fn test_channel_open_request_with_direct_tcpip() {
         initial_window_size: 65536,
         max_packet_size: 32768,
         channel_type: ChannelType::DirectTcpIp {
-            originator_address: "192.168.1.100".to_string(),
+            originator_address: "127.0.0.100".to_string(),
             originator_port: 12345,
             host_to_connect: "10.0.0.1".to_string(),
             port_to_connect: 22,
@@ -60,7 +60,7 @@ fn test_channel_open_request_with_direct_tcpip() {
         ref port_to_connect,
     } = parsed.channel_type
     {
-        assert_eq!(originator_address, "192.168.1.100");
+        assert_eq!(originator_address, "127.0.0.100");
         assert_eq!(originator_port, &12345);
         assert_eq!(host_to_connect, "10.0.0.1");
         assert_eq!(port_to_connect, &22);
@@ -79,7 +79,7 @@ fn test_channel_open_request_with_forwarded_tcpip() {
         channel_type: ChannelType::ForwardedTcpIp {
             address_to_bind: "0.0.0.0".to_string(),
             port_to_bind: 8080,
-            originator_address: "192.168.1.100".to_string(),
+            originator_address: "127.0.0.100".to_string(),
             originator_port: 12345,
         },
     };
@@ -100,7 +100,7 @@ fn test_channel_open_request_with_forwarded_tcpip() {
     {
         assert_eq!(address_to_bind, "0.0.0.0");
         assert_eq!(port_to_bind, &8080);
-        assert_eq!(originator_address, "192.168.1.100");
+        assert_eq!(originator_address, "127.0.0.100");
         assert_eq!(originator_port, &12345);
     } else {
         panic!("Expected ForwardedTcpIp channel type");

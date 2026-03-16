@@ -24,7 +24,7 @@ fn create_tcp_request() -> ChannelOpenRequest {
         initial_window_size: 65536,
         max_packet_size: 32768,
         channel_type: ChannelType::DirectTcpIp {
-            originator_address: "192.168.1.1".to_string(),
+            originator_address: "127.0.0.1".to_string(),
             originator_port: 2222,
             host_to_connect: "10.0.0.1".to_string(),
             port_to_connect: 80,
