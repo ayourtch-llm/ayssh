@@ -71,12 +71,14 @@ pub struct Transport {
 struct EncryptionState {
     /// Encryption key
     enc_key: Vec<u8>,
-    /// Initialization vector (for CBC mode)
+    /// Initialization vector
     iv: Vec<u8>,
     /// MAC key
     mac_key: Vec<u8>,
-    /// Sequence number for packet integrity
+    /// Sequence number for packet integrity (counts all packets from connection start)
     sequence_number: u32,
+    /// AEAD invocation counter (starts at 0 after NEWKEYS, independent of sequence_number)
+    aead_counter: u64,
     /// Encryption algorithm
     enc_algorithm: String,
     /// MAC algorithm
@@ -88,12 +90,14 @@ struct EncryptionState {
 struct DecryptionState {
     /// Decryption key
     dec_key: Vec<u8>,
-    /// Initialization vector (for CBC mode)
+    /// Initialization vector
     iv: Vec<u8>,
     /// MAC key
     mac_key: Vec<u8>,
     /// Sequence number for packet integrity
     sequence_number: u32,
+    /// AEAD invocation counter
+    aead_counter: u64,
     /// Decryption algorithm
     dec_algorithm: String,
     /// MAC algorithm
@@ -519,18 +523,17 @@ impl Transport {
                 iv: session_keys.client_iv.clone(),
                 mac_key: session_keys.mac_key_c2s.clone(),
                 sequence_number: self.send_sequence_number,
+                aead_counter: 0,
                 enc_algorithm: enc_c2s,
                 mac_algorithm: mac_c2s,
             });
 
-            // Set up server-to-client decryption state
-            // Note: To decrypt packets FROM server, we need the key that server used to encrypt
-            // Server encrypts with enc_key_s2c, so we decrypt with the same key
             self.decrypt_state = Some(DecryptionState {
                 dec_key: session_keys.enc_key_s2c.clone(),
                 iv: session_keys.server_iv.clone(),
                 mac_key: session_keys.mac_key_s2c.clone(),
                 sequence_number: self.recv_sequence_number,
+                aead_counter: 0,
                 dec_algorithm: enc_s2c,
                 mac_algorithm: mac_s2c,
             });
@@ -617,17 +620,51 @@ impl Transport {
         }
 
         // Extract needed values from decrypt_state before calling async methods
-        let (mac_len, etm, mac_algo, dec_algo) = {
+        let (dec_algo, mac_algo) = {
             let ds = self.decrypt_state.as_ref().unwrap();
-            (
-                mac_length(&ds.mac_algorithm),
-                is_etm_mac(&ds.mac_algorithm),
-                ds.mac_algorithm.clone(),
-                ds.dec_algorithm.clone(),
-            )
+            (ds.dec_algorithm.clone(), ds.mac_algorithm.clone())
         };
+        let aead = is_aead_cipher(&dec_algo);
+        let etm = !aead && is_etm_mac(&mac_algo);
+        let mac_len = if aead { GCM_TAG_LEN } else { mac_length(&mac_algo) };
 
-        let decrypted = if etm {
+        let decrypted = if aead {
+            // AEAD mode (AES-GCM): length in cleartext, GCM tag is auth
+            let length_bytes = self.read_exact_buffered(4).await?;
+            let packet_length = u32::from_be_bytes([
+                length_bytes[0], length_bytes[1], length_bytes[2], length_bytes[3],
+            ]) as usize;
+            debug!("AEAD: cleartext packet_length: {}", packet_length);
+
+            if packet_length < 1 || packet_length > 35000 {
+                return Err(crate::error::SshError::ProtocolError(
+                    format!("Invalid packet length: {}", packet_length),
+                ));
+            }
+
+            // Read encrypted data + GCM tag
+            let ciphertext_with_tag = self.read_exact_buffered(packet_length + GCM_TAG_LEN).await?;
+
+            let decrypt_state = self.decrypt_state.as_mut().unwrap();
+            let nonce = gcm_nonce(&decrypt_state.iv, decrypt_state.aead_counter);
+
+            use crate::crypto::cipher::aes_gcm_decrypt_with_aad;
+            let plaintext = aes_gcm_decrypt_with_aad(
+                &decrypt_state.dec_key, &nonce, &length_bytes, &ciphertext_with_tag,
+            ).map_err(|_| crate::error::SshError::ProtocolError(
+                "AEAD authentication failed".to_string(),
+            ))?;
+            debug!("AEAD decrypted {} bytes", plaintext.len());
+
+            decrypt_state.sequence_number = decrypt_state.sequence_number.wrapping_add(1);
+            decrypt_state.aead_counter += 1;
+
+            // Reconstruct full packet: length || plaintext
+            let mut full = Vec::with_capacity(4 + plaintext.len());
+            full.extend_from_slice(&length_bytes);
+            full.extend_from_slice(&plaintext);
+            full
+        } else if etm {
             // ETM mode: length is in cleartext, MAC over seq || length || ciphertext
             let length_bytes = self.read_exact_buffered(4).await?;
             let packet_length = u32::from_be_bytes([
@@ -891,6 +928,33 @@ impl Transport {
     }
 }
 
+/// Check if an encryption algorithm is an AEAD cipher (no separate MAC)
+fn is_aead_cipher(algorithm: &str) -> bool {
+    matches!(algorithm, "aes128-gcm@openssh.com" | "aes256-gcm@openssh.com" | "chacha20-poly1305@openssh.com")
+}
+
+/// GCM tag length
+const GCM_TAG_LEN: usize = 16;
+
+/// Construct a 12-byte GCM nonce.
+/// Per OpenSSH: use the full 12-byte IV for the first packet.
+/// For subsequent packets, increment the last 8 bytes as a big-endian counter.
+fn gcm_nonce(iv: &[u8], invocation_counter: u64) -> [u8; 12] {
+    let mut nonce = [0u8; 12];
+    nonce.copy_from_slice(&iv[..12]);
+    // Add the invocation counter to the last 8 bytes
+    let mut carry = invocation_counter;
+    for i in (4..12).rev() {
+        let sum = nonce[i] as u64 + (carry & 0xFF);
+        nonce[i] = sum as u8;
+        carry = (carry >> 8) + (sum >> 8);
+        if carry == 0 {
+            break;
+        }
+    }
+    nonce
+}
+
 /// Check if a MAC algorithm is an ETM (Encrypt-then-MAC) variant
 fn is_etm_mac(algorithm: &str) -> bool {
     algorithm.ends_with("-etm@openssh.com")
@@ -1008,10 +1072,20 @@ fn encrypt_packet_cbc(payload: &[u8], state: &mut EncryptionState) -> Result<Vec
     let block_size: usize = match state.enc_algorithm.as_str() {
         "aes128-cbc" | "aes192-cbc" | "aes256-cbc" => 16,
         "aes128-ctr" | "aes192-ctr" | "aes256-ctr" => 16,
+        "aes128-gcm@openssh.com" | "aes256-gcm@openssh.com" => 16,
+        "chacha20-poly1305@openssh.com" => 8,
         _ => 8,
     };
     let payload_len = payload.len();
-    let total_without_padding = 4 + 1 + payload_len;
+    // For AEAD/ETM modes, length field is not encrypted, so alignment
+    // applies only to the encrypted portion (padding_len + payload + padding).
+    // For standard modes, the length field IS encrypted.
+    let aead_or_etm = is_aead_cipher(&state.enc_algorithm) || is_etm_mac(&state.mac_algorithm);
+    let total_without_padding = if aead_or_etm {
+        1 + payload_len // only padding_len + payload (no length field)
+    } else {
+        4 + 1 + payload_len // length field + padding_len + payload
+    };
     let remainder = total_without_padding % block_size;
     let mut padding_length = if remainder == 0 {
         block_size as u8
@@ -1034,9 +1108,28 @@ fn encrypt_packet_cbc(payload: &[u8], state: &mut EncryptionState) -> Result<Vec
         packet.push(0);
     }
 
-    let etm = is_etm_mac(&state.mac_algorithm);
+    let aead = is_aead_cipher(&state.enc_algorithm);
+    let etm = !aead && is_etm_mac(&state.mac_algorithm);
 
-    if etm {
+    if aead {
+        // AEAD mode (AES-GCM): length in cleartext as AAD, encrypt rest, GCM tag is the auth
+        let length_bytes = &packet[..4];
+        let to_encrypt = &packet[4..];
+        let nonce = gcm_nonce(&state.iv, state.aead_counter);
+
+        use crate::crypto::cipher::aes_gcm_encrypt_with_aad;
+        let ciphertext_with_tag = aes_gcm_encrypt_with_aad(
+            &state.enc_key, &nonce, length_bytes, to_encrypt,
+        )?;
+
+        state.sequence_number = state.sequence_number.wrapping_add(1);
+        state.aead_counter += 1;
+
+        let mut result = Vec::with_capacity(4 + ciphertext_with_tag.len());
+        result.extend_from_slice(length_bytes);
+        result.extend_from_slice(&ciphertext_with_tag);
+        Ok(result)
+    } else if etm {
         // ETM mode: length in cleartext, encrypt rest, MAC over seq || length || ciphertext
         let length_bytes = &packet[..4]; // cleartext length field
         let to_encrypt = &packet[4..]; // padding_length + payload + padding
@@ -1184,6 +1277,7 @@ mod tests {
             iv: vec![0x00; 16],
             mac_key: vec![0xAB; 20],
             sequence_number: 3,
+            aead_counter: 0,
             enc_algorithm: "aes128-ctr".to_string(),
             mac_algorithm: "hmac-sha1".to_string(),
         };

@@ -37,7 +37,7 @@
 //! - Verify authentication before decrypting sensitive data
 //! - For CTR mode, always use HMAC for integrity protection
 
-use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM};
+use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_128_GCM, AES_256_GCM};
 use thiserror::Error;
 
 /// Error type for cipher operations
@@ -198,6 +198,68 @@ pub fn aes_gcm_decrypt(key: &[u8], nonce: &[u8], ciphertext: &[u8]) -> Result<Ve
         &mut buffer,
         0..,
     ) {
+        Ok(_) => Ok(buffer),
+        Err(_) => Err(CipherError::AuthenticationFailed),
+    }
+}
+
+/// Encrypt data using AES-GCM with AAD (Additional Authenticated Data).
+/// Supports AES-128-GCM and AES-256-GCM based on key length.
+/// Returns ciphertext || 16-byte GCM tag.
+pub fn aes_gcm_encrypt_with_aad(key: &[u8], nonce: &[u8], aad: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, CipherError> {
+    if key.len() != 16 && key.len() != 32 {
+        return Err(CipherError::InvalidKeySize { expected: 16, actual: key.len() });
+    }
+    if nonce.len() != 12 {
+        return Err(CipherError::InvalidNonceSizeGcm);
+    }
+
+    let algorithm = if key.len() == 16 { &AES_128_GCM } else { &AES_256_GCM };
+    let unbound_key = UnboundKey::new(algorithm, key)
+        .map_err(|e| CipherError::CryptoError(e.to_string()))?;
+    let encrypting_key = LessSafeKey::new(unbound_key);
+
+    let nonce = Nonce::try_assume_unique_for_key(nonce)
+        .map_err(|e| CipherError::CryptoError(e.to_string()))?;
+
+    let mut buffer = plaintext.to_vec();
+    let tag = encrypting_key
+        .seal_in_place_separate_tag(nonce, Aad::from(aad), &mut buffer)
+        .map_err(|e| CipherError::CryptoError(e.to_string()))?;
+
+    buffer.extend_from_slice(tag.as_ref());
+    Ok(buffer)
+}
+
+/// Decrypt data using AES-GCM with AAD.
+/// Supports AES-128-GCM and AES-256-GCM based on key length.
+/// Input is ciphertext || 16-byte GCM tag.
+pub fn aes_gcm_decrypt_with_aad(key: &[u8], nonce: &[u8], aad: &[u8], ciphertext_with_tag: &[u8]) -> Result<Vec<u8>, CipherError> {
+    if key.len() != 16 && key.len() != 32 {
+        return Err(CipherError::InvalidKeySize { expected: 16, actual: key.len() });
+    }
+    if nonce.len() != 12 {
+        return Err(CipherError::InvalidNonceSizeGcm);
+    }
+    if ciphertext_with_tag.len() < 16 {
+        return Err(CipherError::AuthenticationFailed);
+    }
+
+    let (ciphertext_only, tag_bytes) = ciphertext_with_tag.split_at(ciphertext_with_tag.len() - 16);
+
+    let algorithm = if key.len() == 16 { &AES_128_GCM } else { &AES_256_GCM };
+    let unbound_key = UnboundKey::new(algorithm, key)
+        .map_err(|e| CipherError::CryptoError(e.to_string()))?;
+    let decrypting_key = LessSafeKey::new(unbound_key);
+
+    let nonce = Nonce::try_assume_unique_for_key(nonce)
+        .map_err(|e| CipherError::CryptoError(e.to_string()))?;
+
+    let mut buffer = ciphertext_only.to_vec();
+    use ring::aead::Tag;
+    let tag = Tag::try_from(tag_bytes).map_err(|_| CipherError::AuthenticationFailed)?;
+
+    match decrypting_key.open_in_place_separate_tag(nonce, Aad::from(aad), tag, &mut buffer, 0..) {
         Ok(_) => Ok(buffer),
         Err(_) => Err(CipherError::AuthenticationFailed),
     }

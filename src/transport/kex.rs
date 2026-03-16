@@ -442,12 +442,17 @@ impl KexContext {
         if let Some(ref shared_secret) = self.shared_secret {
             // Determine key lengths from negotiated algorithms
             let enc_key_len = match enc_algorithm {
-                Some("aes128-cbc") | Some("aes128-ctr") => 16,
+                Some("aes128-cbc") | Some("aes128-ctr") | Some("aes128-gcm@openssh.com") => 16,
                 Some("aes192-cbc") | Some("aes192-ctr") => 24,
-                Some("aes256-cbc") | Some("aes256-ctr") => 32,
-                _ => 16, // default AES-128
+                Some("aes256-cbc") | Some("aes256-ctr") | Some("aes256-gcm@openssh.com") => 32,
+                Some("chacha20-poly1305@openssh.com") => 64, // 2x 32-byte keys
+                _ => 16,
             };
-            let iv_len = 16; // AES block size for both CBC and CTR
+            let iv_len = match enc_algorithm {
+                Some("aes128-gcm@openssh.com") | Some("aes256-gcm@openssh.com") => 12, // GCM nonce
+                Some("chacha20-poly1305@openssh.com") => 0, // no IV for chacha20
+                _ => 16, // AES block size for CBC and CTR
+            };
             let mac_key_len = match mac_algorithm {
                 Some("hmac-sha1") | Some("hmac-sha1-96")
                 | Some("hmac-sha1-etm@openssh.com") => 20,
