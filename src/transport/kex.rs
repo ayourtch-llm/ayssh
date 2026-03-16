@@ -304,49 +304,59 @@ impl KexContext {
         }
     }
 
-    /// Update a hasher with the session hash components
-    /// H = hash(V_C || V_S || I_C || I_S || K_S || e_C || e_S || K) per RFC 4253 Section 7.1
+    /// Update a hasher with the session hash components.
+    /// Per RFC 4253 Section 8 (for diffie-hellman-group1-sha1 / group14-sha256):
+    ///   H = hash(string V_C || string V_S || string I_C || string I_S ||
+    ///            string K_S || mpint e || mpint f || mpint K)
+    /// All `string` fields use SSH encoding: [uint32 length][data].
+    /// All `mpint` fields use SSH encoding: [uint32 length][data with sign bit].
     fn update_session_hash<H: Digest>(&mut self, hasher: &mut H) -> anyhow::Result<()> {
-        // V_C - client version string (without CRLF)
+        // Helper: feed an SSH "string" (4-byte big-endian length + data) into the hasher
+        fn hash_ssh_string<H: Digest>(hasher: &mut H, data: &[u8]) {
+            hasher.update(&(data.len() as u32).to_be_bytes());
+            hasher.update(data);
+        }
+
+        // V_C - client version string as SSH string (without CRLF)
         if let Some(ref vc) = self.client_version {
             let vc_clean = vc.strip_suffix(b"\r\n").unwrap_or(vc.strip_suffix(b"\n").unwrap_or(vc));
-            hasher.update(vc_clean);
+            hash_ssh_string(hasher, vc_clean);
         }
 
-        // V_S - server version string (without CRLF)
+        // V_S - server version string as SSH string (without CRLF)
         if let Some(ref vs) = self.server_version {
             let vs_clean = vs.strip_suffix(b"\r\n").unwrap_or(vs.strip_suffix(b"\n").unwrap_or(vs));
-            hasher.update(vs_clean);
+            hash_ssh_string(hasher, vs_clean);
         }
 
-        // I_C - client KEXINIT payload
+        // I_C - client KEXINIT payload as SSH string
         if let Some(ref ic) = self.client_kexinit {
-            hasher.update(ic);
+            hash_ssh_string(hasher, ic);
         }
 
-        // I_S - server KEXINIT payload
+        // I_S - server KEXINIT payload as SSH string
         if let Some(ref is) = self.server_kexinit {
-            hasher.update(is);
+            hash_ssh_string(hasher, is);
         }
 
-        // K_S - server host key
+        // K_S - server host key as SSH string
         if let Some(ref hs) = self.server_host_key {
-            hasher.update(hs);
+            hash_ssh_string(hasher, hs);
         }
 
-        // e_C - client public key exchange key (already encoded as MPINT or curve point)
+        // e - client DH public value as mpint (length-prefixed)
+        // client_ephemeral is stored as raw MPINT bytes (from Mpint::encode), NOT length-prefixed
         if let Some(ref ec) = self.client_ephemeral {
-            hasher.update(ec);
+            hash_ssh_string(hasher, ec);
         }
 
-        // e_S - server public key exchange key
+        // f - server DH public value as mpint (already length-prefixed from wire)
         if let Some(ref es) = self.server_ephemeral {
             hasher.update(es);
         }
 
-        // K - shared secret (as MPINT) - MUST BE LAST per RFC 4253
+        // K - shared secret as mpint (length-prefixed) - MUST BE LAST per RFC 4253
         if let Some(ref ss) = self.shared_secret {
-            // Convert Vec<u8> to BigUint and encode as length-prefixed MPINT
             let biguint = num_bigint::BigUint::from_bytes_be(ss);
             let mpint = crate::crypto::dh::Mpint::encode_length_prefixed(&biguint);
             hasher.update(&mpint);
@@ -874,5 +884,122 @@ mod tests {
         assert_eq!(keys.mac_key_c2s.len(), 32);  // HMAC-SHA256
         assert_eq!(keys.client_iv.len(), 16);     // CBC mode IV
         assert_eq!(keys.server_iv.len(), 16);     // CBC mode IV
+    }
+
+    /// Verify that the session hash includes SSH string encoding (4-byte length prefix)
+    /// for all components per RFC 4253 Section 8. This was the root cause of the
+    /// post-NEWKEYS encryption failure with Cisco IOS.
+    #[test]
+    fn test_session_hash_includes_length_prefixes() {
+        // Create two contexts with the same data
+        let group = DhGroup::group1();
+        let client_private = group.generate_private_key(&mut OsRng, 1024);
+        let client_public = group.compute_public_key(&client_private);
+        let server_private = group.generate_private_key(&mut OsRng, 1024);
+        let server_public = group.compute_public_key(&server_private);
+
+        let client_version = b"SSH-2.0-OpenSSH_7.4";
+        let server_version = b"SSH-1.99-Cisco-1.25";
+        let client_kexinit = b"client-kexinit-payload-with-algo-lists";
+        let server_kexinit = b"server-kexinit-payload-with-algo-lists";
+        let server_host_key = b"ssh-rsa-host-key-data";
+
+        let mut ctx = KexContext::new(protocol::KexAlgorithm::DiffieHellmanGroup1Sha1);
+        ctx.client_private = Some(client_private.clone());
+        ctx.client_ephemeral = Some(Mpint::encode(&client_public));
+        ctx.server_public = Some(server_public.clone());
+        // server_ephemeral is already length-prefixed from wire
+        ctx.server_ephemeral = Some(Mpint::encode_length_prefixed(&server_public));
+        ctx.set_exchange_info(client_version, server_version, client_kexinit, server_kexinit);
+        ctx.set_server_host_key(server_host_key);
+        ctx.compute_shared_secret().unwrap();
+
+        let hash = ctx.session_id.clone().unwrap();
+
+        // The hash should be 20 bytes (SHA-1 for group1)
+        assert_eq!(hash.len(), 20);
+
+        // Verify the hash changes when version strings change (proving they're included)
+        let mut ctx2 = KexContext::new(protocol::KexAlgorithm::DiffieHellmanGroup1Sha1);
+        ctx2.client_private = Some(client_private.clone());
+        ctx2.client_ephemeral = Some(Mpint::encode(&client_public));
+        ctx2.server_public = Some(server_public.clone());
+        ctx2.server_ephemeral = Some(Mpint::encode_length_prefixed(&server_public));
+        ctx2.set_exchange_info(b"SSH-2.0-Different", server_version, client_kexinit, server_kexinit);
+        ctx2.set_server_host_key(server_host_key);
+        ctx2.compute_shared_secret().unwrap();
+
+        let hash2 = ctx2.session_id.clone().unwrap();
+        assert_ne!(hash, hash2, "Different version strings must produce different session hashes");
+    }
+
+    /// Verify that the session hash computation is correct by manually constructing
+    /// the expected hash input with SSH string/mpint encoding.
+    #[test]
+    fn test_session_hash_encoding_manual_verification() {
+        use sha1::{Sha1, Digest as Sha1Digest};
+
+        let group = DhGroup::group1();
+        let client_private = group.generate_private_key(&mut OsRng, 1024);
+        let client_public = group.compute_public_key(&client_private);
+        let server_private = group.generate_private_key(&mut OsRng, 1024);
+        let server_public = group.compute_public_key(&server_private);
+
+        let client_version = b"SSH-2.0-TestClient";
+        let server_version = b"SSH-2.0-TestServer";
+        let client_kexinit = b"CKEX";
+        let server_kexinit = b"SKEX";
+        let host_key = b"HOSTKEY";
+
+        let client_ephemeral_raw = Mpint::encode(&client_public);
+        let server_ephemeral_lp = Mpint::encode_length_prefixed(&server_public);
+
+        // Compute shared secret the same way as KexContext
+        let shared = group.compute_shared_secret(&server_public, &client_private);
+        let shared_bytes = shared.to_bytes_be();
+
+        // Build expected hash input manually per RFC 4253 §8
+        let mut expected_input = Vec::new();
+        // string V_C
+        expected_input.extend_from_slice(&(client_version.len() as u32).to_be_bytes());
+        expected_input.extend_from_slice(client_version);
+        // string V_S
+        expected_input.extend_from_slice(&(server_version.len() as u32).to_be_bytes());
+        expected_input.extend_from_slice(server_version);
+        // string I_C
+        expected_input.extend_from_slice(&(client_kexinit.len() as u32).to_be_bytes());
+        expected_input.extend_from_slice(client_kexinit);
+        // string I_S
+        expected_input.extend_from_slice(&(server_kexinit.len() as u32).to_be_bytes());
+        expected_input.extend_from_slice(server_kexinit);
+        // string K_S
+        expected_input.extend_from_slice(&(host_key.len() as u32).to_be_bytes());
+        expected_input.extend_from_slice(host_key);
+        // mpint e (client_ephemeral: raw + length prefix)
+        expected_input.extend_from_slice(&(client_ephemeral_raw.len() as u32).to_be_bytes());
+        expected_input.extend_from_slice(&client_ephemeral_raw);
+        // mpint f (server_ephemeral: already length-prefixed)
+        expected_input.extend_from_slice(&server_ephemeral_lp);
+        // mpint K (shared secret as length-prefixed mpint)
+        let k_mpint = Mpint::encode_length_prefixed(&num_bigint::BigUint::from_bytes_be(&shared_bytes));
+        expected_input.extend_from_slice(&k_mpint);
+
+        let mut hasher = Sha1::new();
+        hasher.update(&expected_input);
+        let expected_hash = hasher.finalize().to_vec();
+
+        // Now compute via KexContext
+        let mut ctx = KexContext::new(protocol::KexAlgorithm::DiffieHellmanGroup1Sha1);
+        ctx.client_private = Some(client_private);
+        ctx.client_ephemeral = Some(client_ephemeral_raw);
+        ctx.server_public = Some(server_public);
+        ctx.server_ephemeral = Some(server_ephemeral_lp);
+        ctx.set_exchange_info(client_version, server_version, client_kexinit, server_kexinit);
+        ctx.set_server_host_key(host_key);
+        ctx.compute_shared_secret().unwrap();
+
+        let actual_hash = ctx.session_id.clone().unwrap();
+        assert_eq!(actual_hash, expected_hash,
+            "Session hash from KexContext must match manually constructed hash with SSH encoding");
     }
 }

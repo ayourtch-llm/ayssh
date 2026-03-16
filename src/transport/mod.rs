@@ -4,7 +4,7 @@
 //! packet encryption, and session state management.
 
 use crate::channel::ChannelTransferManager;
-use crate::crypto::cipher::{aes_128_cbc_decrypt, aes_128_cbc_decrypt_raw, aes_128_cbc_encrypt_raw, CipherError};
+use crate::crypto::cipher::{aes_128_cbc_decrypt_raw, aes_128_cbc_encrypt_raw, CipherError};
 use crate::crypto::hmac::HmacSha1;
 use crate::protocol;
 use bytes::BufMut;
@@ -538,23 +538,25 @@ impl Transport {
             debug!("  server_iv: {:?}", session_keys.server_iv);
             
             // Set up client-to-server encryption state
+            // Sequence number continues from handshake: we sent KEXINIT(0), KEXDH_INIT(1), NEWKEYS(2)
+            // so the next packet (first encrypted) uses sequence number 3 per RFC 4253 §6.4
             self.encrypt_state = Some(EncryptionState {
                 enc_key: session_keys.enc_key_c2s.clone(),
                 iv: session_keys.client_iv.clone(),
                 mac_key: session_keys.mac_key_c2s.clone(),
-                sequence_number: 0,
+                sequence_number: 3,
                 enc_algorithm: enc_c2s,
                 mac_algorithm: mac_c2s,
             });
             
             // Set up server-to-client decryption state
-            // Note: To decrypt packets FROM server, we need the key that server used to encrypt
-            // Server encrypts with enc_key_s2c, so we decrypt with the same key
+            // Server sent KEXINIT(0), KEXDH_REPLY(1), NEWKEYS(2)
+            // so the next packet (first encrypted) uses sequence number 3
             self.decrypt_state = Some(DecryptionState {
                 dec_key: session_keys.enc_key_s2c.clone(),
                 iv: session_keys.server_iv.clone(),
                 mac_key: session_keys.mac_key_s2c.clone(),
-                sequence_number: 0,
+                sequence_number: 3,
                 dec_algorithm: enc_s2c,
                 mac_algorithm: mac_s2c,
             });
@@ -610,8 +612,8 @@ impl Transport {
         if decryption_enabled {
             let decrypt_state = self.decrypt_state.as_ref().unwrap();
             
-            // For CBC mode, the packet length field is encrypted (RFC 4253 Section 6.3)
-            // Packet structure: [encrypted: length(4) + padding_len(1) + payload + padding] + [MAC]
+            // For CBC mode, the packet length field is encrypted (RFC 4253 Section 6)
+            // Wire format: [encrypted(packet_length(4) + padding_len(1) + payload + padding)] [MAC]
             
             // Calculate MAC length based on algorithm
             let mac_len = match decrypt_state.mac_algorithm.as_str() {
@@ -624,35 +626,21 @@ impl Transport {
                 _ => 20, // Default to HMAC-SHA1
             };
             
-            // Read minimum: one AES block (16 bytes) + MAC
-            let min_size = 16 + mac_len;
-            let mut buffer = vec![0u8; min_size];
-            self.stream.read_exact(&mut buffer).await?;
-            debug!("Read minimum {} bytes (16 + MAC:{})", min_size, mac_len);
-            debug!("Raw received bytes (first 36): {:?}", &buffer[..std::cmp::min(36, buffer.len())]);
+            // Step 1: Read one AES block (16 bytes) to peek at the encrypted packet_length
+            let mut first_block_buf = vec![0u8; 16];
+            self.stream.read_exact(&mut first_block_buf).await?;
             
-            // Save the current IV before decryption (we need it for CBC decryption)
-            let current_iv = decrypt_state.iv.clone();
+            // Save the current IV for full decryption later
+            let original_iv = decrypt_state.iv.clone();
             
-            // Decrypt just the first 16 bytes to get packet length (without padding removal)
-            let first_block = &buffer[..16];
-            debug!("Decrypting with key (first 8 bytes): {:?}", &decrypt_state.dec_key[..std::cmp::min(8, decrypt_state.dec_key.len())]);
-            debug!("Decrypting with IV (first 8 bytes): {:?}", &current_iv[..std::cmp::min(8, current_iv.len())]);
-            debug!("Ciphertext first block: {:?}", first_block);
+            // Decrypt just the first block to get the packet_length field
             let decrypted_first_block = aes_128_cbc_decrypt_raw(
                 &decrypt_state.dec_key,
-                &current_iv,
-                first_block
+                &original_iv,
+                &first_block_buf
             )?;
-            debug!("Decrypted first block: {:?}", &decrypted_first_block[..16]);
             
-            // For debugging, print the expected packet length for SERVICE_ACCEPT
-            // SERVICE_ACCEPT is message type 6, so the packet should be:
-            // [length (4)][padding_len (1)][6][padding...]
-            // Minimum packet length would be 4+1+6+4 = 15 bytes (with 4 bytes padding)
-            debug!("Expected packet length for SERVICE_ACCEPT: ~15-30 bytes");
-            
-            // Extract packet length from decrypted data (first 4 bytes, big-endian)
+            // Extract packet_length from first 4 bytes (big-endian)
             let packet_length = u32::from_be_bytes([
                 decrypted_first_block[0],
                 decrypted_first_block[1],
@@ -661,43 +649,42 @@ impl Transport {
             ]) as usize;
             debug!("Extracted packet length: {}", packet_length);
             
-            // Validate packet length
-            if packet_length < 1 || packet_length > 35000 {
+            // Validate packet length: minimum is 5 per RFC 4253 §6
+            // (1 byte padding_length + 0 payload + 4 minimum padding)
+            if packet_length < 5 || packet_length > 35000 {
                 return Err(crate::error::SshError::ProtocolError(
                     format!("Invalid packet length: {}", packet_length)
                 ));
             }
             
-            // Total bytes needed: packet_length (encrypted portion) + mac_len
-            let total_bytes = packet_length + mac_len;
+            // Total encrypted size = 4 (packet_length field) + packet_length
+            // The entire packet (including the 4-byte length) is encrypted in CBC mode
+            let total_encrypted = 4 + packet_length;
             
-            // If packet is larger than minimum, read more bytes
-            if total_bytes > min_size {
-                let additional = total_bytes - min_size;
-                debug!("Need {} additional bytes", additional);
-                let mut additional_data = vec![0u8; additional];
-                self.stream.read_exact(&mut additional_data).await?;
-                buffer.extend_from_slice(&additional_data);
-            }
+            // Read remaining encrypted bytes + MAC
+            let remaining_encrypted = total_encrypted - 16; // we already read the first block
+            let mut rest_buf = vec![0u8; remaining_encrypted + mac_len];
+            self.stream.read_exact(&mut rest_buf).await?;
             
-            debug!("Total encrypted data with MAC: {} bytes (packet: {} + MAC: {})", 
-                   buffer.len(), packet_length, mac_len);
+            // Assemble full ciphertext
+            let mut full_ciphertext = Vec::with_capacity(total_encrypted);
+            full_ciphertext.extend_from_slice(&first_block_buf);
+            full_ciphertext.extend_from_slice(&rest_buf[..remaining_encrypted]);
             
-            // Split buffer into encrypted portion and MAC
-            let encrypted = &buffer[..packet_length];
-            let received_mac = &buffer[packet_length..];
-
-            // Decrypt the entire encrypted portion first (per RFC 4253, MAC is over unencrypted data)
+            let received_mac = &rest_buf[remaining_encrypted..];
+            
+            // Decrypt the entire packet using the original IV and raw decrypt (no PKCS#7)
             let decrypt_state = self.decrypt_state.as_mut().unwrap();
-            let decrypted = aes_128_cbc_decrypt(&decrypt_state.dec_key, &decrypt_state.iv, encrypted)?;
-            debug!("Decrypted successfully, got {} bytes", decrypted.len());
+            let decrypted = aes_128_cbc_decrypt_raw(
+                &decrypt_state.dec_key,
+                &decrypt_state.iv,
+                &full_ciphertext
+            )?;
+            
+            // Update IV for next packet (last 16 bytes of ciphertext, per RFC 4253)
+            decrypt_state.iv = full_ciphertext[full_ciphertext.len() - 16..].to_vec();
 
-            // Update IV for next packet (last 16 bytes of ciphertext for AES)
-            if encrypted.len() >= 16 {
-                decrypt_state.iv = encrypted[encrypted.len() - 16..].to_vec();
-            }
-
-            // Verify HMAC over sequence number + decrypted packet (per RFC 4253 Section 6.4)
+            // Verify HMAC over sequence_number || unencrypted_packet (RFC 4253 §6.4)
             let mut mac_data = Vec::with_capacity(4 + decrypted.len());
             mac_data.extend_from_slice(&decrypt_state.sequence_number.to_be_bytes());
             mac_data.extend_from_slice(&decrypted);
@@ -706,7 +693,9 @@ impl Transport {
             hmac.update(&mac_data);
             let expected_mac = hmac.finish();
 
-            if !expected_mac.iter().eq(received_mac.iter()) {
+            // Constant-time MAC verification to prevent timing side-channel attacks
+            if expected_mac.len() != received_mac.len()
+                || !constant_time_eq(&expected_mac, received_mac) {
                 return Err(crate::error::SshError::ProtocolError(
                     "MAC verification failed".to_string()
                 ));
@@ -716,7 +705,19 @@ impl Transport {
             // Update sequence number
             decrypt_state.sequence_number = decrypt_state.sequence_number.wrapping_add(1);
 
-            Ok(decrypted)
+            // Extract payload from decrypted packet:
+            // decrypted = [packet_length(4)][padding_length(1)][payload][padding]
+            let padding_len = decrypted[4] as usize;
+            let payload_start = 5; // skip 4-byte length + 1-byte padding_length
+            let payload_end = decrypted.len() - padding_len;
+            if payload_end <= payload_start {
+                return Err(crate::error::SshError::ProtocolError(
+                    "Invalid decrypted packet: payload_end <= payload_start".to_string()
+                ));
+            }
+            let payload = decrypted[payload_start..payload_end].to_vec();
+            
+            Ok(payload)
         } else {
             // Read unencrypted (shouldn't happen after handshake)
             let mut len_buf = [0u8; 4];
@@ -866,18 +867,42 @@ impl Transport {
     }
 }
 
+// Constant-time byte comparison to prevent timing side-channel attacks on MAC verification
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
 // Standalone helper functions for encryption/decryption
 fn encrypt_packet_cbc(payload: &[u8], state: &mut EncryptionState) -> Result<Vec<u8>, crate::error::SshError> {
-    // Calculate padding to ensure 8-byte alignment
+    // Per RFC 4253 Section 6: the concatenation of packet_length, padding_length,
+    // payload, and random padding MUST be a multiple of the cipher block size or 8,
+    // whichever is larger. For AES-128-CBC the block size is 16.
+    let block_size: usize = match state.enc_algorithm.as_str() {
+        "aes128-cbc" | "aes192-cbc" | "aes256-cbc" => 16,
+        _ => 8,
+    };
+    let align_to = std::cmp::max(block_size, 8);
+    
     let payload_len = payload.len();
     let total_without_padding = 4 + 1 + payload_len;
-    let remainder = total_without_padding % 8;
-    let padding_length = if remainder == 0 {
-        8u8
+    let remainder = total_without_padding % align_to;
+    let mut padding_length = if remainder == 0 {
+        align_to as u8
     } else {
-        let p = (8 - remainder) as u8;
-        if p < 4 { p + 8 } else { p }
+        (align_to - remainder) as u8
     };
+    
+    // Ensure minimum padding of 4 bytes per RFC 4253
+    if padding_length < 4 {
+        padding_length += align_to as u8;
+    }
     
     let packet_length = payload_len as u32 + padding_length as u32 + 1;
     
@@ -940,10 +965,10 @@ fn decrypt_packet_cbc(encrypted_with_mac: &[u8], state: &mut DecryptionState) ->
 
     let (encrypted, received_mac) = encrypted_with_mac.split_at(encrypted_with_mac.len() - mac_len);
 
-    // Decrypt using AES-CBC first (per RFC 4253, MAC is over unencrypted data)
+    // Decrypt using AES-CBC raw (SSH uses its own padding, NOT PKCS#7)
     let decrypted = match state.dec_algorithm.as_str() {
         "aes128-cbc" => {
-            aes_128_cbc_decrypt(&state.dec_key, &state.iv, encrypted)?
+            aes_128_cbc_decrypt_raw(&state.dec_key, &state.iv, encrypted)?
         }
         _ => {
             return Err(crate::error::SshError::ProtocolError(
@@ -967,7 +992,8 @@ fn decrypt_packet_cbc(encrypted_with_mac: &[u8], state: &mut DecryptionState) ->
     hmac.update(&mac_data);
     let expected_mac = hmac.finish();
 
-    if !expected_mac.iter().eq(received_mac.iter()) {
+    // Constant-time MAC verification to prevent timing side-channel attacks
+    if !constant_time_eq(&expected_mac, received_mac) {
         return Err(crate::error::SshError::ProtocolError(
             "MAC verification failed".to_string()
         ));
@@ -1001,5 +1027,171 @@ mod tests {
         let _ = Transport::send_channel_close;
         let _ = Transport::send_channel_request;
         let _ = Transport::send_channel_request_string;
+    }
+
+    /// Test encrypt → decrypt round-trip with AES-128-CBC + HMAC-SHA1.
+    /// Verifies that encrypt_packet_cbc and decrypt_packet_cbc are symmetric.
+    #[test]
+    fn test_encrypt_decrypt_roundtrip() {
+        let enc_key = vec![0x01u8; 16]; // 128-bit key
+        let mac_key = vec![0x02u8; 20]; // HMAC-SHA1 key
+        let iv = vec![0x03u8; 16];      // 128-bit IV
+
+        let payload = b"Hello, SSH!";
+
+        let mut enc_state = EncryptionState {
+            enc_key: enc_key.clone(),
+            iv: iv.clone(),
+            mac_key: mac_key.clone(),
+            sequence_number: 3, // typical after handshake
+            enc_algorithm: "aes128-cbc".to_string(),
+            mac_algorithm: "hmac-sha1".to_string(),
+        };
+
+        let encrypted = encrypt_packet_cbc(payload, &mut enc_state).unwrap();
+
+        // Encrypted data should be larger than payload (packet framing + MAC)
+        assert!(encrypted.len() > payload.len());
+        // After encryption, sequence number should have incremented
+        assert_eq!(enc_state.sequence_number, 4);
+
+        // Decrypt
+        let mut dec_state = DecryptionState {
+            dec_key: enc_key,
+            iv: iv,
+            mac_key: mac_key,
+            sequence_number: 3, // must match sender's sequence
+            dec_algorithm: "aes128-cbc".to_string(),
+            mac_algorithm: "hmac-sha1".to_string(),
+        };
+
+        let decrypted = decrypt_packet_cbc(&encrypted, &mut dec_state).unwrap();
+
+        // Decrypted data is the full packet: [length(4)][padding_len(1)][payload][padding]
+        // Extract the payload
+        let packet_len = u32::from_be_bytes([decrypted[0], decrypted[1], decrypted[2], decrypted[3]]) as usize;
+        let padding_len = decrypted[4] as usize;
+        let payload_start = 5;
+        let payload_end = 4 + packet_len - padding_len;
+        let recovered = &decrypted[payload_start..payload_end];
+
+        assert_eq!(recovered, payload);
+    }
+
+    /// Test that encrypted packets are always 16-byte aligned (AES block size).
+    #[test]
+    fn test_encrypt_packet_alignment() {
+        let enc_key = vec![0x01u8; 16];
+        let mac_key = vec![0x02u8; 20];
+        let iv = vec![0x03u8; 16];
+
+        // Test various payload sizes
+        for payload_len in [1, 5, 10, 15, 16, 19, 32, 100] {
+            let payload = vec![0xABu8; payload_len];
+
+            let mut state = EncryptionState {
+                enc_key: enc_key.clone(),
+                iv: iv.clone(),
+                mac_key: mac_key.clone(),
+                sequence_number: 0,
+                enc_algorithm: "aes128-cbc".to_string(),
+                mac_algorithm: "hmac-sha1".to_string(),
+            };
+
+            let encrypted = encrypt_packet_cbc(&payload, &mut state).unwrap();
+            let mac_len = 20; // HMAC-SHA1
+            let encrypted_portion = encrypted.len() - mac_len;
+
+            assert_eq!(encrypted_portion % 16, 0,
+                "Encrypted portion must be 16-byte aligned for AES-128 (payload_len={})", payload_len);
+        }
+    }
+
+    /// Test that sequence numbers are correctly incremented and used in MAC.
+    #[test]
+    fn test_sequence_number_in_mac() {
+        let enc_key = vec![0x01u8; 16];
+        let mac_key = vec![0x02u8; 20];
+        let iv = vec![0x03u8; 16];
+        let payload = b"test";
+
+        // Encrypt with seq 3
+        let mut enc_state = EncryptionState {
+            enc_key: enc_key.clone(),
+            iv: iv.clone(),
+            mac_key: mac_key.clone(),
+            sequence_number: 3,
+            enc_algorithm: "aes128-cbc".to_string(),
+            mac_algorithm: "hmac-sha1".to_string(),
+        };
+        let encrypted = encrypt_packet_cbc(payload, &mut enc_state).unwrap();
+
+        // Decrypting with the WRONG sequence number should fail MAC verification
+        let mut dec_state_wrong = DecryptionState {
+            dec_key: enc_key.clone(),
+            iv: iv.clone(),
+            mac_key: mac_key.clone(),
+            sequence_number: 0, // wrong!
+            dec_algorithm: "aes128-cbc".to_string(),
+            mac_algorithm: "hmac-sha1".to_string(),
+        };
+        let result = decrypt_packet_cbc(&encrypted, &mut dec_state_wrong);
+        assert!(result.is_err(), "Decryption with wrong sequence number must fail MAC check");
+
+        // Decrypting with the CORRECT sequence number should succeed
+        let mut dec_state_correct = DecryptionState {
+            dec_key: enc_key,
+            iv: iv,
+            mac_key: mac_key,
+            sequence_number: 3, // correct
+            dec_algorithm: "aes128-cbc".to_string(),
+            mac_algorithm: "hmac-sha1".to_string(),
+        };
+        let result = decrypt_packet_cbc(&encrypted, &mut dec_state_correct);
+        assert!(result.is_ok(), "Decryption with correct sequence number must succeed");
+    }
+
+    /// Test multiple packets with IV chaining.
+    #[test]
+    fn test_multiple_packets_iv_chaining() {
+        let enc_key = vec![0x01u8; 16];
+        let mac_key = vec![0x02u8; 20];
+        let iv = vec![0x03u8; 16];
+
+        let mut enc_state = EncryptionState {
+            enc_key: enc_key.clone(),
+            iv: iv.clone(),
+            mac_key: mac_key.clone(),
+            sequence_number: 3,
+            enc_algorithm: "aes128-cbc".to_string(),
+            mac_algorithm: "hmac-sha1".to_string(),
+        };
+
+        let mut dec_state = DecryptionState {
+            dec_key: enc_key,
+            iv: iv,
+            mac_key: mac_key,
+            sequence_number: 3,
+            dec_algorithm: "aes128-cbc".to_string(),
+            mac_algorithm: "hmac-sha1".to_string(),
+        };
+
+        // Send/receive multiple packets
+        for i in 0..5 {
+            let payload = format!("Message #{}", i);
+            let encrypted = encrypt_packet_cbc(payload.as_bytes(), &mut enc_state).unwrap();
+            let decrypted = decrypt_packet_cbc(&encrypted, &mut dec_state).unwrap();
+
+            // Extract payload
+            let packet_len = u32::from_be_bytes([decrypted[0], decrypted[1], decrypted[2], decrypted[3]]) as usize;
+            let padding_len = decrypted[4] as usize;
+            let payload_end = 4 + packet_len - padding_len;
+            let recovered = &decrypted[5..payload_end];
+            assert_eq!(recovered, payload.as_bytes(), "Packet {} round-trip failed", i);
+        }
+
+        // Both sides should have the same sequence number after 5 packets
+        assert_eq!(enc_state.sequence_number, 8); // started at 3, sent 5
+        assert_eq!(dec_state.sequence_number, 8);
     }
 }
