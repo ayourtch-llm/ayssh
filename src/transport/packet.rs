@@ -15,6 +15,16 @@ pub const PACKET_HEADER_LEN: usize = 5;
 /// Maximum packet size
 pub const MAX_PACKET_SIZE: usize = 256 * 1024;
 
+/// RFC 4253 Section 6.1: Maximum total packet size (including length, padding_length,
+/// payload, random padding, and MAC)
+pub const RFC_MAX_PACKET_SIZE: usize = 35000;
+
+/// RFC 4253 Section 6.1: Maximum uncompressed payload length
+pub const RFC_MAX_PAYLOAD_SIZE: usize = 32768;
+
+/// Minimum total packet size (RFC 4253 Section 6: minimum is 16 bytes or cipher block size)
+pub const MIN_PACKET_SIZE: usize = 16;
+
 /// Minimum padding length
 pub const MIN_PADDING: usize = 4;
 
@@ -85,6 +95,11 @@ impl Packet {
     }
 
     /// Deserialize a packet from bytes
+    ///
+    /// Validates packet structure per RFC 4253 Section 6:
+    /// - At least 4 bytes of padding
+    /// - Minimum packet size of 16 bytes
+    /// - Implementations SHOULD check that the packet length is reasonable
     pub fn deserialize(data: &[u8]) -> Result<Self, SshError> {
         if data.len() < PACKET_HEADER_LEN {
             return Err(SshError::CryptoError(
@@ -94,6 +109,21 @@ impl Packet {
 
         let length = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
         let padding_length = data[4]; // padding_length is 1 byte
+
+        // RFC 4253 Section 6: "There MUST be at least four bytes of padding"
+        if (padding_length as usize) < MIN_PADDING {
+            return Err(SshError::CryptoError(
+                format!("Padding too short: {} (minimum {})", padding_length, MIN_PADDING),
+            ));
+        }
+
+        // RFC 4253 Section 6: Check total packet size is reasonable
+        let total_size = 4 + length as usize + padding_length as usize;
+        if total_size > MAX_PACKET_SIZE {
+            return Err(SshError::CryptoError(
+                format!("Packet too large: {} bytes (maximum {})", total_size, MAX_PACKET_SIZE),
+            ));
+        }
         
         let expected_len = PACKET_HEADER_LEN + length as usize + padding_length as usize;
         if data.len() < expected_len {

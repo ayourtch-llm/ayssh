@@ -12,8 +12,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 /// Using a more generic version string that Cisco accepts
 pub const SSH_VERSION_STRING: &str = "SSH-2.0-OpenSSH_7.4\r\n";
 
-/// Maximum version string length (RFC 256 bytes)
-pub const MAX_VERSION_STRING_LENGTH: usize = 256;
+/// Maximum version string length (RFC 4253: 255 characters including CR and LF)
+pub const MAX_VERSION_STRING_LENGTH: usize = 255;
 
 /// Send SSH version string to the remote peer
 pub async fn send_version<T: AsyncWriteExt + Unpin>(stream: &mut T) -> Result<(), SshError> {
@@ -63,10 +63,17 @@ pub async fn recv_version<T: AsyncReadExt + Unpin>(stream: &mut T) -> Result<Str
 /// assert_eq!(software_version, "OpenSSH_8.4");
 /// ```
 pub fn parse_version_string(data: &[u8]) -> Result<(u32, String), SshError> {
-    // Validate length
+    // Validate length (RFC 4253: max 255 characters including CRLF)
     if data.len() > MAX_VERSION_STRING_LENGTH {
         return Err(SshError::ProtocolError(
             "Version string too long".to_string(),
+        ));
+    }
+
+    // RFC 4253 Section 4.2: "The null character MUST NOT be sent"
+    if data.contains(&0) {
+        return Err(SshError::ProtocolError(
+            "Version string must not contain null bytes".to_string(),
         ));
     }
 
@@ -260,5 +267,52 @@ mod tests {
         assert!(SSH_VERSION_STRING.starts_with("SSH-2.0-"));
         assert!(SSH_VERSION_STRING.ends_with("\r\n"));
         assert_eq!(SSH_VERSION_STRING.len(), 21);
+    }
+
+    #[test]
+    fn test_version_string_null_byte_rejected() {
+        // RFC 4253 Section 4.2: "The null character MUST NOT be sent"
+        let data = b"SSH-2.0-Open\x00SSH\r\n";
+        let result = parse_version_string(data);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_version_string_max_length_255() {
+        // RFC 4253: "The maximum length of the string is 255 characters,
+        // including the Carriage Return and Line Feed"
+
+        // 253 chars + \r\n = 255 (valid)
+        let software = "a".repeat(253 - 8); // "SSH-2.0-" is 8 chars
+        let data = format!("SSH-2.0-{}\r\n", software);
+        assert_eq!(data.len(), 255);
+        assert!(parse_version_string(data.as_bytes()).is_ok());
+
+        // 254 chars + \r\n = 256 (invalid)
+        let software = "a".repeat(254 - 8);
+        let data = format!("SSH-2.0-{}\r\n", software);
+        assert_eq!(data.len(), 256);
+        assert!(parse_version_string(data.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn test_version_string_within_255_limit() {
+        // Exactly 255 bytes including CRLF is valid
+        let padding = "x".repeat(255 - 12); // "SSH-2.0-" + \r\n = 10
+        let data = format!("SSH-2.0-A{}\r\n", padding);
+        assert!(data.len() <= 255);
+        assert!(parse_version_string(data.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn test_version_string_crlf_required() {
+        // RFC 4253: "The identification MUST be terminated by a single CR and a single LF"
+        // LF only should fail
+        let data = b"SSH-2.0-OpenSSH_8.4\n";
+        assert!(parse_version_string(data).is_err());
+
+        // No terminator should fail
+        let data = b"SSH-2.0-OpenSSH_8.4";
+        assert!(parse_version_string(data).is_err());
     }
 }
