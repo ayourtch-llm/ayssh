@@ -5,7 +5,7 @@
 
 use crate::channel::ChannelTransferManager;
 use crate::crypto::cipher::{aes_128_cbc_decrypt, aes_128_cbc_decrypt_raw, aes_128_cbc_encrypt_raw, CipherError};
-use crate::crypto::hmac::HmacSha1;
+use crate::crypto::hmac::{HmacSha1, HmacSha256};
 use crate::protocol;
 use bytes::BufMut;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -58,6 +58,10 @@ pub struct Transport {
     recv_sequence_number: u32,
     /// Session ID from key exchange (needed for public key auth signatures)
     session_id: Option<Vec<u8>>,
+    /// Preferred cipher algorithm (placed first in KEXINIT)
+    preferred_cipher: Option<String>,
+    /// Preferred MAC algorithm (placed first in KEXINIT)
+    preferred_mac: Option<String>,
 }
 
 /// Encryption state for outgoing packets
@@ -108,6 +112,8 @@ impl Transport {
             send_sequence_number: 0,
             recv_sequence_number: 0,
             session_id: None,
+            preferred_cipher: None,
+            preferred_mac: None,
         }
     }
 
@@ -134,6 +140,16 @@ impl Transport {
     /// Get the session ID from key exchange (needed for public key auth signatures)
     pub fn session_id(&self) -> Option<&[u8]> {
         self.session_id.as_deref()
+    }
+
+    /// Set the preferred cipher algorithm (placed first in KEXINIT)
+    pub fn set_preferred_cipher(&mut self, cipher: &str) {
+        self.preferred_cipher = Some(cipher.to_string());
+    }
+
+    /// Set the preferred MAC algorithm (placed first in KEXINIT)
+    pub fn set_preferred_mac(&mut self, mac: &str) {
+        self.preferred_mac = Some(mac.to_string());
     }
 
     /// Get the channel manager
@@ -206,7 +222,7 @@ impl Transport {
     /// * `Ok(())` - Handshake completed successfully
     /// * `Err(SshError)` - Handshake failed
     pub async fn handshake(&mut self) -> Result<(), crate::error::SshError> {
-        use crate::transport::handshake::{send_version, recv_version, parse_version_string, generate_client_kexinit, parse_server_kexinit, negotiate_algorithms};
+        use crate::transport::handshake::{send_version, recv_version, parse_version_string, generate_client_kexinit_with_prefs, parse_server_kexinit, negotiate_algorithms};
         use crate::transport::kex::KexContext;
         use crate::protocol::KexAlgorithm;
         use std::str::FromStr;
@@ -222,7 +238,10 @@ impl Transport {
             .map_err(|e| crate::error::SshError::ProtocolError(e.to_string()))?;
         
         // 3. Generate client KEXINIT
-        let client_kexinit = generate_client_kexinit();
+        let client_kexinit = generate_client_kexinit_with_prefs(
+            self.preferred_cipher.as_deref(),
+            self.preferred_mac.as_deref(),
+        );
         debug!("Generated client KEXINIT ({} bytes)", client_kexinit.len());
         
         // 4. Send client KEXINIT - per RFC 4253, KEXINIT is sent as a binary packet
@@ -612,7 +631,7 @@ impl Transport {
 
         let decrypted_first_block = match dec_algo.as_str() {
             "aes128-cbc" => aes_128_cbc_decrypt_raw(&dec_key, &current_iv, &first_block_ciphertext)?,
-            "aes128-ctr" => {
+            "aes128-ctr" | "aes192-ctr" | "aes256-ctr" => {
                 use crate::crypto::cipher::aes_ctr_decrypt;
                 aes_ctr_decrypt(&dec_key, &current_iv, &first_block_ciphertext)?
             }
@@ -662,7 +681,7 @@ impl Transport {
         let decrypt_state = self.decrypt_state.as_mut().unwrap();
         let decrypted = match decrypt_state.dec_algorithm.as_str() {
             "aes128-cbc" => aes_128_cbc_decrypt_raw(&decrypt_state.dec_key, &decrypt_state.iv, &full_ciphertext)?,
-            "aes128-ctr" => {
+            "aes128-ctr" | "aes192-ctr" | "aes256-ctr" => {
                 use crate::crypto::cipher::aes_ctr_decrypt;
                 let pt = aes_ctr_decrypt(&decrypt_state.dec_key, &decrypt_state.iv, &full_ciphertext)?;
                 pt
@@ -681,7 +700,7 @@ impl Transport {
                     decrypt_state.iv = full_ciphertext[full_ciphertext.len() - 16..].to_vec();
                 }
             }
-            "aes128-ctr" => {
+            "aes128-ctr" | "aes192-ctr" | "aes256-ctr" => {
                 // CTR: advance counter by number of blocks
                 let blocks = (full_ciphertext.len() + 15) / 16;
                 advance_ctr_iv(&mut decrypt_state.iv, blocks);
@@ -694,13 +713,13 @@ impl Transport {
         mac_data.extend_from_slice(&decrypt_state.sequence_number.to_be_bytes());
         mac_data.extend_from_slice(&decrypted);
 
-        let mut hmac = HmacSha1::new(&decrypt_state.mac_key);
-        hmac.update(&mac_data);
-        let expected_mac = hmac.finish();
+        let expected_mac = compute_mac(&decrypt_state.mac_algorithm, &decrypt_state.mac_key, &mac_data);
 
         if expected_mac.len() != received_mac.len() || !expected_mac.iter().zip(received_mac.iter()).all(|(a, b)| a == b) {
-            debug!("MAC mismatch! seq={}, expected={:?}, received={:?}",
-                   decrypt_state.sequence_number, &expected_mac[..8], &received_mac[..std::cmp::min(8, received_mac.len())]);
+            debug!("MAC mismatch! seq={}, algo={}, expected={:?}, received={:?}",
+                   decrypt_state.sequence_number, decrypt_state.mac_algorithm,
+                   &expected_mac[..std::cmp::min(8, expected_mac.len())],
+                   &received_mac[..std::cmp::min(8, received_mac.len())]);
             return Err(crate::error::SshError::ProtocolError(
                 "MAC verification failed".to_string(),
             ));
@@ -869,6 +888,23 @@ impl Transport {
     }
 }
 
+/// Compute MAC using the specified algorithm
+fn compute_mac(algorithm: &str, key: &[u8], data: &[u8]) -> Vec<u8> {
+    match algorithm {
+        "hmac-sha2-256" => {
+            let mut hmac = HmacSha256::new(key);
+            hmac.update(data);
+            hmac.finish().to_vec()
+        }
+        _ => {
+            // Default to HMAC-SHA1 (covers hmac-sha1, hmac-sha1-96, etc.)
+            let mut hmac = HmacSha1::new(key);
+            hmac.update(data);
+            hmac.finish().to_vec()
+        }
+    }
+}
+
 /// Advance a 16-byte CTR IV by the given number of AES blocks
 fn advance_ctr_iv(iv: &mut Vec<u8>, blocks: usize) {
     // IV is treated as a 128-bit big-endian counter
@@ -923,9 +959,7 @@ fn encrypt_packet_cbc(payload: &[u8], state: &mut EncryptionState) -> Result<Vec
     mac_data.extend_from_slice(&state.sequence_number.to_be_bytes());
     mac_data.extend_from_slice(&packet);
 
-    let mut hmac = HmacSha1::new(&state.mac_key);
-    hmac.update(&mac_data);
-    let mac = hmac.finish();
+    let mac = compute_mac(&state.mac_algorithm, &state.mac_key, &mac_data);
 
     // Encrypt the packet
     let encrypted = match state.enc_algorithm.as_str() {
@@ -937,7 +971,7 @@ fn encrypt_packet_cbc(payload: &[u8], state: &mut EncryptionState) -> Result<Vec
             }
             ct
         }
-        "aes128-ctr" => {
+        "aes128-ctr" | "aes192-ctr" | "aes256-ctr" => {
             use crate::crypto::cipher::aes_ctr_encrypt;
             let ct = aes_ctr_encrypt(&state.enc_key, &state.iv, &packet)?;
             // For CTR mode, advance the counter by the number of blocks encrypted
@@ -997,9 +1031,7 @@ fn decrypt_packet_cbc(encrypted_with_mac: &[u8], state: &mut DecryptionState) ->
     mac_data.extend_from_slice(&state.sequence_number.to_be_bytes());
     mac_data.extend_from_slice(&decrypted);
 
-    let mut hmac = HmacSha1::new(&state.mac_key);
-    hmac.update(&mac_data);
-    let expected_mac = hmac.finish();
+    let expected_mac = compute_mac(&state.mac_algorithm, &state.mac_key, &mac_data);
 
     if !expected_mac.iter().eq(received_mac.iter()) {
         return Err(crate::error::SshError::ProtocolError(

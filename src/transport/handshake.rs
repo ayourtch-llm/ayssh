@@ -86,26 +86,44 @@ pub fn parse_version_string(data: &[u8]) -> Result<(u32, String), &'static str> 
 }
 
 /// Generate client KEXINIT message
-pub fn generate_client_kexinit() -> Vec<u8> {
+/// Generate a client KEXINIT with preferred cipher and MAC placed first.
+/// If `preferred_cipher` or `preferred_mac` is None, uses default ordering.
+pub fn generate_client_kexinit_with_prefs(
+    preferred_cipher: Option<&str>,
+    preferred_mac: Option<&str>,
+) -> Vec<u8> {
     let mut buf = BytesMut::with_capacity(200);
-    
-    // SSH_MSG_KEXINIT message type byte (20)
+
     buf.put_u8(20);
-    
-    // 16 bytes of random cookie (RFC 4253 Section 7.1: "MUST be a random value")
+
     let mut cookie = [0u8; 16];
     rand::thread_rng().fill_bytes(&mut cookie);
     buf.put(&cookie[..]);
-    
-    // Negotiation strings (algorithm lists)
-    // Cisco devices typically support diffie-hellman-group1-sha1 and diffie-hellman-group14-sha1
-    // Put the older algorithms first for compatibility with older Cisco devices
+
     let kex_algorithms = "diffie-hellman-group1-sha1,diffie-hellman-group14-sha1,diffie-hellman-group14-sha256,diffie-hellman-group-exchange-sha256,diffie-hellman-group-exchange-sha1,curve25519-sha256";
     let host_key_algorithms = "ssh-rsa,ssh-dss,ecdsa-sha2-nistp256,ecdsa-sha2-nistp384,ecdsa-sha2-nistp521,ssh-ed25519,rsa-sha2-512,rsa-sha2-256";
-    let enc_c2s = "aes128-cbc,3des-cbc,aes192-cbc,aes256-cbc,aes128-ctr,aes192-ctr,aes256-ctr,arcfour256,arcfour128,arcfour";
-    let enc_s2c = "aes128-cbc,3des-cbc,aes192-cbc,aes256-cbc,aes128-ctr,aes192-ctr,aes256-ctr,arcfour256,arcfour128,arcfour";
-    let mac_c2s = "hmac-sha1,hmac-sha1-96,hmac-md5,hmac-md5-96,hmac-ripemd160,hmac-sha2-256,hmac-sha2-512";
-    let mac_s2c = "hmac-sha1,hmac-sha1-96,hmac-md5,hmac-md5-96,hmac-ripemd160,hmac-sha2-256,hmac-sha2-512";
+
+    let default_ciphers = "aes128-cbc,3des-cbc,aes192-cbc,aes256-cbc,aes128-ctr,aes192-ctr,aes256-ctr";
+    let default_macs = "hmac-sha1,hmac-sha1-96,hmac-md5,hmac-md5-96,hmac-sha2-256,hmac-sha2-512";
+
+    // Put preferred algorithm first if specified
+    let enc_list = if let Some(pref) = preferred_cipher {
+        let others: Vec<&str> = default_ciphers.split(',').filter(|c| *c != pref).collect();
+        format!("{},{}", pref, others.join(","))
+    } else {
+        default_ciphers.to_string()
+    };
+    let mac_list = if let Some(pref) = preferred_mac {
+        let others: Vec<&str> = default_macs.split(',').filter(|m| *m != pref).collect();
+        format!("{},{}", pref, others.join(","))
+    } else {
+        default_macs.to_string()
+    };
+
+    let enc_c2s = &enc_list;
+    let enc_s2c = &enc_list;
+    let mac_c2s = &mac_list;
+    let mac_s2c = &mac_list;
     let comp_c2s = "none,zlib@openssh.com";
     let comp_s2c = "none,zlib@openssh.com";
     let lang_c2s = "";
@@ -130,6 +148,11 @@ pub fn generate_client_kexinit() -> Vec<u8> {
     buf.put_u32(0);
     
     buf.to_vec()
+}
+
+/// Generate a client KEXINIT with default algorithm ordering
+pub fn generate_client_kexinit() -> Vec<u8> {
+    generate_client_kexinit_with_prefs(None, None)
 }
 
 /// Parse server KEXINIT message

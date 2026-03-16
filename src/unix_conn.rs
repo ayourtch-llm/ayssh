@@ -78,6 +78,13 @@ impl Default for UnixConnConfig {
 ///     Ok(())
 /// }
 /// ```
+/// Cryptographic algorithm preferences
+#[derive(Debug, Clone, Default)]
+pub struct CryptoPrefs {
+    pub cipher: Option<String>,
+    pub mac: Option<String>,
+}
+
 pub struct UnixConn {
     config: UnixConnConfig,
     transport: crate::transport::Transport,
@@ -93,13 +100,9 @@ impl UnixConn {
         password: &str,
     ) -> Result<Self, SshError> {
         Self::connect_internal(
-            target,
-            conntype,
-            username,
-            password,
-            None,
-            Duration::from_secs(30),
-            Duration::from_secs(30),
+            target, conntype, username, password, None,
+            Duration::from_secs(30), Duration::from_secs(30),
+            CryptoPrefs::default(),
         ).await
     }
 
@@ -112,7 +115,7 @@ impl UnixConn {
         timeout: Duration,
         read_timeout: Duration,
     ) -> Result<Self, SshError> {
-        Self::connect_internal(target, conntype, username, password, None, timeout, read_timeout).await
+        Self::connect_internal(target, conntype, username, password, None, timeout, read_timeout, CryptoPrefs::default()).await
     }
 
     /// Create a new UnixConn with RSA key authentication
@@ -121,15 +124,41 @@ impl UnixConn {
         username: &str,
         private_key: &[u8],
     ) -> Result<Self, SshError> {
+        Self::new_with_key_and_prefs(target, username, private_key, CryptoPrefs::default()).await
+    }
+
+    /// Create a new UnixConn with RSA key authentication and crypto preferences
+    pub async fn new_with_key_and_prefs(
+        target: &str,
+        username: &str,
+        private_key: &[u8],
+        prefs: CryptoPrefs,
+    ) -> Result<Self, SshError> {
         Self::connect_internal(
-            target,
-            ConnectionType::UnixSshKey,
-            username,
-            "",
+            target, ConnectionType::UnixSshKey, username, "",
             Some(private_key.to_vec()),
-            Duration::from_secs(30),
-            Duration::from_secs(30),
+            Duration::from_secs(30), Duration::from_secs(30),
+            prefs,
         ).await
+    }
+
+    /// Set preferred cipher and MAC algorithms for the next connection
+    pub fn with_crypto_prefs(
+        preferred_cipher: Option<String>,
+        preferred_mac: Option<String>,
+    ) -> CryptoPrefs {
+        CryptoPrefs { cipher: preferred_cipher, mac: preferred_mac }
+    }
+
+    /// Create a new UnixConn with specific crypto preferences
+    pub async fn new_with_prefs(
+        target: &str,
+        conntype: ConnectionType,
+        username: &str,
+        password: &str,
+        prefs: CryptoPrefs,
+    ) -> Result<Self, SshError> {
+        Self::connect_internal(target, conntype, username, password, None, Duration::from_secs(30), Duration::from_secs(30), prefs).await
     }
 
     /// Internal connection method that handles all auth types
@@ -141,6 +170,7 @@ impl UnixConn {
         private_key: Option<Vec<u8>>,
         timeout: Duration,
         read_timeout: Duration,
+        crypto_prefs: CryptoPrefs,
     ) -> Result<Self, SshError> {
         let prompts: Vec<String> = vec![
             "$ ".to_string(),
@@ -155,6 +185,12 @@ impl UnixConn {
 
             info!("Connecting to {}...", target);
             let mut transport = client.connect().await?;
+            if let Some(ref cipher) = crypto_prefs.cipher {
+                transport.set_preferred_cipher(cipher);
+            }
+            if let Some(ref mac) = crypto_prefs.mac {
+                transport.set_preferred_mac(mac);
+            }
             transport.handshake().await?;
 
             // Request ssh-userauth service

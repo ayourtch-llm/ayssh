@@ -2,7 +2,7 @@
 
 #![deny(unused_must_use)]
 
-use ssh_client::unix_conn::{UnixConn, ConnectionType};
+use ssh_client::unix_conn::{UnixConn, ConnectionType, CryptoPrefs};
 use std::env;
 use tracing::{info, error};
 use tracing_subscriber;
@@ -21,6 +21,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Parse flags
     let mut key_file: Option<String> = None;
     let mut kbd_interactive = false;
+    let mut preferred_cipher: Option<String> = None;
+    let mut preferred_mac: Option<String> = None;
     let mut filtered_args: Vec<String> = Vec::new();
     let mut skip_next = false;
 
@@ -35,6 +37,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 skip_next = true;
             } else {
                 eprintln!("Error: --key requires a filename argument");
+                std::process::exit(1);
+            }
+        } else if arg == "--cipher" {
+            if let Some(next) = args.get(i + 1) {
+                preferred_cipher = Some(next.clone());
+                skip_next = true;
+            } else {
+                eprintln!("Error: --cipher requires an algorithm name");
+                std::process::exit(1);
+            }
+        } else if arg == "--mac" {
+            if let Some(next) = args.get(i + 1) {
+                preferred_mac = Some(next.clone());
+                skip_next = true;
+            } else {
+                eprintln!("Error: --mac requires an algorithm name");
                 std::process::exit(1);
             }
         } else if arg == "--kbd-interactive" {
@@ -53,6 +71,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("Options:");
         eprintln!("  --key <file>        Use RSA public key authentication");
         eprintln!("  --kbd-interactive   Use keyboard-interactive authentication");
+        eprintln!("  --cipher <name>     Prefer cipher (aes128-ctr, aes256-ctr, aes128-cbc, ...)");
+        eprintln!("  --mac <name>        Prefer MAC (hmac-sha1, hmac-sha2-256, ...)");
         eprintln!("");
         eprintln!("Examples:");
         eprintln!("  {} 192.168.1.1 ubuntu password \"uname -a\"", filtered_args[0]);
@@ -77,7 +97,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let private_key = std::fs::read(key_path)
             .map_err(|e| format!("Failed to read private key {}: {}", key_path, e))?;
 
-        let mut conn = UnixConn::new_with_key(target, username, &private_key).await?;
+        let prefs = CryptoPrefs { cipher: preferred_cipher.clone(), mac: preferred_mac.clone() };
+        let mut conn = UnixConn::new_with_key_and_prefs(target, username, &private_key, prefs).await?;
         println!("Connected with public key authentication!");
 
         run_commands(&mut conn, command).await?;
@@ -98,7 +119,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         info!("Command: {}", command);
         println!("");
 
-        let mut conn = UnixConn::new(target, conn_type, username, password).await?;
+        let prefs = CryptoPrefs { cipher: preferred_cipher.clone(), mac: preferred_mac.clone() };
+        let mut conn = UnixConn::new_with_prefs(target, conn_type, username, password, prefs).await?;
         println!("Connected with {} authentication!", auth_label);
 
         run_commands(&mut conn, command).await?;
