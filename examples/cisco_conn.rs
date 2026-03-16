@@ -4,7 +4,7 @@
 
 #![deny(unused_must_use)]
 
-use ssh_client::cisco_conn::{CiscoConn, ConnectionType};
+use ayssh::cisco_conn::{CiscoConn, ConnectionType};
 use std::env;
 use std::path::Path;
 use tracing::{info, error};

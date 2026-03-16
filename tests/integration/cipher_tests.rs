@@ -1,6 +1,6 @@
 //! AES-GCM cipher tests for SSH
 
-use ssh_client::crypto::cipher::{aes_gcm_decrypt, aes_gcm_encrypt, CipherError};
+use ayssh::crypto::cipher::{aes_gcm_decrypt, aes_gcm_encrypt, CipherError};
 
 /// Test basic encryption and decryption
 #[test]

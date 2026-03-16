@@ -3,7 +3,7 @@
 //! Tests for ChaCha20-Poly1305 AEAD cipher as defined in RFC 8439
 //! Following TDD workflow - tests written before implementation
 
-use ssh_client::crypto::chacha20_poly1305::{
+use ayssh::crypto::chacha20_poly1305::{
     ChaCha20Poly1305, Key, Nonce, TAG_SIZE,
 };
 

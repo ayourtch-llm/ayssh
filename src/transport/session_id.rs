@@ -46,8 +46,8 @@ use crate::protocol::{HashAlgorithm, KexAlgorithm};
 /// # Example
 ///
 /// ```
-/// use ssh_client::transport::session_id::compute_session_id;
-/// use ssh_client::protocol::HashAlgorithm;
+/// use ayssh::transport::session_id::compute_session_id;
+/// use ayssh::protocol::HashAlgorithm;
 ///
 /// let shared_secret = vec![0x00; 32];
 /// let client_version = b"SSH-2.0-ayssh";

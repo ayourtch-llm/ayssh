@@ -1,7 +1,7 @@
 //! Integration tests for Channel state management
 
-use ssh_client::channel::state::{ChannelState, ChannelInfo};
-use ssh_client::channel::types::ChannelId;
+use ayssh::channel::state::{ChannelState, ChannelInfo};
+use ayssh::channel::types::ChannelId;
 
 /// Test 1: Verify ChannelState enum has all variants
 #[test]

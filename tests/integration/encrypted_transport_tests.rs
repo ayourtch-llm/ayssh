@@ -1,5 +1,5 @@
-use ssh_client::transport::encrypted::{CipherState, EncryptedTransport};
-use ssh_client::transport::packet::Packet;
+use ayssh::transport::encrypted::{CipherState, EncryptedTransport};
+use ayssh::transport::packet::Packet;
 
 #[test]
 fn test_cipher_state_aes256_gcm() {

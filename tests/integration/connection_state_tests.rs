@@ -1,7 +1,7 @@
 //! Integration tests for Connection state management
 
-use ssh_client::connection::state::{ConnectionState, ConnectionStateMachine};
-use ssh_client::error::SshError;
+use ayssh::connection::state::{ConnectionState, ConnectionStateMachine};
+use ayssh::error::SshError;
 
 /// Test 1: Verify ConnectionState enum has all variants
 #[test]

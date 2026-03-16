@@ -3,7 +3,7 @@
 use ed25519_dalek::SigningKey as Ed25519SigningKey;
 use rsa::RsaPrivateKey;
 use sha2::{Digest, Sha256};
-use ssh_client::auth::{
+use ayssh::auth::{
     create_signature_data, EcdsaSignatureEncoder, Ed25519SignatureEncoder, PrivateKey,
     PublicKeyAuthenticator, RsaSignatureEncoder, SSH_SIG_ALGORITHM_ED25519, SSH_SIG_ALGORITHM_RSA,
 };
@@ -12,11 +12,11 @@ use ssh_client::auth::{
 mod tests {
     use super::*;
     use bytes::BytesMut;
-    use ssh_client::auth::key::KeyType;
-    use ssh_client::auth::key::PublicKey;
-    use ssh_client::protocol::message::Message;
-    use ssh_client::protocol::messages::MessageType;
-    use ssh_client::transport::Transport;
+    use ayssh::auth::key::KeyType;
+    use ayssh::auth::key::PublicKey;
+    use ayssh::protocol::message::Message;
+    use ayssh::protocol::messages::MessageType;
+    use ayssh::transport::Transport;
     use std::io::Cursor;
 
     #[test]

@@ -1,6 +1,6 @@
 //! CiscoSSH Example - Command execution on Cisco devices
 
-use ssh_client::cisco_ssh::{CiscoSSH, ConnectionType};
+use ayssh::cisco_ssh::{CiscoSSH, ConnectionType};
 use tracing_subscriber;
 
 #[tokio::main]

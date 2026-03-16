@@ -52,6 +52,6 @@ IZOdthyU9ISB5NAvqQAAAA50ZXN0QGxvY2FsaG9zdAECAw==
     }
     
     // Try parsing with the actual function
-    let key = ssh_client::auth::key::PrivateKey::parse_pem(pem_content);
+    let key = ayssh::auth::key::PrivateKey::parse_pem(pem_content);
     println!("Parse result: {:?}", key);
 }

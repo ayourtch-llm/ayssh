@@ -11,7 +11,7 @@
 
 #![deny(unused_must_use)]
 
-use ssh_client::server::{TestSshServer, AlgorithmFilter, HostKeyPair};
+use ayssh::server::{TestSshServer, AlgorithmFilter, HostKeyPair};
 use std::env;
 use tracing::{info, error};
 use tracing_subscriber;

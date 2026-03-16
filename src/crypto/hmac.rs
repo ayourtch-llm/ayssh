@@ -16,7 +16,7 @@ use sha1::Digest;
 /// # Example
 ///
 /// ```
-/// use ssh_client::crypto::hmac::{HmacSha256, compute};
+/// use ayssh::crypto::hmac::{HmacSha256, compute};
 ///
 /// // Streaming computation
 /// let key = b"secret";
@@ -189,7 +189,7 @@ impl HmacSha1 {
 /// # Example
 ///
 /// ```
-/// use ssh_client::crypto::hmac::compute;
+/// use ayssh::crypto::hmac::compute;
 ///
 /// let key = b"secret";
 /// let data = b"Hello, World!";

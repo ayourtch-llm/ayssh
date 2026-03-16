@@ -1,6 +1,6 @@
 //! Algorithm negotiation tests for SSH protocol
 
-use ssh_client::protocol::AlgorithmProposal;
+use ayssh::protocol::AlgorithmProposal;
 
 #[test]
 fn test_client_proposal_has_default_algorithms() {

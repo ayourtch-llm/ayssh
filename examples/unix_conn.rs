@@ -2,7 +2,7 @@
 
 #![deny(unused_must_use)]
 
-use ssh_client::unix_conn::{UnixConn, ConnectionType, CryptoPrefs};
+use ayssh::unix_conn::{UnixConn, ConnectionType, CryptoPrefs};
 use std::env;
 use tracing::{info, error};
 use tracing_subscriber;

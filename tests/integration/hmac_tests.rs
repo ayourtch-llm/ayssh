@@ -2,7 +2,7 @@
 //!
 //! These test vectors are from RFC 4231 Section 4, which provides official test vectors for HMAC-SHA-256.
 
-use ssh_client::crypto::hmac::{HmacSha256, compute};
+use ayssh::crypto::hmac::{HmacSha256, compute};
 
 /// Test vector 1 from RFC 4231 Section 4.2
 /// Key: 20 bytes of 0x0b

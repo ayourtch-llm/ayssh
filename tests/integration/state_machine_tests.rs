@@ -1,7 +1,7 @@
 //! Transport State Machine Integration Tests (TDD)
 
-use ssh_client::transport::state::{State, TransportStateMachine};
-use ssh_client::protocol::MessageType;
+use ayssh::transport::state::{State, TransportStateMachine};
+use ayssh::protocol::MessageType;
 
 #[tokio::test]
 async fn test_new_state_machine_starts_in_handshake() {
@@ -19,7 +19,7 @@ async fn test_handshake_to_keyexchange_on_kexinit() {
     assert_eq!(sm.current_state(), State::Handshake);
     
     let result = sm.process_message(MessageType::KexInit).unwrap();
-    assert_eq!(result, ssh_client::transport::state::MessageResult::Transitioned(State::KeyExchange));
+    assert_eq!(result, ayssh::transport::state::MessageResult::Transitioned(State::KeyExchange));
     assert_eq!(sm.current_state(), State::KeyExchange);
 }
 
@@ -33,7 +33,7 @@ async fn test_keyexchange_to_established_on_newkeys() {
     
     // Then transition to Established
     let result = sm.process_message(MessageType::Newkeys).unwrap();
-    assert_eq!(result, ssh_client::transport::state::MessageResult::Transitioned(State::Established));
+    assert_eq!(result, ayssh::transport::state::MessageResult::Transitioned(State::Established));
     assert_eq!(sm.current_state(), State::Established);
 }
 

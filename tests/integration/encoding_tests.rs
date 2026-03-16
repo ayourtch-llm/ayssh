@@ -1,5 +1,5 @@
 use bytes::{BufMut, BytesMut};
-use ssh_client::protocol::{SshString, SshUint32};
+use ayssh::protocol::{SshString, SshUint32};
 
 #[test]
 fn test_ssh_string_encode_decode() {

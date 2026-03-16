@@ -1,8 +1,8 @@
 //! Tests for keyboard-interactive authentication (RFC 4256)
 
-use ssh_client::auth::keyboard::{Challenge, ChallengePrompt};
-use ssh_client::protocol::message::Message;
-use ssh_client::protocol::messages::MessageType;
+use ayssh::auth::keyboard::{Challenge, ChallengePrompt};
+use ayssh::protocol::message::Message;
+use ayssh::protocol::messages::MessageType;
 
 #[test]
 fn test_parse_challenge() {

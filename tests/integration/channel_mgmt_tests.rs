@@ -1,11 +1,11 @@
 //! Integration tests for Channel management in SSH client
 //! Tests for `src/channel/state.rs` - ChannelManager implementation
 
-use ssh_client::channel::state::ChannelManager;
-use ssh_client::channel::types::{
+use ayssh::channel::state::ChannelManager;
+use ayssh::channel::types::{
     ChannelId, ChannelOpenRequest, ChannelRequest, ChannelType, ReasonCode,
 };
-use ssh_client::channel::state::{ChannelInfo, ChannelState};
+use ayssh::channel::state::{ChannelInfo, ChannelState};
 
 /// Helper to create a basic channel open request
 fn create_session_request() -> ChannelOpenRequest {

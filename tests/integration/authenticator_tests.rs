@@ -1,8 +1,8 @@
 //! Integration tests for Authenticator module
 
-use ssh_client::auth::{Authenticator, AuthenticationResult, AuthState, AuthMethodManager};
-use ssh_client::error::SshError;
-use ssh_client::protocol::AuthMethod as ProtocolAuthMethod;
+use ayssh::auth::{Authenticator, AuthenticationResult, AuthState, AuthMethodManager};
+use ayssh::error::SshError;
+use ayssh::protocol::AuthMethod as ProtocolAuthMethod;
 
 /// Test 1: Verify Authenticator::new() creates authenticator with default state
 #[tokio::test]
@@ -112,7 +112,7 @@ fn test_auth_result_debug() {
 /// Test 13: Test AuthenticationRequest structure
 #[test]
 fn test_auth_request_structure() {
-    use ssh_client::auth::AuthenticationRequest;
+    use ayssh::auth::AuthenticationRequest;
     
     let request = AuthenticationRequest {
         username: "testuser".to_string(),
@@ -128,7 +128,7 @@ fn test_auth_request_structure() {
 /// Test 14: Test AuthenticationRequest Clone
 #[test]
 fn test_auth_request_clone() {
-    use ssh_client::auth::AuthenticationRequest;
+    use ayssh::auth::AuthenticationRequest;
     
     let request1 = AuthenticationRequest {
         username: "testuser".to_string(),
@@ -209,7 +209,7 @@ fn test_auth_state_invalid_transitions() {
 #[test]
 fn test_auth_state_status() {
     let state = AuthState::new();
-    assert!(matches!(state.status(), &ssh_client::auth::state::AuthStatus::NotAuthenticating));
+    assert!(matches!(state.status(), &ayssh::auth::state::AuthStatus::NotAuthenticating));
 }
 
 /// Test 22: Test AuthState debug
@@ -239,7 +239,7 @@ fn test_auth_state_clone() {
 /// Test 25: Test AuthStatus enum
 #[test]
 fn test_auth_status_enum() {
-    use ssh_client::auth::state::AuthStatus;
+    use ayssh::auth::state::AuthStatus;
     
     assert!(matches!(AuthStatus::NotAuthenticating, AuthStatus::NotAuthenticating));
     assert!(matches!(AuthStatus::Authenticating, AuthStatus::Authenticating));
@@ -250,7 +250,7 @@ fn test_auth_status_enum() {
 /// Test 26: Test AuthStatus debug
 #[test]
 fn test_auth_status_debug() {
-    use ssh_client::auth::state::AuthStatus;
+    use ayssh::auth::state::AuthStatus;
     
     assert!(format!("{:?}", AuthStatus::NotAuthenticating).contains("NotAuthenticating"));
     assert!(format!("{:?}", AuthStatus::Authenticated).contains("Authenticated"));
@@ -259,7 +259,7 @@ fn test_auth_status_debug() {
 /// Test 27: Test AuthStatus clone
 #[test]
 fn test_auth_status_clone() {
-    use ssh_client::auth::state::AuthStatus;
+    use ayssh::auth::state::AuthStatus;
     
     let status = AuthStatus::Authenticated;
     let cloned = status.clone();
@@ -269,7 +269,7 @@ fn test_auth_status_clone() {
 /// Test 28: Test AuthStatus PartialEq
 #[test]
 fn test_auth_status_partial_eq() {
-    use ssh_client::auth::state::AuthStatus;
+    use ayssh::auth::state::AuthStatus;
     
     assert_eq!(AuthStatus::Authenticated, AuthStatus::Authenticated);
     assert_ne!(AuthStatus::Authenticated, AuthStatus::Failed);
@@ -278,8 +278,8 @@ fn test_auth_status_partial_eq() {
 /// Test 29: Test PasswordAuthenticator structure
 #[test]
 fn test_password_authenticator_new() {
-    use ssh_client::auth::PasswordAuthenticator;
-    use ssh_client::transport::Transport;
+    use ayssh::auth::PasswordAuthenticator;
+    use ayssh::transport::Transport;
     
     // Note: We can't create a real Transport without a server, so we verify the struct exists
     assert!(true); // Placeholder - real test requires Transport mock
@@ -288,8 +288,8 @@ fn test_password_authenticator_new() {
 /// Test 30: Test PublicKeyAuthenticator structure
 #[test]
 fn test_publickey_authenticator_new() {
-    use ssh_client::auth::PublicKeyAuthenticator;
-    use ssh_client::transport::Transport;
+    use ayssh::auth::PublicKeyAuthenticator;
+    use ayssh::transport::Transport;
     
     // Note: We can't create a real Transport without a server, so we verify the struct exists
     assert!(true); // Placeholder - real test requires Transport mock

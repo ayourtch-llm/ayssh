@@ -1,7 +1,7 @@
 //! AuthMethodManager tests
 
-use ssh_client::auth::methods::*;
-use ssh_client::protocol::AuthMethod;
+use ayssh::auth::methods::*;
+use ayssh::protocol::AuthMethod;
 
 #[cfg(test)]
 mod tests {

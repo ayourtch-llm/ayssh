@@ -1,6 +1,6 @@
 //! Version exchange tests for SSH protocol
 
-use ssh_client::transport::handshake::{parse_version_string, SSH_VERSION_STRING};
+use ayssh::transport::handshake::{parse_version_string, SSH_VERSION_STRING};
 
 #[test]
 fn test_client_version_string_format() {

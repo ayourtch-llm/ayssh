@@ -2,13 +2,13 @@
 //!
 //! Tests the complete SSH handshake flow from version exchange to established state
 
-use ssh_client::protocol::{AlgorithmProposal, KexAlgorithm, HashAlgorithm as ProtocolHashAlgorithm};
-use ssh_client::crypto::kdf::HashAlgorithm;
-use ssh_client::transport::{
+use ayssh::protocol::{AlgorithmProposal, KexAlgorithm, HashAlgorithm as ProtocolHashAlgorithm};
+use ayssh::crypto::kdf::HashAlgorithm;
+use ayssh::transport::{
     HandshakeState, TransportStateMachine, State, generate_client_kexinit, compute_session_id, hash_algorithm_for_kex
 };
-use ssh_client::transport::version::parse_version_string;
-use ssh_client::crypto::{dh::DhGroup, kdf::kdf};
+use ayssh::transport::version::parse_version_string;
+use ayssh::crypto::{dh::DhGroup, kdf::kdf};
 
 #[test]
 fn test_complete_handshake_flow() {
@@ -205,7 +205,7 @@ fn test_session_id_uniqueness() {
 
 #[test]
 fn test_kex_algorithm_hash_mapping() {
-    use ssh_client::protocol::KexAlgorithm;
+    use ayssh::protocol::KexAlgorithm;
     
     assert_eq!(hash_algorithm_for_kex(KexAlgorithm::DiffieHellmanGroup14Sha256), ProtocolHashAlgorithm::Sha256);
     assert_eq!(hash_algorithm_for_kex(KexAlgorithm::DiffieHellmanGroup16Sha512), ProtocolHashAlgorithm::Sha384);

@@ -1,25 +1,25 @@
 //! Session Management Integration Tests (RFC 4254)
 
-use ssh_client::session::{Session, WindowDimensions, TerminalModes, TerminalMode, ReadUint32};
-use ssh_client::channel::types::{Channel, ChannelId, ChannelType};
-use ssh_client::protocol::messages::MessageType;
+use ayssh::session::{Session, WindowDimensions, TerminalModes, TerminalMode, ReadUint32};
+use ayssh::channel::types::{Channel, ChannelId, ChannelType};
+use ayssh::protocol::messages::MessageType;
 
 #[test]
 fn test_window_dimensions_creation() {
     // Test default dimensions
-    let dims = ssh_client::session::WindowDimensions::default_terminal();
+    let dims = ayssh::session::WindowDimensions::default_terminal();
     assert_eq!(dims.width_chars, 80);
     assert_eq!(dims.height_chars, 24);
     assert_eq!(dims.width_pixels, 0);
     assert_eq!(dims.height_pixels, 0);
 
     // Test custom dimensions
-    let dims = ssh_client::session::WindowDimensions::new(120, 40);
+    let dims = ayssh::session::WindowDimensions::new(120, 40);
     assert_eq!(dims.width_chars, 120);
     assert_eq!(dims.height_chars, 40);
 
     // Test with pixels
-    let dims = ssh_client::session::WindowDimensions::with_pixels(120, 40, 960, 800);
+    let dims = ayssh::session::WindowDimensions::with_pixels(120, 40, 960, 800);
     assert_eq!(dims.width_chars, 120);
     assert_eq!(dims.height_chars, 40);
     assert_eq!(dims.width_pixels, 960);
@@ -260,8 +260,8 @@ fn test_session_request_env() {
 
 #[test]
 fn debug_env_message() {
-    use ssh_client::channel::{Channel, ChannelId, ChannelType};
-    use ssh_client::session::Session;
+    use ayssh::channel::{Channel, ChannelId, ChannelType};
+    use ayssh::session::Session;
     
     let channel = Channel::new(
         ChannelId::new(1),
@@ -411,8 +411,8 @@ fn test_session_send_keepalive() {
 
 #[test]
 fn debug_keepalive_message() {
-    use ssh_client::channel::{Channel, ChannelId, ChannelType};
-    use ssh_client::session::Session;
+    use ayssh::channel::{Channel, ChannelId, ChannelType};
+    use ayssh::session::Session;
     
     let channel = Channel::new(
         ChannelId::new(1),

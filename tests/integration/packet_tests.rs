@@ -1,4 +1,4 @@
-use ssh_client::crypto::packet::{calculate_padding, Packet, PacketReader, PacketWriter};
+use ayssh::crypto::packet::{calculate_padding, Packet, PacketReader, PacketWriter};
 
 #[test]
 fn test_packet_construction() {

@@ -3,13 +3,13 @@
 //! This is the main entry point for the SSH client application.
 //! It provides a command-line interface for connecting to SSH servers.
 
-use ssh_client::{init_logging, NAME, VERSION};
+use ayssh::{init_logging, NAME, VERSION};
 use tracing::{debug, info};
 
 fn print_usage() {
     println!("SSH Client v{}", VERSION);
     println!();
-    println!("Usage: ssh_client [OPTIONS]");
+    println!("Usage: ayssh [OPTIONS]");
     println!();
     println!("Options:");
     println!("  -h, --help       Print this help message");
@@ -17,8 +17,8 @@ fn print_usage() {
     println!("  --debug          Enable debug logging");
     println!();
     println!("Examples:");
-    println!("  ssh_client --debug");
-    println!("  RUST_LOG=info ssh_client");
+    println!("  ayssh --debug");
+    println!("  RUST_LOG=info ayssh");
 }
 
 fn print_version() {

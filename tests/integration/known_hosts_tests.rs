@@ -1,6 +1,6 @@
 //! Known Hosts Tests
 
-use ssh_client::known_hosts::{KnownHosts, HostKey, HostKeyType, MatchPattern};
+use ayssh::known_hosts::{KnownHosts, HostKey, HostKeyType, MatchPattern};
 use std::io::Cursor;
 
 #[test]

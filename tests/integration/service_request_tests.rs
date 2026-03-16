@@ -1,7 +1,7 @@
 //! Service Request Integration Tests
 
-use ssh_client::protocol::messages::MessageType;
-use ssh_client::transport::state::{State, TransportStateMachine};
+use ayssh::protocol::messages::MessageType;
+use ayssh::transport::state::{State, TransportStateMachine};
 use std::io::{Cursor, Read, Write};
 
 #[test]

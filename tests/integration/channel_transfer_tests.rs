@@ -1,7 +1,7 @@
 //! Channel Data Transfer Integration Tests
 
-use ssh_client::channel::{ChannelTransferManager, ChannelId};
-use ssh_client::protocol::messages::MessageType;
+use ayssh::channel::{ChannelTransferManager, ChannelId};
+use ayssh::protocol::messages::MessageType;
 use std::io::{Cursor, Read, Write};
 
 #[test]

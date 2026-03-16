@@ -62,7 +62,7 @@ impl Default for UnixConnConfig {
 /// # Example
 ///
 /// ```no_run
-/// use ssh_client::unix_conn::{UnixConn, ConnectionType};
+/// use ayssh::unix_conn::{UnixConn, ConnectionType};
 ///
 /// #[tokio::main]
 /// async fn main() -> Result<(), Box<dyn std::error::Error>> {

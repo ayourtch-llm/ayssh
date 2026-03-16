@@ -1,9 +1,9 @@
 //! Password Authentication Tests (TDD)
 
 use bytes::BytesMut;
-use ssh_client::auth::password::PasswordAuthenticator;
-use ssh_client::protocol::message::Message;
-use ssh_client::protocol::messages::MessageType;
+use ayssh::auth::password::PasswordAuthenticator;
+use ayssh::protocol::message::Message;
+use ayssh::protocol::messages::MessageType;
 
 #[test]
 fn test_password_auth_request_format() {
@@ -96,14 +96,14 @@ fn test_password_encoding_with_special_characters() {
     let special_password = "p@ssw0rd!#$%&*()";
     
     let mut buf = BytesMut::new();
-    ssh_client::utils::string::write_string(&mut buf, special_password);
+    ayssh::utils::string::write_string(&mut buf, special_password);
     
     // Should encode as length-prefixed string
     assert!(buf.len() > special_password.len());
     
     // Decode and verify - create a new buf from the data
     let mut decode_buf = &buf[..];
-    let decoded = ssh_client::protocol::types::SshString::decode(&mut decode_buf).unwrap();
+    let decoded = ayssh::protocol::types::SshString::decode(&mut decode_buf).unwrap();
     assert_eq!(decoded.to_str().unwrap(), special_password);
 }
 

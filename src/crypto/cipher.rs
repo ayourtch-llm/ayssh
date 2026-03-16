@@ -88,7 +88,7 @@ pub enum CipherError {
 /// # Example
 ///
 /// ```
-/// use ssh_client::crypto::cipher::{aes_gcm_encrypt, aes_gcm_decrypt};
+/// use ayssh::crypto::cipher::{aes_gcm_encrypt, aes_gcm_decrypt};
 ///
 /// let key = vec![0x00; 32];
 /// let nonce = vec![0x00; 12];
@@ -146,7 +146,7 @@ pub fn aes_gcm_encrypt(key: &[u8], nonce: &[u8], plaintext: &[u8]) -> Result<Vec
 /// # Example
 ///
 /// ```
-/// use ssh_client::crypto::cipher::{aes_gcm_encrypt, aes_gcm_decrypt};
+/// use ayssh::crypto::cipher::{aes_gcm_encrypt, aes_gcm_decrypt};
 ///
 /// let key = vec![0x00; 32];
 /// let nonce = vec![0x00; 12];

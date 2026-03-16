@@ -1,6 +1,6 @@
 //! Test for real RSA signature computation in authentication flow
 
-use ssh_client::auth::{create_signature_data, RsaSignatureEncoder, SshSignature};
+use ayssh::auth::{create_signature_data, RsaSignatureEncoder, SshSignature};
 
 #[cfg(test)]
 mod tests {

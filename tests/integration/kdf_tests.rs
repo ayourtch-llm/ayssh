@@ -2,7 +2,7 @@
 //!
 //! These tests verify the KDF implementation according to RFC 4253 Section 7.
 
-use ssh_client::crypto::kdf::{kdf, HashAlgorithm};
+use ayssh::crypto::kdf::{kdf, HashAlgorithm};
 
 /// Test simple KDF derivation (32 bytes output)
 #[test]

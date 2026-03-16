@@ -8,7 +8,7 @@
 //! # Example
 //!
 //! ```no_run
-//! use ssh_client::Config;
+//! use ayssh::Config;
 //!
 //! // Example configuration
 //! let config = Config::new()
@@ -49,6 +49,7 @@ pub use channel::ChannelType;
 pub use channel::ChannelManager;
 pub use channel::ChannelTransferManager;
 pub use cisco_conn::CiscoConn;
+pub use cisco_conn::ConnectionType;
 pub use client::SshClient;
 pub use unix_conn::UnixConn;
 pub use config::Config;

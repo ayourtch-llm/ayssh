@@ -1,11 +1,11 @@
 [package]
-name = "ssh_client"
+name = "ayssh"
 version = "0.1.0"
 edition = "2021"
-authors = ["SSH Client Team"]
-description = "A Rust SSH client library and binary"
+authors = ["Andrew Yourtchenko"]
+description = "A Rust SSH client and server library"
 license = "MIT"
-keywords = ["ssh", "async", "network", "client"]
+keywords = ["ssh", "async", "network", "client", "server"]
 categories = ["network-programming", "command-line-utilities"]
 readme = "README.md"
 
@@ -105,7 +105,7 @@ tempfile = "3.9"
 rand = "0.8"
 
 [lib]
-name = "ssh_client"
+name = "ayssh"
 path = "src/lib.rs"
 
 [[bin]]

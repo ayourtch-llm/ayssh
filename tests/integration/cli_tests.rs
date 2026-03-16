@@ -4,16 +4,16 @@
 #[test]
 fn test_cli_no_arguments() {
     // Simulate running with no arguments
-    let args = vec!["ssh_client".to_string()];
+    let args = vec!["ayssh".to_string()];
     
     assert_eq!(args.len(), 1);
-    assert_eq!(args[0], "ssh_client");
+    assert_eq!(args[0], "ayssh");
 }
 
 /// Test 2: Test CLI with --help flag
 #[test]
 fn test_cli_help_flag() {
-    let args = vec!["ssh_client".to_string(), "--help".to_string()];
+    let args = vec!["ayssh".to_string(), "--help".to_string()];
     
     assert!(args.contains(&"--help".to_string()));
 }
@@ -21,7 +21,7 @@ fn test_cli_help_flag() {
 /// Test 3: Test CLI with -h flag
 #[test]
 fn test_cli_short_help_flag() {
-    let args = vec!["ssh_client".to_string(), "-h".to_string()];
+    let args = vec!["ayssh".to_string(), "-h".to_string()];
     
     assert!(args.contains(&"-h".to_string()));
 }
@@ -29,7 +29,7 @@ fn test_cli_short_help_flag() {
 /// Test 4: Test CLI with --version flag
 #[test]
 fn test_cli_version_flag() {
-    let args = vec!["ssh_client".to_string(), "--version".to_string()];
+    let args = vec!["ayssh".to_string(), "--version".to_string()];
     
     assert!(args.contains(&"--version".to_string()));
 }
@@ -37,7 +37,7 @@ fn test_cli_version_flag() {
 /// Test 5: Test CLI with -v flag
 #[test]
 fn test_cli_short_version_flag() {
-    let args = vec!["ssh_client".to_string(), "-v".to_string()];
+    let args = vec!["ayssh".to_string(), "-v".to_string()];
     
     assert!(args.contains(&"-v".to_string()));
 }
@@ -45,7 +45,7 @@ fn test_cli_short_version_flag() {
 /// Test 6: Test CLI with --debug flag
 #[test]
 fn test_cli_debug_flag() {
-    let args = vec!["ssh_client".to_string(), "--debug".to_string()];
+    let args = vec!["ayssh".to_string(), "--debug".to_string()];
     
     assert!(args.contains(&"--debug".to_string()));
 }
@@ -54,7 +54,7 @@ fn test_cli_debug_flag() {
 #[test]
 fn test_cli_multiple_flags() {
     let args = vec![
-        "ssh_client".to_string(),
+        "ayssh".to_string(),
         "--debug".to_string(),
         "--help".to_string(),
     ];
@@ -66,7 +66,7 @@ fn test_cli_multiple_flags() {
 /// Test 8: Test CLI with unknown flag
 #[test]
 fn test_cli_unknown_flag() {
-    let args = vec!["ssh_client".to_string(), "--unknown".to_string()];
+    let args = vec!["ayssh".to_string(), "--unknown".to_string()];
     
     assert!(args.contains(&"--unknown".to_string()));
 }
@@ -75,7 +75,7 @@ fn test_cli_unknown_flag() {
 #[test]
 fn test_cli_argument_parsing() {
     let args = vec![
-        "ssh_client".to_string(),
+        "ayssh".to_string(),
         "--debug".to_string(),
         "--help".to_string(),
     ];
@@ -116,7 +116,7 @@ fn test_cli_empty_args() {
 #[test]
 fn test_cli_many_arguments() {
     let args = vec![
-        "ssh_client".to_string(),
+        "ayssh".to_string(),
         "--debug".to_string(),
         "--help".to_string(),
         "--version".to_string(),
@@ -134,13 +134,13 @@ fn test_cli_many_arguments() {
 #[test]
 fn test_cli_argument_order() {
     let args1 = vec![
-        "ssh_client".to_string(),
+        "ayssh".to_string(),
         "--debug".to_string(),
         "--help".to_string(),
     ];
     
     let args2 = vec![
-        "ssh_client".to_string(),
+        "ayssh".to_string(),
         "--help".to_string(),
         "--debug".to_string(),
     ];

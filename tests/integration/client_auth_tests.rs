@@ -1,7 +1,7 @@
 //! Integration tests for Client authentication integration
 
-use ssh_client::client::SshClient;
-use ssh_client::auth::AuthMethod;
+use ayssh::client::SshClient;
+use ayssh::auth::AuthMethod;
 
 /// Test 1: Test Client with password authentication configuration
 #[tokio::test]

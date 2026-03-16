@@ -65,7 +65,7 @@ impl Default for CiscoSSHConfig {
 /// # Example
 ///
 /// ```no_run
-/// use ssh_client::cisco_ssh::{CiscoSSH, ConnectionType};
+/// use ayssh::cisco_ssh::{CiscoSSH, ConnectionType};
 ///
 /// #[tokio::main]
 /// async fn main() -> Result<(), Box<dyn std::error::Error>> {

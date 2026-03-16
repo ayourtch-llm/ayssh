@@ -1,7 +1,7 @@
 //! Integration tests for AuthState module
 
-use ssh_client::auth::state::{AuthState, AuthStatus};
-use ssh_client::error::SshError;
+use ayssh::auth::state::{AuthState, AuthStatus};
+use ayssh::error::SshError;
 
 /// Test 1: Verify AuthState::new() creates state with NotAuthenticating status
 #[test]

@@ -13,9 +13,9 @@
 
 #![deny(unused_must_use)]
 
-use ssh_client::server::{TestSshServer, AlgorithmFilter, HostKeyPair};
-use ssh_client::server::encrypted_io::ServerEncryptedIO;
-use ssh_client::error::SshError;
+use ayssh::server::{TestSshServer, AlgorithmFilter, HostKeyPair};
+use ayssh::server::encrypted_io::ServerEncryptedIO;
+use ayssh::error::SshError;
 
 use bytes::{BufMut, BytesMut};
 use std::env;

@@ -57,8 +57,8 @@ pub enum HashAlgorithm {
 /// # Example
 ///
 /// ```
-/// use ssh_client::crypto::kdf::kdf;
-/// use ssh_client::crypto::HashAlgorithm;
+/// use ayssh::crypto::kdf::kdf;
+/// use ayssh::crypto::HashAlgorithm;
 ///
 /// // Derive an AES-256 encryption key using SHA-256
 /// let shared_secret = b"dh_shared_secret";

@@ -6,18 +6,18 @@
 //! - RFC 4252: SSH Authentication Protocol
 //! - RFC 4254: SSH Connection Protocol
 
-use ssh_client::protocol::types::{SshBoolean, SshMpint, SshNameList, SshString, SshUint32, SshUint64};
-use ssh_client::protocol::transport_messages::{
+use ayssh::protocol::types::{SshBoolean, SshMpint, SshNameList, SshString, SshUint32, SshUint64};
+use ayssh::protocol::transport_messages::{
     DebugMessage, DisconnectMessage, DisconnectReason, IgnoreMessage, UnimplementedMessage,
 };
-use ssh_client::protocol::messages::MessageType;
-use ssh_client::protocol::algorithms::AlgorithmProposal;
-use ssh_client::transport::version::{parse_version_string, MAX_VERSION_STRING_LENGTH};
-use ssh_client::transport::packet::{Packet, PACKET_HEADER_LEN, MIN_PADDING, MAX_PADDING,
+use ayssh::protocol::messages::MessageType;
+use ayssh::protocol::algorithms::AlgorithmProposal;
+use ayssh::transport::version::{parse_version_string, MAX_VERSION_STRING_LENGTH};
+use ayssh::transport::packet::{Packet, PACKET_HEADER_LEN, MIN_PADDING, MAX_PADDING,
     MIN_PACKET_SIZE, RFC_MAX_PACKET_SIZE, RFC_MAX_PAYLOAD_SIZE};
-use ssh_client::channel::ChannelId;
-use ssh_client::channel::state::{ChannelManager, ChannelState};
-use ssh_client::channel::types::{ChannelOpenRequest, ChannelType};
+use ayssh::channel::ChannelId;
+use ayssh::channel::state::{ChannelManager, ChannelState};
+use ayssh::channel::types::{ChannelOpenRequest, ChannelType};
 use bytes::BytesMut;
 
 // ============================================================================
@@ -736,7 +736,7 @@ fn test_rfc4253_sequence_number_32bit() {
 fn test_rfc4253_mac_over_unencrypted_packet() {
     // RFC 4253 Section 6.4: "mac = MAC(key, sequence_number || unencrypted_packet)"
     // The MAC is computed over the unencrypted packet, not the encrypted one
-    use ssh_client::crypto::hmac::compute;
+    use ayssh::crypto::hmac::compute;
 
     let key = vec![0x42u8; 32];
     let seq: u32 = 0;

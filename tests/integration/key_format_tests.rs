@@ -1,6 +1,6 @@
 //! Integration tests for Key format handling
 
-use ssh_client::keys::KeyPair;
+use ayssh::keys::KeyPair;
 
 /// Test 1: Verify KeyPair::new() creates key pair with correct properties
 #[test]

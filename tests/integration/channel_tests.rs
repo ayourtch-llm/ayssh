@@ -1,12 +1,12 @@
 //! Channel Management Integration Tests (RFC 4254)
 
-use ssh_client::channel::types::{
+use ayssh::channel::types::{
     Channel, ChannelClose, ChannelData, ChannelEof, ChannelId, ChannelOpenConfirmation,
     ChannelOpenFailure, ChannelOpenRequest, ChannelRequest, ChannelSuccessOrFailure, ChannelType,
     ReasonCode,
 };
-use ssh_client::protocol::message::Message;
-use ssh_client::protocol::messages::MessageType;
+use ayssh::protocol::message::Message;
+use ayssh::protocol::messages::MessageType;
 
 #[test]
 fn test_channel_open_request_encoding() {

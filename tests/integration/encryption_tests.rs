@@ -1,8 +1,8 @@
 //! Encryption tests for SSH transport layer
 
-use ssh_client::transport::cipher::CipherState;
-use ssh_client::crypto::cipher::CipherError;
-use ssh_client::crypto::kdf::{kdf, HashAlgorithm};
+use ayssh::transport::cipher::CipherState;
+use ayssh::crypto::cipher::CipherError;
+use ayssh::crypto::kdf::{kdf, HashAlgorithm};
 
 #[test]
 fn test_cipher_initialization() {

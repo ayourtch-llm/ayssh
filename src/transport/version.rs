@@ -55,7 +55,7 @@ pub async fn recv_version<T: AsyncReadExt + Unpin>(stream: &mut T) -> Result<Str
 /// # Example
 ///
 /// ```
-/// use ssh_client::transport::version::parse_version_string;
+/// use ayssh::transport::version::parse_version_string;
 ///
 /// let data = b"SSH-2.0-OpenSSH_8.4\r\n";
 /// let (protocol_version, software_version) = parse_version_string(data).unwrap();

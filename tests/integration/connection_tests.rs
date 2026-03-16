@@ -1,4 +1,4 @@
-use ssh_client::connection::state::{ConnectionState, ConnectionStateMachine};
+use ayssh::connection::state::{ConnectionState, ConnectionStateMachine};
 
 #[test]
 fn test_connection_state_machine() {
@@ -51,7 +51,7 @@ fn test_server_version() {
 #[test]
 fn test_algorithms() {
     let mut machine = ConnectionStateMachine::new();
-    let algo = ssh_client::protocol::algorithms::NegotiatedAlgorithms::default();
+    let algo = ayssh::protocol::algorithms::NegotiatedAlgorithms::default();
     
     machine.set_algorithms(algo.clone());
     

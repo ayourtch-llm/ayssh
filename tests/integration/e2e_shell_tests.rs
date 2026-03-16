@@ -2,9 +2,9 @@
 //!
 //! Tests shell command execution over SSH with real sshd server
 
-use ssh_client::session::{Session, WindowDimensions, TerminalModes};
-use ssh_client::channel::types::{Channel, ChannelId, ChannelType};
-use ssh_client::protocol::messages::MessageType;
+use ayssh::session::{Session, WindowDimensions, TerminalModes};
+use ayssh::channel::types::{Channel, ChannelId, ChannelType};
+use ayssh::protocol::messages::MessageType;
 
 /// Test shell request message format
 #[test]
@@ -73,11 +73,11 @@ fn test_session_shell_state_transition() {
     let mut session = Session::new_without_shell(channel);
 
     // Initial state
-    assert_eq!(session.state(), &ssh_client::session::SessionState::Initial);
+    assert_eq!(session.state(), &ayssh::session::SessionState::Initial);
 
     // Start shell
     session.start_shell().unwrap();
-    assert_eq!(session.state(), &ssh_client::session::SessionState::Shell);
+    assert_eq!(session.state(), &ayssh::session::SessionState::Shell);
 
     // Cannot start shell again (would be a protocol error)
     // This would need to be tested with proper error handling
@@ -169,11 +169,11 @@ fn test_session_exec_state_transition() {
     let mut session = Session::new_without_shell(channel);
 
     // Initial state
-    assert_eq!(session.state(), &ssh_client::session::SessionState::Initial);
+    assert_eq!(session.state(), &ayssh::session::SessionState::Initial);
 
     // Start exec
     session.start_exec().unwrap();
-    assert_eq!(session.state(), &ssh_client::session::SessionState::Executing);
+    assert_eq!(session.state(), &ayssh::session::SessionState::Executing);
 }
 
 /// Test shell request encoding
@@ -361,10 +361,10 @@ fn test_session_no_shell_handle() {
 #[test]
 fn test_shell_handle_methods_exist() {
     // This is a compile-time check to ensure methods exist
-    let _ = ssh_client::session::InteractiveShell::write;
-    let _ = ssh_client::session::InteractiveShell::read_stdout;
-    let _ = ssh_client::session::InteractiveShell::read_stderr;
-    let _ = ssh_client::session::InteractiveShell::close;
+    let _ = ayssh::session::InteractiveShell::write;
+    let _ = ayssh::session::InteractiveShell::read_stdout;
+    let _ = ayssh::session::InteractiveShell::read_stderr;
+    let _ = ayssh::session::InteractiveShell::close;
 }
 
 /// Test shell state management
@@ -436,15 +436,15 @@ fn test_shell_eof_handling() {
     let mut session = Session::new(channel);
 
     // Initial state
-    assert_eq!(session.state(), &ssh_client::session::SessionState::Initial);
+    assert_eq!(session.state(), &ayssh::session::SessionState::Initial);
 
     // Start shell
     session.start_shell().unwrap();
-    assert_eq!(session.state(), &ssh_client::session::SessionState::Shell);
+    assert_eq!(session.state(), &ayssh::session::SessionState::Shell);
 
     // Handle EOF
     session.handle_eof();
-    assert_eq!(session.state(), &ssh_client::session::SessionState::Closed);
+    assert_eq!(session.state(), &ayssh::session::SessionState::Closed);
 }
 
 /// Test shell close handling
@@ -461,15 +461,15 @@ fn test_shell_close_handling() {
     let mut session = Session::new(channel);
 
     // Initial state
-    assert_eq!(session.state(), &ssh_client::session::SessionState::Initial);
+    assert_eq!(session.state(), &ayssh::session::SessionState::Initial);
 
     // Start shell
     session.start_shell().unwrap();
-    assert_eq!(session.state(), &ssh_client::session::SessionState::Shell);
+    assert_eq!(session.state(), &ayssh::session::SessionState::Shell);
 
     // Handle close
     session.handle_close();
-    assert_eq!(session.state(), &ssh_client::session::SessionState::Closed);
+    assert_eq!(session.state(), &ayssh::session::SessionState::Closed);
 }
 
 /// Test shell exit status handling
