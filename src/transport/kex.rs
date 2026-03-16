@@ -461,13 +461,41 @@ pub fn encode_kex_reply(server_ephemeral: &[u8]) -> Vec<u8> {
     buf.to_vec()
 }
 
-/// Encode a NEWKEYS message
+/// Encode a NEWKEYS message as a properly framed SSH binary packet.
 /// According to RFC 4253 Section 6, SSH packets have format:
 /// [packet_length (4 bytes)][padding_length (1 byte)][payload][padding]
-/// NEWKEYS is sent with old keys (unencrypted) but still needs proper packet format
+/// NEWKEYS is sent with old keys (unencrypted) but still needs proper packet format.
 pub fn encode_newkeys() -> Vec<u8> {
-    // SSH_MSG_NEWKEYS is just a single-byte message type (RFC 4253 Section 7)
-    vec![protocol::MessageType::Newkeys.value()]
+    // SSH_MSG_NEWKEYS payload is just a single-byte message type (RFC 4253 Section 7)
+    let payload = vec![protocol::MessageType::Newkeys.value()];
+    let payload_len = payload.len();
+
+    // Calculate padding to ensure 8-byte alignment per RFC 4253 Section 6
+    // Total size (4 + 1 + payload + padding) must be multiple of 8
+    // Minimum padding is 4 bytes
+    let total_without_padding = 4 + 1 + payload_len; // length field + padding_length field + payload
+    let remainder = total_without_padding % 8;
+    let mut padding_length = if remainder == 0 {
+        8u8 // Already aligned, but need at least 4 bytes padding, and 8 maintains alignment
+    } else {
+        (8 - remainder) as u8
+    };
+
+    // Ensure minimum padding of 4 bytes per RFC 4253
+    if padding_length < 4 {
+        padding_length += 8;
+    }
+
+    // packet_length = padding_length_byte(1) + payload + padding
+    let packet_length = payload_len as u32 + padding_length as u32 + 1;
+
+    let mut msg = Vec::with_capacity(4 + packet_length as usize);
+    msg.extend_from_slice(&packet_length.to_be_bytes()); // 4-byte length
+    msg.push(padding_length); // 1-byte padding length
+    msg.extend_from_slice(&payload); // payload (message type byte)
+    msg.extend(std::iter::repeat(0u8).take(padding_length as usize)); // padding
+
+    msg
 }
 
 /// Decode a KEX message and extract the server's ephemeral key
@@ -722,8 +750,56 @@ mod tests {
     #[test]
     fn test_encode_newkeys() {
         let encoded = encode_newkeys();
-        assert_eq!(encoded.len(), 1);
-        assert_eq!(encoded[0], protocol::MessageType::Newkeys.value());
+        // NEWKEYS must be a properly framed SSH binary packet per RFC 4253 Section 6
+        // Format: [packet_length (4 bytes)][padding_length (1 byte)][payload][padding]
+        // With payload = [21] (SSH_MSG_NEWKEYS), the total must be a multiple of 8 and >= 16
+        assert!(encoded.len() >= 16, "NEWKEYS packet must be at least 16 bytes (minimum SSH packet size)");
+        assert_eq!(encoded.len() % 8, 0, "NEWKEYS packet total size must be 8-byte aligned");
+
+        // Check the packet_length field (first 4 bytes)
+        let packet_length = u32::from_be_bytes([encoded[0], encoded[1], encoded[2], encoded[3]]) as usize;
+        let padding_length = encoded[4] as usize;
+
+        // packet_length = padding_length_byte(1) + payload_len + padding_len
+        // Total wire bytes = 4 + packet_length
+        assert_eq!(encoded.len(), 4 + packet_length, "Total wire size must be 4 + packet_length");
+        assert_eq!(packet_length, 1 + 1 + padding_length, "packet_length = 1(padlen byte) + 1(payload) + padding");
+
+        // The message type (payload) is at byte index 5
+        assert_eq!(encoded[5], protocol::MessageType::Newkeys.value(), "Payload must be SSH_MSG_NEWKEYS (21)");
+
+        // Padding must be at least 4 bytes per RFC 4253
+        assert!(padding_length >= 4, "Padding must be at least 4 bytes per RFC 4253");
+    }
+
+    #[test]
+    fn test_encode_newkeys_rfc4253_compliance() {
+        let encoded = encode_newkeys();
+
+        // RFC 4253 Section 6 compliance checks:
+        // 1. Total packet (packet_length || padding_length || payload || random padding)
+        //    must be a multiple of the cipher block size or 8, whichever is larger
+        assert_eq!(encoded.len() % 8, 0, "RFC 4253: total must be multiple of 8");
+
+        // 2. Minimum size of a packet is 16 bytes
+        assert!(encoded.len() >= 16, "RFC 4253: minimum packet size is 16 bytes");
+
+        // 3. Padding length must be between 4 and 255 bytes
+        let padding_length = encoded[4] as usize;
+        assert!(padding_length >= 4, "RFC 4253: padding must be at least 4 bytes");
+        assert!(padding_length <= 255, "RFC 4253: padding must be at most 255 bytes");
+
+        // 4. The packet_length field does NOT include MAC or itself
+        let packet_length = u32::from_be_bytes([encoded[0], encoded[1], encoded[2], encoded[3]]) as usize;
+        // packet_length = padding_length(1 byte) + payload_length + padding
+        assert_eq!(4 + packet_length, encoded.len(), "Wire size = 4 + packet_length");
+
+        // Verify the structure can be parsed back correctly
+        // Extract payload from the framed packet
+        let payload_len = packet_length - 1 - padding_length; // subtract padlen byte and padding
+        assert_eq!(payload_len, 1, "NEWKEYS payload should be exactly 1 byte");
+        let payload_byte = encoded[5]; // byte after packet_length(4) and padding_length(1)
+        assert_eq!(payload_byte, 21, "NEWKEYS message type must be 21");
     }
 
     #[test]
