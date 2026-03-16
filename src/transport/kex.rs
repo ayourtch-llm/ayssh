@@ -118,6 +118,7 @@ impl KexContext {
                 tracing::debug!("DH Group1: ephemeral encoded size={} bytes", self.client_ephemeral.as_ref().unwrap().len());
                 Ok(())
             }
+            protocol::KexAlgorithm::DiffieHellmanGroup14Sha1 |
             protocol::KexAlgorithm::DiffieHellmanGroup14Sha256 |
             protocol::KexAlgorithm::DiffieHellmanGroupExchangeSha256 |
             protocol::KexAlgorithm::DiffieHellmanGroup14Sha384 |
@@ -127,7 +128,7 @@ impl KexContext {
                 let group = DhGroup::group14();
                 let private_x = group.generate_private_key(rng, 256);
                 let public_y = group.compute_public_key(&private_x);
-                
+
                 self.client_private = Some(private_x);
                 self.client_ephemeral = Some(Mpint::encode(&public_y));
                 Ok(())
@@ -216,6 +217,7 @@ impl KexContext {
                     return Err(anyhow::anyhow!("Missing private or public key for DH"));
                 }
             }
+            protocol::KexAlgorithm::DiffieHellmanGroup14Sha1 |
             protocol::KexAlgorithm::DiffieHellmanGroup14Sha256 |
             protocol::KexAlgorithm::DiffieHellmanGroupExchangeSha256 |
             protocol::KexAlgorithm::DiffieHellmanGroup14Sha384 |
@@ -223,7 +225,7 @@ impl KexContext {
             protocol::KexAlgorithm::DiffieHellmanGroup16Sha512 |
             protocol::KexAlgorithm::DiffieHellmanGroup18Sha512 => {
                 // For DH, compute shared secret: s = server_public^client_private mod p
-                if let (Some(ref server_pub), Some(ref client_priv)) = 
+                if let (Some(ref server_pub), Some(ref client_priv)) =
                     (&self.server_public, &self.client_private) {
                     let group = DhGroup::group14();
                     let shared = group.compute_shared_secret(server_pub, client_priv);
@@ -266,7 +268,8 @@ impl KexContext {
         debug!("Exchange hash input: {} bytes", hash_input.len());
 
         match self.algorithm {
-            protocol::KexAlgorithm::DiffieHellmanGroup1Sha1 => {
+            protocol::KexAlgorithm::DiffieHellmanGroup1Sha1 |
+            protocol::KexAlgorithm::DiffieHellmanGroup14Sha1 => {
                 let mut hasher = Sha1::new();
                 hasher.update(&hash_input);
                 Ok(hasher.finalize().to_vec())
@@ -419,7 +422,8 @@ impl KexContext {
             // For CBC modes: 16-byte IVs, key length depends on AES variant
             // For GCM/ChaCha20: 12-byte IVs
             let (enc_key_len, mac_key_len, iv_len) = match self.algorithm {
-                protocol::KexAlgorithm::DiffieHellmanGroup1Sha1 => (16, 20, 16), // AES-128-CBC, HMAC-SHA1
+                protocol::KexAlgorithm::DiffieHellmanGroup1Sha1 |
+                protocol::KexAlgorithm::DiffieHellmanGroup14Sha1 => (16, 20, 16), // AES-128, HMAC-SHA1
                 protocol::KexAlgorithm::DiffieHellmanGroup14Sha256 |
                 protocol::KexAlgorithm::DiffieHellmanGroupExchangeSha256 => (16, 32, 16), // AES-128-CBC, HMAC-SHA256
                 protocol::KexAlgorithm::DiffieHellmanGroup14Sha384 |
@@ -433,7 +437,8 @@ impl KexContext {
             };
             
             let hash_algo = match self.algorithm {
-                protocol::KexAlgorithm::DiffieHellmanGroup1Sha1 => kdf::HashAlgorithm::Sha1,
+                protocol::KexAlgorithm::DiffieHellmanGroup1Sha1 |
+                protocol::KexAlgorithm::DiffieHellmanGroup14Sha1 => kdf::HashAlgorithm::Sha1,
                 _ => kdf::HashAlgorithm::Sha256,
             };
             

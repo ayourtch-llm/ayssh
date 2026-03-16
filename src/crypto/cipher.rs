@@ -225,79 +225,70 @@ pub fn aes_gcm_decrypt(key: &[u8], nonce: &[u8], ciphertext: &[u8]) -> Result<Ve
 /// - CTR mode provides confidentiality but NOT integrity
 /// - Always use HMAC separately for integrity protection
 /// - The counter must never repeat for the same key
-pub fn aes_ctr_encrypt(key: &[u8], nonce: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, CipherError> {
-    // Validate key size
-    if key.len() != 32 {
-        return Err(CipherError::InvalidKeySize { expected: 32, actual: key.len() });
+/// Encrypt data using AES-CTR mode (SSH variant per RFC 4344)
+///
+/// SSH CTR mode uses the full 16-byte IV as the initial counter value.
+/// The counter increments as a 128-bit big-endian integer after each block.
+/// Supports AES-128, AES-192, and AES-256 based on key length.
+pub fn aes_ctr_encrypt(key: &[u8], iv: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, CipherError> {
+    if key.len() != 16 && key.len() != 24 && key.len() != 32 {
+        return Err(CipherError::InvalidKeySize { expected: 16, actual: key.len() });
     }
-    
-    // Validate nonce size (8 bytes for CTR mode)
-    if nonce.len() != 8 {
+    if iv.len() != 16 {
         return Err(CipherError::InvalidNonceSizeCtr);
     }
-    
-    // AES-CTR encryption: XOR plaintext with AES(key, counter)
+
     let mut ciphertext = plaintext.to_vec();
-    
-    // Process data in 16-byte blocks (AES block size)
-    for (i, chunk) in ciphertext.chunks_mut(16).enumerate() {
-        // Create counter block: nonce (8 bytes) + counter (8 bytes, big-endian)
-        let mut counter_block = [0u8; 16];
-        counter_block[..8].copy_from_slice(nonce);
-        counter_block[8..].copy_from_slice(&(i as u64).to_be_bytes());
-        
-        // Encrypt counter block with AES-256 to get keystream
-        let keystream = aes_ctr_encrypt_block(key, &counter_block);
-        
-        // XOR chunk with keystream
+    let mut counter: [u8; 16] = iv.try_into().unwrap();
+
+    for chunk in ciphertext.chunks_mut(16) {
+        let keystream = aes_ctr_encrypt_block(key, &counter);
         for (j, byte) in chunk.iter_mut().enumerate() {
             *byte ^= keystream[j];
         }
+        // Increment 128-bit counter (big-endian)
+        let mut carry = 1u16;
+        for i in (0..16).rev() {
+            let sum = counter[i] as u16 + carry;
+            counter[i] = sum as u8;
+            carry = sum >> 8;
+            if carry == 0 { break; }
+        }
     }
-    
+
     Ok(ciphertext)
 }
 
-/// Decrypt data using AES-256-CTR mode
-///
-/// CTR mode decryption is identical to encryption (XOR operation).
-///
-/// # Arguments
-///
-/// * `key` - 32-byte (256-bit) encryption key
-/// * `nonce` - 8-byte (64-bit) counter nonce (must match encryption nonce)
-/// * `ciphertext` - Data to decrypt
-///
-/// # Returns
-///
-/// * `Ok(Vec<u8>)` - Decrypted plaintext
-/// * `Err(CipherError)` - Error if key/nonce size is invalid or decryption fails
-pub fn aes_ctr_decrypt(key: &[u8], nonce: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>, CipherError> {
-    // CTR mode decryption is identical to encryption
-    aes_ctr_encrypt(key, nonce, ciphertext)
+/// Decrypt data using AES-CTR mode (identical to encryption)
+pub fn aes_ctr_decrypt(key: &[u8], iv: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>, CipherError> {
+    aes_ctr_encrypt(key, iv, ciphertext)
 }
 
-/// Encrypt a single 16-byte block with AES-256 for CTR mode
-///
-/// In CTR mode, we encrypt the counter block (not the data itself) and XOR
-/// the result with the data. This function encrypts just the counter block.
+/// Encrypt a single 16-byte block with AES for CTR mode keystream generation.
+/// Supports AES-128, AES-192, and AES-256 based on key length.
 fn aes_ctr_encrypt_block(key: &[u8], counter_block: &[u8]) -> [u8; 16] {
     use aes::cipher::{BlockEncrypt, KeyInit};
-    use aes::Aes256;
-    
-    // Create AES-256 cipher from key
-    let cipher = Aes256::new_from_slice(key).expect("Invalid key length");
-    
-    // Convert counter block to GenericArray
+
     let mut block = generic_array::GenericArray::<u8, _>::clone_from_slice(counter_block);
-    
-    // Encrypt the counter block
-    cipher.encrypt_block(&mut block);
-    
-    // Convert back to array
+
+    match key.len() {
+        16 => {
+            let cipher = aes::Aes128::new_from_slice(key).expect("Invalid key length");
+            cipher.encrypt_block(&mut block);
+        }
+        24 => {
+            let cipher = aes::Aes192::new_from_slice(key).expect("Invalid key length");
+            cipher.encrypt_block(&mut block);
+        }
+        32 => {
+            let cipher = aes::Aes256::new_from_slice(key).expect("Invalid key length");
+            cipher.encrypt_block(&mut block);
+        }
+        _ => panic!("Invalid AES key length: {}", key.len()),
+    }
+
     let mut result = [0u8; 16];
     result.copy_from_slice(&block);
-    
     result
 }
 
@@ -809,86 +800,98 @@ mod tests {
 
     #[test]
     fn test_aes_ctr_encrypt_decrypt() {
-        let key = vec![0x00; 32];
-        let nonce = vec![0x00; 8];
+        // AES-128-CTR with 16-byte key and 16-byte IV (SSH CTR mode)
+        let key = vec![0x00; 16];
+        let iv = vec![0x00; 16];
         let plaintext = b"Hello, CTR mode!";
-        
-        let ciphertext = aes_ctr_encrypt(&key, &nonce, plaintext).unwrap();
-        let decrypted = aes_ctr_decrypt(&key, &nonce, &ciphertext).unwrap();
-        
+
+        let ciphertext = aes_ctr_encrypt(&key, &iv, plaintext).unwrap();
+        let decrypted = aes_ctr_decrypt(&key, &iv, &ciphertext).unwrap();
+
+        assert_eq!(decrypted, plaintext);
+    }
+
+    #[test]
+    fn test_aes_ctr_256_encrypt_decrypt() {
+        // AES-256-CTR with 32-byte key
+        let key = vec![0x00; 32];
+        let iv = vec![0x00; 16];
+        let plaintext = b"Hello, CTR mode!";
+
+        let ciphertext = aes_ctr_encrypt(&key, &iv, plaintext).unwrap();
+        let decrypted = aes_ctr_decrypt(&key, &iv, &ciphertext).unwrap();
+
         assert_eq!(decrypted, plaintext);
     }
 
     #[test]
     fn test_aes_ctr_different_keys() {
-        let key1 = vec![0x00; 32];
-        let key2 = vec![0xFF; 32];
-        let nonce = vec![0x00; 8];
+        let key1 = vec![0x00; 16];
+        let key2 = vec![0xFF; 16];
+        let iv = vec![0x00; 16];
         let plaintext = b"test";
-        
-        let ct1 = aes_ctr_encrypt(&key1, &nonce, plaintext).unwrap();
-        let ct2 = aes_ctr_encrypt(&key2, &nonce, plaintext).unwrap();
-        
+
+        let ct1 = aes_ctr_encrypt(&key1, &iv, plaintext).unwrap();
+        let ct2 = aes_ctr_encrypt(&key2, &iv, plaintext).unwrap();
+
         assert_ne!(ct1, ct2);
     }
 
     #[test]
     fn test_aes_ctr_different_nonces() {
-        let key = vec![0x00; 32];
-        let nonce1 = vec![0x00; 8];
-        let nonce2 = vec![0x01; 8];
+        let key = vec![0x00; 16];
+        let iv1 = vec![0x00; 16];
+        let iv2 = vec![0x01; 16];
         let plaintext = b"test";
-        
-        let ct1 = aes_ctr_encrypt(&key, &nonce1, plaintext).unwrap();
-        let ct2 = aes_ctr_encrypt(&key, &nonce2, plaintext).unwrap();
-        
+
+        let ct1 = aes_ctr_encrypt(&key, &iv1, plaintext).unwrap();
+        let ct2 = aes_ctr_encrypt(&key, &iv2, plaintext).unwrap();
+
         assert_ne!(ct1, ct2);
     }
 
     #[test]
     fn test_aes_ctr_empty_plaintext() {
-        let key = vec![0x00; 32];
-        let nonce = vec![0x00; 8];
+        let key = vec![0x00; 16];
+        let iv = vec![0x00; 16];
         let plaintext = b"";
-        
-        let ciphertext = aes_ctr_encrypt(&key, &nonce, plaintext).unwrap();
-        let decrypted = aes_ctr_decrypt(&key, &nonce, &ciphertext).unwrap();
-        
+
+        let ciphertext = aes_ctr_encrypt(&key, &iv, plaintext).unwrap();
+        let decrypted = aes_ctr_decrypt(&key, &iv, &ciphertext).unwrap();
+
         assert_eq!(decrypted, plaintext);
     }
 
     #[test]
     fn test_aes_ctr_invalid_key_size() {
-        let key = vec![0x00; 16];
-        let nonce = vec![0x00; 8];
+        let key = vec![0x00; 15]; // invalid: not 16, 24, or 32
+        let iv = vec![0x00; 16];
         let plaintext = b"test";
-        
-        let result = aes_ctr_encrypt(&key, &nonce, plaintext);
+
+        let result = aes_ctr_encrypt(&key, &iv, plaintext);
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), CipherError::InvalidKeySize { expected: 32, actual: 16 });
     }
 
     #[test]
     fn test_aes_ctr_invalid_nonce_size() {
-        let key = vec![0x00; 32];
-        let nonce = vec![0x00; 4];
+        let key = vec![0x00; 16];
+        let iv = vec![0x00; 4]; // invalid: must be 16
         let plaintext = b"test";
-        
-        let result = aes_ctr_encrypt(&key, &nonce, plaintext);
+
+        let result = aes_ctr_encrypt(&key, &iv, plaintext);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), CipherError::InvalidNonceSizeCtr);
     }
 
     #[test]
     fn test_aes_ctr_multiple_blocks() {
-        let key = vec![0x42; 32];
-        let nonce = vec![0xAB; 8];
-        // Create a message larger than one AES block (16 bytes)
+        let key = vec![0x42; 16];
+        let iv = vec![0xAB; 16];
         let plaintext = b"This is a longer message that spans multiple AES blocks for testing purposes";
-        
-        let ciphertext = aes_ctr_encrypt(&key, &nonce, plaintext).unwrap();
-        let decrypted = aes_ctr_decrypt(&key, &nonce, &ciphertext).unwrap();
-        
+
+        let ciphertext = aes_ctr_encrypt(&key, &iv, plaintext).unwrap();
+        let decrypted = aes_ctr_decrypt(&key, &iv, &ciphertext).unwrap();
+
         assert_eq!(decrypted, plaintext);
     }
 

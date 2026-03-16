@@ -323,6 +323,8 @@ impl HashAlgorithm {
 pub enum KexAlgorithm {
     /// diffie-hellman-group1-sha1 (Oakley Group 2, 1024-bit MODP)
     DiffieHellmanGroup1Sha1,
+    /// diffie-hellman-group14-sha1 (2048-bit MODP, SHA-1 hash)
+    DiffieHellmanGroup14Sha1,
     /// diffie-hellman-group14-sha256
     DiffieHellmanGroup14Sha256,
     /// diffie-hellman-group14-sha384
@@ -350,6 +352,7 @@ impl KexAlgorithm {
     pub const fn name(&self) -> &'static str {
         match self {
             KexAlgorithm::DiffieHellmanGroup1Sha1 => "diffie-hellman-group1-sha1",
+            KexAlgorithm::DiffieHellmanGroup14Sha1 => "diffie-hellman-group14-sha1",
             KexAlgorithm::DiffieHellmanGroup14Sha256 => "diffie-hellman-group14-sha256",
             KexAlgorithm::DiffieHellmanGroup14Sha384 => "diffie-hellman-group14-sha384",
             KexAlgorithm::DiffieHellmanGroup14Sha512 => "diffie-hellman-group14-sha512",
@@ -370,6 +373,7 @@ impl FromStr for KexAlgorithm {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "diffie-hellman-group1-sha1" => Ok(KexAlgorithm::DiffieHellmanGroup1Sha1),
+            "diffie-hellman-group14-sha1" => Ok(KexAlgorithm::DiffieHellmanGroup14Sha1),
             "diffie-hellman-group14-sha256" => Ok(KexAlgorithm::DiffieHellmanGroup14Sha256),
             "diffie-hellman-group14-sha384" => Ok(KexAlgorithm::DiffieHellmanGroup14Sha384),
             "diffie-hellman-group14-sha512" => Ok(KexAlgorithm::DiffieHellmanGroup14Sha512),

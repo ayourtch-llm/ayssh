@@ -602,18 +602,22 @@ impl Transport {
 
         // Step 1: Read and decrypt the first AES block (16 bytes) to get packet_length
         let first_block_ciphertext = self.read_exact_buffered(16).await?;
-        debug!("Read first encrypted block: {:?}", &first_block_ciphertext);
 
-        let (current_iv, dec_key) = {
+        let (current_iv, dec_key, dec_algo) = {
             let ds = self.decrypt_state.as_ref().unwrap();
-            (ds.iv.clone(), ds.dec_key.clone())
+            (ds.iv.clone(), ds.dec_key.clone(), ds.dec_algorithm.clone())
         };
-        let decrypted_first_block = aes_128_cbc_decrypt_raw(
-            &dec_key,
-            &current_iv,
-            &first_block_ciphertext,
-        )?;
-        debug!("Decrypted first block: {:?}", &decrypted_first_block[..16]);
+
+        let decrypted_first_block = match dec_algo.as_str() {
+            "aes128-cbc" => aes_128_cbc_decrypt_raw(&dec_key, &current_iv, &first_block_ciphertext)?,
+            "aes128-ctr" => {
+                use crate::crypto::cipher::aes_ctr_decrypt;
+                aes_ctr_decrypt(&dec_key, &current_iv, &first_block_ciphertext)?
+            }
+            other => return Err(crate::error::SshError::ProtocolError(
+                format!("Unsupported decryption algorithm: {}", other),
+            )),
+        };
 
         // Extract packet_length from first 4 bytes of decrypted data
         let packet_length = u32::from_be_bytes([
@@ -630,31 +634,57 @@ impl Transport {
             ));
         }
 
-        // Step 2: Total encrypted size is 4 + packet_length (the 4-byte length field is encrypted too)
+        // Step 2: Total encrypted size is 4 + packet_length
         // We already read 16 bytes, so read the remaining encrypted bytes + MAC
         let total_encrypted = 4 + packet_length;
-        let remaining_encrypted = total_encrypted - 16; // already read first block
+        // For CTR mode, total_encrypted may not be block-aligned, but we still
+        // need to round up to block boundary for the encrypted data on the wire
+        let total_encrypted_padded = match dec_algo.as_str() {
+            "aes128-cbc" => total_encrypted, // CBC: already block-aligned by SSH padding
+            _ => total_encrypted,            // CTR: stream cipher, no alignment needed
+        };
+        let remaining_encrypted = total_encrypted_padded - 16;
         let remaining_to_read = remaining_encrypted + mac_len;
         let rest = self.read_exact_buffered(remaining_to_read).await?;
 
         // Reassemble the full ciphertext
-        let mut full_ciphertext = Vec::with_capacity(total_encrypted);
+        let mut full_ciphertext = Vec::with_capacity(total_encrypted_padded);
         full_ciphertext.extend_from_slice(&first_block_ciphertext);
         full_ciphertext.extend_from_slice(&rest[..remaining_encrypted]);
 
         // Extract MAC
         let received_mac = &rest[remaining_encrypted..];
-        debug!("Total encrypted: {} bytes, MAC: {} bytes", total_encrypted, received_mac.len());
+        debug!("Total encrypted: {} bytes, MAC: {} bytes", total_encrypted_padded, received_mac.len());
 
-        // Step 3: Decrypt the full ciphertext (use _raw to avoid PKCS#7 padding removal;
-        // SSH uses its own padding scheme per RFC 4253 Section 6)
+        // Step 3: Decrypt the full ciphertext
         let decrypt_state = self.decrypt_state.as_mut().unwrap();
-        let decrypted = aes_128_cbc_decrypt_raw(&decrypt_state.dec_key, &decrypt_state.iv, &full_ciphertext)?;
+        let decrypted = match decrypt_state.dec_algorithm.as_str() {
+            "aes128-cbc" => aes_128_cbc_decrypt_raw(&decrypt_state.dec_key, &decrypt_state.iv, &full_ciphertext)?,
+            "aes128-ctr" => {
+                use crate::crypto::cipher::aes_ctr_decrypt;
+                let pt = aes_ctr_decrypt(&decrypt_state.dec_key, &decrypt_state.iv, &full_ciphertext)?;
+                pt
+            }
+            other => return Err(crate::error::SshError::ProtocolError(
+                format!("Unsupported decryption algorithm: {}", other),
+            )),
+        };
         debug!("Decrypted {} bytes, first 20: {:?}", decrypted.len(), &decrypted[..std::cmp::min(20, decrypted.len())]);
 
-        // Update IV for next packet (last 16 bytes of ciphertext)
-        if full_ciphertext.len() >= 16 {
-            decrypt_state.iv = full_ciphertext[full_ciphertext.len() - 16..].to_vec();
+        // Update IV for next packet
+        match decrypt_state.dec_algorithm.as_str() {
+            "aes128-cbc" => {
+                // CBC: IV = last ciphertext block
+                if full_ciphertext.len() >= 16 {
+                    decrypt_state.iv = full_ciphertext[full_ciphertext.len() - 16..].to_vec();
+                }
+            }
+            "aes128-ctr" => {
+                // CTR: advance counter by number of blocks
+                let blocks = (full_ciphertext.len() + 15) / 16;
+                advance_ctr_iv(&mut decrypt_state.iv, blocks);
+            }
+            _ => {}
         }
 
         // Step 4: Verify HMAC over sequence_number + unencrypted packet (RFC 4253 Section 6.4)
@@ -837,6 +867,20 @@ impl Transport {
     }
 }
 
+/// Advance a 16-byte CTR IV by the given number of AES blocks
+fn advance_ctr_iv(iv: &mut Vec<u8>, blocks: usize) {
+    // IV is treated as a 128-bit big-endian counter
+    let mut carry = blocks as u64;
+    for i in (0..iv.len()).rev() {
+        let sum = iv[i] as u64 + (carry & 0xFF);
+        iv[i] = sum as u8;
+        carry = (carry >> 8) + (sum >> 8);
+        if carry == 0 {
+            break;
+        }
+    }
+}
+
 // Standalone helper functions for encryption/decryption
 fn encrypt_packet_cbc(payload: &[u8], state: &mut EncryptionState) -> Result<Vec<u8>, crate::error::SshError> {
     // Calculate padding per RFC 4253 Section 6:
@@ -844,6 +888,7 @@ fn encrypt_packet_cbc(payload: &[u8], state: &mut EncryptionState) -> Result<Vec
     // max(8, cipher_block_size). For AES-128-CBC, block size is 16.
     let block_size: usize = match state.enc_algorithm.as_str() {
         "aes128-cbc" | "aes192-cbc" | "aes256-cbc" => 16,
+        "aes128-ctr" | "aes192-ctr" | "aes256-ctr" => 16,
         _ => 8,
     };
     let payload_len = payload.len();
@@ -880,10 +925,23 @@ fn encrypt_packet_cbc(payload: &[u8], state: &mut EncryptionState) -> Result<Vec
     hmac.update(&mac_data);
     let mac = hmac.finish();
 
-    // Encrypt using AES-CBC with the current IV (no additional padding - packet is already padded)
+    // Encrypt the packet
     let encrypted = match state.enc_algorithm.as_str() {
         "aes128-cbc" => {
-            aes_128_cbc_encrypt_raw(&state.enc_key, &state.iv, &packet)?
+            let ct = aes_128_cbc_encrypt_raw(&state.enc_key, &state.iv, &packet)?;
+            // Update IV for next packet (last 16 bytes of ciphertext)
+            if ct.len() >= 16 {
+                state.iv = ct[ct.len() - 16..].to_vec();
+            }
+            ct
+        }
+        "aes128-ctr" => {
+            use crate::crypto::cipher::aes_ctr_encrypt;
+            let ct = aes_ctr_encrypt(&state.enc_key, &state.iv, &packet)?;
+            // For CTR mode, advance the counter by the number of blocks encrypted
+            let blocks = (packet.len() + 15) / 16;
+            advance_ctr_iv(&mut state.iv, blocks);
+            ct
         }
         _ => {
             return Err(crate::error::SshError::ProtocolError(
@@ -891,12 +949,6 @@ fn encrypt_packet_cbc(payload: &[u8], state: &mut EncryptionState) -> Result<Vec
             ));
         }
     };
-    
-    // Update IV for next packet (last 16 bytes of ciphertext for AES)
-    // RFC 4253: "initialization vectors SHOULD be passed from the end of one packet to the beginning of the next packet"
-    if encrypted.len() >= 16 {
-        state.iv = encrypted[encrypted.len() - 16..].to_vec();
-    }
     
     // Update sequence number
     state.sequence_number = state.sequence_number.wrapping_add(1);

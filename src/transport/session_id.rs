@@ -142,7 +142,8 @@ pub fn compute_session_id(
 /// Get the hash algorithm for a given KEX algorithm
 pub fn hash_algorithm_for_kex(kex_algorithm: KexAlgorithm) -> HashAlgorithm {
     match kex_algorithm {
-        KexAlgorithm::DiffieHellmanGroup1Sha1 => HashAlgorithm::Sha1,
+        KexAlgorithm::DiffieHellmanGroup1Sha1
+        | KexAlgorithm::DiffieHellmanGroup14Sha1 => HashAlgorithm::Sha1,
         KexAlgorithm::DiffieHellmanGroup14Sha256
         | KexAlgorithm::DiffieHellmanGroupExchangeSha256
         | KexAlgorithm::EcdhSha2Nistp256

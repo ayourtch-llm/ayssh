@@ -323,9 +323,9 @@ impl Encryptor {
 
     /// Encrypt using AES-256-CTR with HMAC-SHA2-256
     fn encrypt_aes_ctr_hmac(&self, plaintext: &mut Vec<u8>) {
-        // Encrypt with AES-CTR
-        let nonce = &self.iv[..8];
-        match aes_ctr_encrypt(&self.enc_key, nonce, plaintext) {
+        // Encrypt with AES-CTR (SSH uses full 16-byte IV as counter)
+        let iv = if self.iv.len() >= 16 { &self.iv[..16] } else { &self.iv };
+        match aes_ctr_encrypt(&self.enc_key, iv, plaintext) {
             Ok(ciphertext) => {
                 *plaintext = ciphertext;
             }
@@ -404,8 +404,8 @@ impl Encryptor {
         let mac = hmac.finish();
         
         // Encrypt the data (without MAC)
-        let nonce = &self.iv[..8];
-        match aes_ctr_encrypt(&self.enc_key, nonce, plaintext) {
+        let iv = if self.iv.len() >= 16 { &self.iv[..16] } else { &self.iv };
+        match aes_ctr_encrypt(&self.enc_key, iv, plaintext) {
             Ok(ciphertext) => {
                 *plaintext = ciphertext;
             }
@@ -429,8 +429,8 @@ impl Encryptor {
         let mac = hmac.finish();
         
         // Encrypt the data (without MAC)
-        let nonce = &self.iv[..8];
-        match aes_ctr_encrypt(&self.enc_key, nonce, plaintext) {
+        let iv = if self.iv.len() >= 16 { &self.iv[..16] } else { &self.iv };
+        match aes_ctr_encrypt(&self.enc_key, iv, plaintext) {
             Ok(ciphertext) => {
                 *plaintext = ciphertext;
             }
@@ -506,8 +506,8 @@ impl Decryptor {
                 self.verify_mac(&mut decrypted)?;
                 
                 // Decrypt the remaining data (without MAC)
-                let nonce = &self.iv[..8];
-                decrypted = aes_ctr_decrypt(&self.enc_key, nonce, &decrypted)?;
+                let iv = if self.iv.len() >= 16 { &self.iv[..16] } else { &self.iv };
+                decrypted = aes_ctr_decrypt(&self.enc_key, iv, &decrypted)?;
                 
                 // Increment sequence number
                 self.seq_num = self.seq_num.wrapping_add(1);
@@ -591,14 +591,14 @@ impl Decryptor {
                 self.verify_mac(&mut result)?;
                 
                 // Now decrypt the remaining data with AES-CTR
-                let nonce = &self.iv[..8];
-                result = aes_ctr_decrypt(&self.enc_key, nonce, &result)?;
+                let iv = if self.iv.len() >= 16 { &self.iv[..16] } else { &self.iv };
+                result = aes_ctr_decrypt(&self.enc_key, iv, &result)?;
             }
             CipherType::HmacSha256Etm | CipherType::HmacSha512Etm => {
                 // ETM modes: decrypt first, then verify MAC
                 // For ETM, we use AES-CTR encryption
-                let nonce = &self.iv[..8];
-                result = aes_ctr_decrypt(&self.enc_key, nonce, &result)?;
+                let iv = if self.iv.len() >= 16 { &self.iv[..16] } else { &self.iv };
+                result = aes_ctr_decrypt(&self.enc_key, iv, &result)?;
             }
         }
         
