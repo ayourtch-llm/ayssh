@@ -118,15 +118,15 @@ impl Packet {
         }
 
         // RFC 4253 Section 6: Check total packet size is reasonable
-        let total_size = 4 + length as usize + padding_length as usize;
+        // total_size = 4 (length field) + 1 (padding_length) + payload + padding
+        let total_size = PACKET_HEADER_LEN + length as usize + padding_length as usize;
         if total_size > MAX_PACKET_SIZE {
             return Err(SshError::CryptoError(
                 format!("Packet too large: {} bytes (maximum {})", total_size, MAX_PACKET_SIZE),
             ));
         }
         
-        let expected_len = PACKET_HEADER_LEN + length as usize + padding_length as usize;
-        if data.len() < expected_len {
+        if data.len() < total_size {
             return Err(SshError::CryptoError(
                 "Packet data incomplete".to_string(),
             ));

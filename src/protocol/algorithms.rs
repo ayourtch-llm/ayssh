@@ -124,41 +124,44 @@ impl AlgorithmProposal {
         ]
     }
 
-    /// Select common algorithms from client and server proposals
+    /// Select common algorithms from client and server proposals.
+    ///
     /// Per RFC 4253 Section 7.1: The chosen algorithm MUST be the first algorithm
     /// on the client's name-list that is also on the server's name-list.
-    pub fn select_common_algorithms(&self, server: &Self) -> Result<NegotiatedAlgorithms, ProtocolError> {
-        let kex = self.select_first_matching_client_preference("kex", &server.kex_algorithms)
+    ///
+    /// `self` is the client proposal, `server_proposal` is the server proposal.
+    pub fn select_common_algorithms(&self, server_proposal: &Self) -> Result<NegotiatedAlgorithms, ProtocolError> {
+        let kex = self.select_first_matching_client_preference("kex", &server_proposal.kex_algorithms)
             .ok_or_else(|| ProtocolError::AlgorithmNegotiationFailed(
                 "No common key exchange algorithm".to_string()
             ))?;
         
-        let host_key = self.select_first_matching_client_preference("host_key", &server.server_host_key_algorithms)
+        let host_key = self.select_first_matching_client_preference("host_key", &server_proposal.server_host_key_algorithms)
             .ok_or_else(|| ProtocolError::AlgorithmNegotiationFailed(
                 "No common host key algorithm".to_string()
             ))?;
         
-        let enc_c2s = self.select_first_matching_client_preference("enc_c2s", &server.encryption_algorithms_c2s)
+        let enc_c2s = self.select_first_matching_client_preference("enc_c2s", &server_proposal.encryption_algorithms_c2s)
             .ok_or_else(|| ProtocolError::AlgorithmNegotiationFailed(
                 "No common client-to-server encryption algorithm".to_string()
             ))?;
         
-        let enc_s2c = self.select_first_matching_client_preference("enc_s2c", &server.encryption_algorithms_s2c)
+        let enc_s2c = self.select_first_matching_client_preference("enc_s2c", &server_proposal.encryption_algorithms_s2c)
             .ok_or_else(|| ProtocolError::AlgorithmNegotiationFailed(
                 "No common server-to-client encryption algorithm".to_string()
             ))?;
         
-        let mac_c2s = self.select_first_matching_client_preference("mac_c2s", &server.mac_algorithms_c2s)
+        let mac_c2s = self.select_first_matching_client_preference("mac_c2s", &server_proposal.mac_algorithms_c2s)
             .ok_or_else(|| ProtocolError::AlgorithmNegotiationFailed(
                 "No common client-to-server MAC algorithm".to_string()
             ))?;
         
-        let mac_s2c = self.select_first_matching_client_preference("mac_s2c", &server.mac_algorithms_s2c)
+        let mac_s2c = self.select_first_matching_client_preference("mac_s2c", &server_proposal.mac_algorithms_s2c)
             .ok_or_else(|| ProtocolError::AlgorithmNegotiationFailed(
                 "No common server-to-client MAC algorithm".to_string()
             ))?;
         
-        let compression = self.select_first_matching_client_preference("compression", &server.compression_algorithms)
+        let compression = self.select_first_matching_client_preference("compression", &server_proposal.compression_algorithms)
             .ok_or_else(|| ProtocolError::AlgorithmNegotiationFailed(
                 "No common compression algorithm".to_string()
             ))?;
