@@ -423,15 +423,32 @@ impl Session {
 
         transport.send_message(&msg).await?;
 
-        // Receive confirmation
-        let response = transport.recv_message().await?;
-        let msg_type = response[0];
-
-        if msg_type != MessageType::ChannelOpenConfirmation as u8 {
-            return Err(crate::error::SshError::ProtocolError(
-                format!("Expected ChannelOpenConfirmation, got {}", msg_type)
-            ));
-        }
+        // Receive confirmation, skipping any global requests (e.g., hostkeys-00@openssh.com)
+        let response = loop {
+            let msg = transport.recv_message().await?;
+            if msg.is_empty() {
+                return Err(crate::error::SshError::ProtocolError(
+                    "Empty response to channel open".to_string()
+                ));
+            }
+            match msg[0] {
+                91 => break msg, // SSH_MSG_CHANNEL_OPEN_CONFIRMATION
+                92 => {          // SSH_MSG_CHANNEL_OPEN_FAILURE
+                    return Err(crate::error::SshError::ProtocolError(
+                        format!("Channel open rejected (msg_type=92)")
+                    ));
+                }
+                80 => {          // SSH_MSG_GLOBAL_REQUEST - skip
+                    tracing::debug!("Skipping global request during channel open");
+                    continue;
+                }
+                other => {
+                    return Err(crate::error::SshError::ProtocolError(
+                        format!("Expected ChannelOpenConfirmation, got {}", other)
+                    ));
+                }
+            }
+        };
 
         // Parse channel confirmation per RFC 4254 Section 5.1:
         //   uint32    recipient channel (our channel ID)

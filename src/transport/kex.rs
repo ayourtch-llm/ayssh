@@ -417,23 +417,43 @@ impl KexContext {
     /// Key = Hash(K || V || A) || Hash(K || V || B) || ...
     /// where A, B, C, ... are single bytes starting with 1
     pub fn derive_session_keys(&mut self, hash: &[u8]) -> anyhow::Result<SessionKeys> {
+        // Use default key sizes (for backward compat with tests)
+        self.derive_session_keys_for(hash, None, None)
+    }
+
+    /// Derive session keys with explicit negotiated algorithm info.
+    /// Key lengths are determined by the actual negotiated cipher and MAC,
+    /// not by the KEX algorithm (which only determines the hash function).
+    pub fn derive_session_keys_for(
+        &mut self,
+        hash: &[u8],
+        enc_algorithm: Option<&str>,
+        mac_algorithm: Option<&str>,
+    ) -> anyhow::Result<SessionKeys> {
         if let Some(ref shared_secret) = self.shared_secret {
-            // Determine key/IV lengths based on the negotiated algorithm
-            // For CBC modes: 16-byte IVs, key length depends on AES variant
-            // For GCM/ChaCha20: 12-byte IVs
-            let (enc_key_len, mac_key_len, iv_len) = match self.algorithm {
-                protocol::KexAlgorithm::DiffieHellmanGroup1Sha1 |
-                protocol::KexAlgorithm::DiffieHellmanGroup14Sha1 => (16, 20, 16), // AES-128, HMAC-SHA1
-                protocol::KexAlgorithm::DiffieHellmanGroup14Sha256 |
-                protocol::KexAlgorithm::DiffieHellmanGroupExchangeSha256 => (16, 32, 16), // AES-128-CBC, HMAC-SHA256
-                protocol::KexAlgorithm::DiffieHellmanGroup14Sha384 |
-                protocol::KexAlgorithm::DiffieHellmanGroup14Sha512 |
-                protocol::KexAlgorithm::DiffieHellmanGroup16Sha512 |
-                protocol::KexAlgorithm::DiffieHellmanGroup18Sha512 => (32, 64, 16), // AES-256-CBC, HMAC-SHA512
-                protocol::KexAlgorithm::Curve25519Sha256 |
-                protocol::KexAlgorithm::EcdhSha2Nistp256 => (32, 32, 12), // AES-256-GCM or ChaCha20
-                protocol::KexAlgorithm::EcdhSha2Nistp384 => (32, 48, 12),
-                protocol::KexAlgorithm::EcdhSha2Nistp521 => (32, 64, 12),
+            // Determine key lengths from negotiated algorithms
+            let enc_key_len = match enc_algorithm {
+                Some("aes128-cbc") | Some("aes128-ctr") => 16,
+                Some("aes192-cbc") | Some("aes192-ctr") => 24,
+                Some("aes256-cbc") | Some("aes256-ctr") => 32,
+                _ => 16, // default AES-128
+            };
+            let iv_len = 16; // AES block size for both CBC and CTR
+            let mac_key_len = match mac_algorithm {
+                Some("hmac-sha1") | Some("hmac-sha1-96") => 20,
+                Some("hmac-md5") | Some("hmac-md5-96") => 16,
+                Some("hmac-sha2-256") => 32,
+                Some("hmac-sha2-512") => 64,
+                _ => {
+                    // Fallback: use old hardcoded defaults per KEX algorithm
+                    match self.algorithm {
+                        protocol::KexAlgorithm::DiffieHellmanGroup1Sha1 |
+                        protocol::KexAlgorithm::DiffieHellmanGroup14Sha1 => 20,
+                        protocol::KexAlgorithm::DiffieHellmanGroup14Sha256 |
+                        protocol::KexAlgorithm::DiffieHellmanGroupExchangeSha256 => 32,
+                        _ => 32,
+                    }
+                }
             };
             
             let hash_algo = match self.algorithm {
