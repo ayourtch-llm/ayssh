@@ -1290,4 +1290,109 @@ mod tests {
         // Sequence number should have been incremented
         assert_eq!(enc_state.sequence_number, 4);
     }
+
+    #[test]
+    fn test_is_aead_cipher() {
+        assert!(is_aead_cipher("aes128-gcm@openssh.com"));
+        assert!(is_aead_cipher("aes256-gcm@openssh.com"));
+        assert!(is_aead_cipher("chacha20-poly1305@openssh.com"));
+        assert!(!is_aead_cipher("aes128-ctr"));
+        assert!(!is_aead_cipher("aes256-cbc"));
+    }
+
+    #[test]
+    fn test_is_etm_mac() {
+        assert!(is_etm_mac("hmac-sha2-256-etm@openssh.com"));
+        assert!(is_etm_mac("hmac-sha1-etm@openssh.com"));
+        assert!(!is_etm_mac("hmac-sha1"));
+        assert!(!is_etm_mac("hmac-sha2-256"));
+    }
+
+    #[test]
+    fn test_base_mac_algorithm() {
+        assert_eq!(base_mac_algorithm("hmac-sha2-256-etm@openssh.com"), "hmac-sha2-256");
+        assert_eq!(base_mac_algorithm("hmac-sha1-etm@openssh.com"), "hmac-sha1");
+        assert_eq!(base_mac_algorithm("hmac-sha1"), "hmac-sha1");
+    }
+
+    #[test]
+    fn test_mac_length_all() {
+        assert_eq!(mac_length("hmac-sha1"), 20);
+        assert_eq!(mac_length("hmac-sha2-256"), 32);
+        assert_eq!(mac_length("hmac-sha2-512"), 64);
+        assert_eq!(mac_length("hmac-sha1-etm@openssh.com"), 20);
+        assert_eq!(mac_length("hmac-sha2-256-etm@openssh.com"), 32);
+        assert_eq!(mac_length("hmac-sha2-512-etm@openssh.com"), 64);
+    }
+
+    #[test]
+    fn test_gcm_nonce_initial() {
+        let iv = vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C];
+        let nonce = gcm_nonce(&iv, 0);
+        // First packet: nonce = IV as-is
+        assert_eq!(nonce, [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C]);
+    }
+
+    #[test]
+    fn test_gcm_nonce_incremented() {
+        let iv = vec![0x01, 0x02, 0x03, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+        let nonce = gcm_nonce(&iv, 1);
+        // Second packet: last 8 bytes incremented by 1
+        assert_eq!(nonce, [0x01, 0x02, 0x03, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01]);
+    }
+
+    #[test]
+    fn test_gcm_nonce_carry() {
+        let iv = vec![0x01, 0x02, 0x03, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF];
+        let nonce = gcm_nonce(&iv, 1);
+        assert_eq!(nonce, [0x01, 0x02, 0x03, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00]);
+    }
+
+    /// Verify AEAD encrypt produces correct format: length(4B) + ciphertext + tag(16B)
+    #[test]
+    fn test_encrypt_packet_gcm_format() {
+        let payload = vec![5, 0, 0, 0, 4, b't', b'e', b's', b't'];
+        let mut enc_state = EncryptionState {
+            enc_key: vec![0x42; 16],
+            iv: vec![0x01; 12],
+            mac_key: vec![0xAB; 20], // unused for GCM
+            sequence_number: 0,
+            aead_counter: 0,
+            enc_algorithm: "aes128-gcm@openssh.com".to_string(),
+            mac_algorithm: "hmac-sha1".to_string(), // ignored for AEAD
+        };
+
+        let result = encrypt_packet_cbc(&payload, &mut enc_state).unwrap();
+
+        // Check format: [length(4)][ciphertext(N)][tag(16)]
+        let packet_length = u32::from_be_bytes([result[0], result[1], result[2], result[3]]) as usize;
+        assert_eq!(result.len(), 4 + packet_length + 16, "AEAD output = 4 + packet_length + 16");
+
+        // AEAD counter should be incremented
+        assert_eq!(enc_state.aead_counter, 1);
+        // Sequence number also incremented
+        assert_eq!(enc_state.sequence_number, 1);
+    }
+
+    /// Verify ETM encrypt produces: length(4B cleartext) + ciphertext + MAC
+    #[test]
+    fn test_encrypt_packet_etm_format() {
+        let payload = vec![5, 0, 0, 0, 4, b't', b'e', b's', b't'];
+        let mut enc_state = EncryptionState {
+            enc_key: vec![0x42; 16],
+            iv: vec![0x00; 16],
+            mac_key: vec![0xAB; 32],
+            sequence_number: 0,
+            aead_counter: 0,
+            enc_algorithm: "aes128-ctr".to_string(),
+            mac_algorithm: "hmac-sha2-256-etm@openssh.com".to_string(),
+        };
+
+        let result = encrypt_packet_cbc(&payload, &mut enc_state).unwrap();
+
+        // First 4 bytes are cleartext length
+        let packet_length = u32::from_be_bytes([result[0], result[1], result[2], result[3]]) as usize;
+        // Total = 4 + packet_length(encrypted) + 32(HMAC-SHA256 MAC)
+        assert_eq!(result.len(), 4 + packet_length + 32);
+    }
 }

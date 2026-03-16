@@ -1160,7 +1160,100 @@ mod tests {
         
         let ciphertext = aes_256_cbc_encrypt(&key, &iv, plaintext).unwrap();
         let decrypted = aes_256_cbc_decrypt(&key, &iv, &ciphertext).unwrap();
-        
+
         assert_eq!(decrypted, plaintext);
+    }
+
+    // === AES-GCM with AAD tests ===
+
+    #[test]
+    fn test_aes_128_gcm_with_aad_round_trip() {
+        let key = vec![0x42; 16];
+        let nonce = vec![0x01; 12];
+        let aad = b"\x00\x00\x00\x1c"; // 4-byte packet length as AAD
+        let plaintext = b"Hello, AES-128-GCM with AAD!";
+
+        let ciphertext = aes_gcm_encrypt_with_aad(&key, &nonce, aad, plaintext).unwrap();
+        // Ciphertext should be plaintext_len + 16 (GCM tag)
+        assert_eq!(ciphertext.len(), plaintext.len() + 16);
+
+        let decrypted = aes_gcm_decrypt_with_aad(&key, &nonce, aad, &ciphertext).unwrap();
+        assert_eq!(decrypted, plaintext);
+    }
+
+    #[test]
+    fn test_aes_256_gcm_with_aad_round_trip() {
+        let key = vec![0x42; 32];
+        let nonce = vec![0x01; 12];
+        let aad = b"\x00\x00\x00\x20";
+        let plaintext = b"Hello, AES-256-GCM!";
+
+        let ciphertext = aes_gcm_encrypt_with_aad(&key, &nonce, aad, plaintext).unwrap();
+        assert_eq!(ciphertext.len(), plaintext.len() + 16);
+
+        let decrypted = aes_gcm_decrypt_with_aad(&key, &nonce, aad, &ciphertext).unwrap();
+        assert_eq!(decrypted, plaintext);
+    }
+
+    #[test]
+    fn test_aes_gcm_aad_authentication() {
+        let key = vec![0x42; 16];
+        let nonce = vec![0x01; 12];
+        let aad = b"\x00\x00\x00\x1c";
+        let plaintext = b"test data";
+
+        let ciphertext = aes_gcm_encrypt_with_aad(&key, &nonce, aad, plaintext).unwrap();
+
+        // Modify AAD should cause authentication failure
+        let wrong_aad = b"\x00\x00\x00\x1d";
+        let result = aes_gcm_decrypt_with_aad(&key, &nonce, wrong_aad, &ciphertext);
+        assert!(result.is_err(), "Modified AAD must cause auth failure");
+    }
+
+    #[test]
+    fn test_aes_gcm_tampered_ciphertext() {
+        let key = vec![0x42; 16];
+        let nonce = vec![0x01; 12];
+        let aad = b"\x00\x00\x00\x1c";
+        let plaintext = b"test data";
+
+        let mut ciphertext = aes_gcm_encrypt_with_aad(&key, &nonce, aad, plaintext).unwrap();
+        // Flip a bit in the ciphertext
+        ciphertext[0] ^= 0x01;
+
+        let result = aes_gcm_decrypt_with_aad(&key, &nonce, aad, &ciphertext);
+        assert!(result.is_err(), "Tampered ciphertext must cause auth failure");
+    }
+
+    // === Generic CBC tests ===
+
+    #[test]
+    fn test_aes_cbc_raw_128_round_trip() {
+        let key = vec![0x42; 16];
+        let iv = vec![0x00; 16];
+        let plaintext = vec![0x01; 32]; // 2 blocks
+        let ct = aes_cbc_encrypt_raw(&key, &iv, &plaintext).unwrap();
+        let pt = aes_cbc_decrypt_raw(&key, &iv, &ct).unwrap();
+        assert_eq!(pt, plaintext);
+    }
+
+    #[test]
+    fn test_aes_cbc_raw_256_round_trip() {
+        let key = vec![0x42; 32];
+        let iv = vec![0x00; 16];
+        let plaintext = vec![0x01; 48]; // 3 blocks
+        let ct = aes_cbc_encrypt_raw(&key, &iv, &plaintext).unwrap();
+        let pt = aes_cbc_decrypt_raw(&key, &iv, &ct).unwrap();
+        assert_eq!(pt, plaintext);
+    }
+
+    #[test]
+    fn test_aes_cbc_raw_192_round_trip() {
+        let key = vec![0x42; 24];
+        let iv = vec![0x00; 16];
+        let plaintext = vec![0x01; 16]; // 1 block
+        let ct = aes_cbc_encrypt_raw(&key, &iv, &plaintext).unwrap();
+        let pt = aes_cbc_decrypt_raw(&key, &iv, &ct).unwrap();
+        assert_eq!(pt, plaintext);
     }
 }
