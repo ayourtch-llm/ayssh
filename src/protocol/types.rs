@@ -310,14 +310,18 @@ impl SshMpint {
             return Ok(Self(data));
         }
 
-        // Check for unnecessary leading zeros:
-        // A leading 0x00 byte is only valid if the next byte has MSB set (positive number sign padding)
+        // Check for unnecessary leading zeros (RFC 4251 Section 5):
+        // A leading 0x00 byte is only necessary when the next byte has its MSB set (bit 7),
+        // because without it the number would be interpreted as negative in two's complement.
+        // If the next byte does NOT have MSB set, the leading 0x00 is unnecessary padding.
         if data.len() > 1 && data[0] == 0x00 && (data[1] & 0x80) == 0 {
             return Err(SshError::InvalidMpint);
         }
 
-        // Check for unnecessary leading 0xFF bytes (negative number):
-        // A leading 0xFF byte is only valid if the next byte does NOT have MSB set
+        // Check for unnecessary leading 0xFF bytes (negative number, RFC 4251 Section 5):
+        // A leading 0xFF byte is only necessary when the next byte does NOT have its MSB set,
+        // because without it the number would be interpreted as positive.
+        // If the next byte DOES have MSB set, the leading 0xFF is unnecessary padding.
         if data.len() > 1 && data[0] == 0xFF && (data[1] & 0x80) != 0 {
             return Err(SshError::InvalidMpint);
         }

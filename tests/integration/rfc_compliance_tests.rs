@@ -361,7 +361,10 @@ fn test_rfc4253_packet_serialization() {
 
     assert_eq!(msg_type, 21);
     assert!(pad_len >= 4);
-    assert_eq!(length as usize + pad_len as usize + 4 + 1, serialized.len());
+    // Total serialized size = 4 (length field) + 1 (padding_length) + payload_content + padding
+    // In this implementation, 'length' = 1 (msg_type) + payload.len() = 4
+    // So total = 4 + 1 + length + pad_len = PACKET_HEADER_LEN + length + pad_len
+    assert_eq!(PACKET_HEADER_LEN + length as usize + pad_len as usize, serialized.len());
 }
 
 // ============================================================================

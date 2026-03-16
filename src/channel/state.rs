@@ -32,6 +32,8 @@ pub struct ChannelInfo {
     pub channel_type: String,
     /// Current state
     pub state: ChannelState,
+    /// Whether we have sent SSH_MSG_CHANNEL_CLOSE for this channel
+    pub close_sent: bool,
     /// Local window size
     pub local_window_size: u32,
     /// Remote window size
@@ -75,6 +77,7 @@ impl ChannelManager {
                 remote_id: ChannelId::INVALID,
                 channel_type: request.channel_type.as_str().to_string(),
                 state: ChannelState::Open,
+                close_sent: false,
                 local_window_size: request.initial_window_size,
                 remote_window_size: request.initial_window_size,
                 local_max_packet_size: request.max_packet_size,
@@ -225,7 +228,7 @@ impl ChannelManager {
         Ok(())
     }
     
-    /// Close a channel
+    /// Close a channel (we send SSH_MSG_CHANNEL_CLOSE)
     pub fn close(&self, channel_id: ChannelId) -> Result<ChannelClose, String> {
         let mut guard = self.channels.lock().unwrap();
         
@@ -234,18 +237,19 @@ impl ChannelManager {
         })?;
         
         channel.state = ChannelState::Closed;
+        channel.close_sent = true;
         
         Ok(ChannelClose { channel_id })
     }
 
-    /// Receive a close message on a channel
+    /// Receive a close message on a channel from the remote side
     ///
     /// Per RFC 4254 Section 5.3: "Upon receiving this message, a party MUST
     /// send back an SSH_MSG_CHANNEL_CLOSE unless it has already sent this
     /// message for the channel."
     ///
     /// Returns `Ok(Some(ChannelClose))` if a close response needs to be sent,
-    /// or `Ok(None)` if close was already sent.
+    /// or `Ok(None)` if we already sent close for this channel.
     pub fn receive_close(&self, channel_id: ChannelId) -> Result<Option<ChannelClose>, String> {
         let mut guard = self.channels.lock().unwrap();
 
@@ -253,12 +257,15 @@ impl ChannelManager {
             format!("Channel {} not found", channel_id.to_u32())
         })?;
 
-        let needs_response = channel.state != ChannelState::Closed;
+        let already_sent_close = channel.close_sent;
         channel.state = ChannelState::Closed;
 
-        if needs_response {
+        if !already_sent_close {
+            // We haven't sent close yet, so we MUST send it back
+            channel.close_sent = true;
             Ok(Some(ChannelClose { channel_id }))
         } else {
+            // We already sent close, no response needed
             Ok(None)
         }
     }
