@@ -304,49 +304,59 @@ impl KexContext {
         }
     }
 
-    /// Update a hasher with the session hash components
-    /// H = hash(V_C || V_S || I_C || I_S || K_S || e_C || e_S || K) per RFC 4253 Section 7.1
+    /// Update a hasher with the session hash components.
+    /// Per RFC 4253 Section 8 (for diffie-hellman-group1-sha1 / group14-sha256):
+    ///   H = hash(string V_C || string V_S || string I_C || string I_S ||
+    ///            string K_S || mpint e || mpint f || mpint K)
+    /// All `string` fields use SSH encoding: [uint32 length][data].
+    /// All `mpint` fields use SSH encoding: [uint32 length][data with sign bit].
     fn update_session_hash<H: Digest>(&mut self, hasher: &mut H) -> anyhow::Result<()> {
-        // V_C - client version string (without CRLF)
+        // V_C - client version string as SSH string (without CRLF)
         if let Some(ref vc) = self.client_version {
             let vc_clean = vc.strip_suffix(b"\r\n").unwrap_or(vc.strip_suffix(b"\n").unwrap_or(vc));
+            hasher.update(&(vc_clean.len() as u32).to_be_bytes());
             hasher.update(vc_clean);
         }
 
-        // V_S - server version string (without CRLF)
+        // V_S - server version string as SSH string (without CRLF)
         if let Some(ref vs) = self.server_version {
             let vs_clean = vs.strip_suffix(b"\r\n").unwrap_or(vs.strip_suffix(b"\n").unwrap_or(vs));
+            hasher.update(&(vs_clean.len() as u32).to_be_bytes());
             hasher.update(vs_clean);
         }
 
-        // I_C - client KEXINIT payload
+        // I_C - client KEXINIT payload as SSH string
         if let Some(ref ic) = self.client_kexinit {
+            hasher.update(&(ic.len() as u32).to_be_bytes());
             hasher.update(ic);
         }
 
-        // I_S - server KEXINIT payload
+        // I_S - server KEXINIT payload as SSH string
         if let Some(ref is) = self.server_kexinit {
+            hasher.update(&(is.len() as u32).to_be_bytes());
             hasher.update(is);
         }
 
-        // K_S - server host key
+        // K_S - server host key as SSH string
         if let Some(ref hs) = self.server_host_key {
+            hasher.update(&(hs.len() as u32).to_be_bytes());
             hasher.update(hs);
         }
 
-        // e_C - client public key exchange key (already encoded as MPINT or curve point)
+        // e - client DH public value as mpint (length-prefixed)
+        // client_ephemeral is stored as raw MPINT bytes (from Mpint::encode), NOT length-prefixed
         if let Some(ref ec) = self.client_ephemeral {
+            hasher.update(&(ec.len() as u32).to_be_bytes());
             hasher.update(ec);
         }
 
-        // e_S - server public key exchange key
+        // f - server DH public value as mpint (already length-prefixed from wire)
         if let Some(ref es) = self.server_ephemeral {
             hasher.update(es);
         }
 
-        // K - shared secret (as MPINT) - MUST BE LAST per RFC 4253
+        // K - shared secret as mpint (length-prefixed) - MUST BE LAST per RFC 4253
         if let Some(ref ss) = self.shared_secret {
-            // Convert Vec<u8> to BigUint and encode as length-prefixed MPINT
             let biguint = num_bigint::BigUint::from_bytes_be(ss);
             let mpint = crate::crypto::dh::Mpint::encode_length_prefixed(&biguint);
             hasher.update(&mpint);
