@@ -25,6 +25,23 @@ use tokio::process::Command;
 use tracing::{info, error, debug};
 use tracing_subscriber;
 
+/// Translate bare LF (0x0A) to CR+LF (0x0D 0x0A) for terminal display.
+/// Without a real PTY, child processes output bare LF which the SSH
+/// client's terminal doesn't handle correctly.
+fn translate_lf_to_crlf(data: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(data.len() + data.len() / 10);
+    for &b in data {
+        if b == 0x0A {
+            // Only add CR if previous byte wasn't already CR
+            if out.last() != Some(&0x0D) {
+                out.push(0x0D);
+            }
+        }
+        out.push(b);
+    }
+    out
+}
+
 /// Proxy data between SSH channel and a spawned process
 async fn run_shell(
     io: &mut ServerEncryptedIO,
@@ -64,11 +81,14 @@ async fn run_shell(
                         break;
                     }
                     Ok(n) => {
+                        // Translate bare LF → CR+LF for proper terminal display
+                        // (without a real PTY, the child sends bare LF)
+                        let output = translate_lf_to_crlf(&stdout_buf[..n]);
                         let mut msg = BytesMut::new();
                         msg.put_u8(94); // SSH_MSG_CHANNEL_DATA
                         msg.put_u32(client_channel);
-                        msg.put_u32(n as u32);
-                        msg.put_slice(&stdout_buf[..n]);
+                        msg.put_u32(output.len() as u32);
+                        msg.put_slice(&output);
                         io.send_message(&msg).await?;
                     }
                     Err(e) => {
@@ -83,12 +103,13 @@ async fn run_shell(
                 match result {
                     Ok(0) => {} // stderr closed, don't break - stdout might still have data
                     Ok(n) => {
+                        let output = translate_lf_to_crlf(&stderr_buf[..n]);
                         let mut msg = BytesMut::new();
                         msg.put_u8(95); // SSH_MSG_CHANNEL_EXTENDED_DATA
                         msg.put_u32(client_channel);
                         msg.put_u32(1); // data_type = SSH_EXTENDED_DATA_STDERR
-                        msg.put_u32(n as u32);
-                        msg.put_slice(&stderr_buf[..n]);
+                        msg.put_u32(output.len() as u32);
+                        msg.put_slice(&output);
                         io.send_message(&msg).await?;
                     }
                     Err(_) => {}
@@ -107,7 +128,12 @@ async fn run_shell(
                                     let data_len = u32::from_be_bytes([msg[5], msg[6], msg[7], msg[8]]) as usize;
                                     if msg.len() >= 9 + data_len {
                                         let data = &msg[9..9 + data_len];
-                                        if child_stdin.write_all(data).await.is_err() {
+                                        // Translate CR → LF (SSH client sends CR for Enter,
+                                        // but child process on pipes expects LF)
+                                        let translated: Vec<u8> = data.iter()
+                                            .map(|&b| if b == 0x0D { 0x0A } else { b })
+                                            .collect();
+                                        if child_stdin.write_all(&translated).await.is_err() {
                                             debug!("Child stdin closed");
                                             break;
                                         }
