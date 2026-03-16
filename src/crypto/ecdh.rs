@@ -258,25 +258,12 @@ impl EcdhKeyPair {
         x.as_slice().to_vec()
     }
 
-    /// Encode public key for SSH message (with curve type prefix)
+    /// Encode public key for SSH KEXDH_INIT/REPLY (Q_C/Q_S).
+    /// Per RFC 5656 Section 4, this is just the raw EC point
+    /// (uncompressed format for NIST curves, 32 bytes for Curve25519).
+    /// No curve name prefix - that's only in host key blobs.
     pub fn encode_public_key(&self) -> Vec<u8> {
-        let mut buf = BytesMut::new();
-        
-        // For NIST curves, prepend curve type string
-        match self.curve {
-            CurveType::Curve25519 => {
-                // Curve25519: just the 32-byte public key
-                buf.put_slice(&self.public_key);
-            }
-            CurveType::Nistp256 | CurveType::Nistp384 | CurveType::Nistp521 => {
-                // NIST curves: curve type string + public key point
-                buf.put_slice(self.curve.name().as_bytes());
-                buf.put_u8(0); // Null terminator for string
-                buf.put_slice(&self.public_key);
-            }
-        }
-        
-        buf.to_vec()
+        self.public_key.clone()
     }
 
     /// Decode public key from SSH message
@@ -386,11 +373,11 @@ mod tests {
     fn test_encode_decode_public_key_nistp256() {
         let key_pair = EcdhKeyPair::generate(CurveType::Nistp256, &mut OsRng);
         let encoded = key_pair.encode_public_key();
-        
-        // Should have curve type string + public key
-        assert!(encoded.len() > 32);
-        assert!(encoded.starts_with(b"nistp256"));
-        
+
+        // P-256 uncompressed point: 0x04 || x(32) || y(32) = 65 bytes
+        assert_eq!(encoded.len(), 65, "P-256 public key must be 65 bytes");
+        assert_eq!(encoded[0], 0x04, "Uncompressed point must start with 0x04");
+
         let decoded = EcdhKeyPair::decode_public_key(CurveType::Nistp256, &encoded).unwrap();
         assert_eq!(decoded, encoded);
     }
