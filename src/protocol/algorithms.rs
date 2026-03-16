@@ -380,7 +380,7 @@ impl FromStr for KexAlgorithm {
             "diffie-hellman-group16-sha512" => Ok(KexAlgorithm::DiffieHellmanGroup16Sha512),
             "diffie-hellman-group18-sha512" => Ok(KexAlgorithm::DiffieHellmanGroup18Sha512),
             "diffie-hellman-group-exchange-sha256" => Ok(KexAlgorithm::DiffieHellmanGroupExchangeSha256),
-            "curve25519-sha256" => Ok(KexAlgorithm::Curve25519Sha256),
+            "curve25519-sha256" | "curve25519-sha256@libssh.org" => Ok(KexAlgorithm::Curve25519Sha256),
             "ecdh-sha2-nistp256" => Ok(KexAlgorithm::EcdhSha2Nistp256),
             "ecdh-sha2-nistp384" => Ok(KexAlgorithm::EcdhSha2Nistp384),
             "ecdh-sha2-nistp521" => Ok(KexAlgorithm::EcdhSha2Nistp521),

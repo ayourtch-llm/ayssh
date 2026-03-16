@@ -58,6 +58,8 @@ pub struct Transport {
     recv_sequence_number: u32,
     /// Session ID from key exchange (needed for public key auth signatures)
     session_id: Option<Vec<u8>>,
+    /// Preferred KEX algorithm (placed first in KEXINIT)
+    preferred_kex: Option<String>,
     /// Preferred cipher algorithm (placed first in KEXINIT)
     preferred_cipher: Option<String>,
     /// Preferred MAC algorithm (placed first in KEXINIT)
@@ -112,6 +114,7 @@ impl Transport {
             send_sequence_number: 0,
             recv_sequence_number: 0,
             session_id: None,
+            preferred_kex: None,
             preferred_cipher: None,
             preferred_mac: None,
         }
@@ -142,12 +145,17 @@ impl Transport {
         self.session_id.as_deref()
     }
 
-    /// Set the preferred cipher algorithm (placed first in KEXINIT)
+    /// Set the preferred KEX algorithm
+    pub fn set_preferred_kex(&mut self, kex: &str) {
+        self.preferred_kex = Some(kex.to_string());
+    }
+
+    /// Set the preferred cipher algorithm
     pub fn set_preferred_cipher(&mut self, cipher: &str) {
         self.preferred_cipher = Some(cipher.to_string());
     }
 
-    /// Set the preferred MAC algorithm (placed first in KEXINIT)
+    /// Set the preferred MAC algorithm
     pub fn set_preferred_mac(&mut self, mac: &str) {
         self.preferred_mac = Some(mac.to_string());
     }
@@ -239,6 +247,7 @@ impl Transport {
         
         // 3. Generate client KEXINIT
         let client_kexinit = generate_client_kexinit_with_prefs(
+            self.preferred_kex.as_deref(),
             self.preferred_cipher.as_deref(),
             self.preferred_mac.as_deref(),
         );

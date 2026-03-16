@@ -89,6 +89,7 @@ pub fn parse_version_string(data: &[u8]) -> Result<(u32, String), &'static str> 
 /// Generate a client KEXINIT with preferred cipher and MAC placed first.
 /// If `preferred_cipher` or `preferred_mac` is None, uses default ordering.
 pub fn generate_client_kexinit_with_prefs(
+    preferred_kex: Option<&str>,
     preferred_cipher: Option<&str>,
     preferred_mac: Option<&str>,
 ) -> Vec<u8> {
@@ -100,7 +101,14 @@ pub fn generate_client_kexinit_with_prefs(
     rand::thread_rng().fill_bytes(&mut cookie);
     buf.put(&cookie[..]);
 
-    let kex_algorithms = "diffie-hellman-group1-sha1,diffie-hellman-group14-sha1,diffie-hellman-group14-sha256,diffie-hellman-group-exchange-sha256,diffie-hellman-group-exchange-sha1,curve25519-sha256";
+    let default_kex = "diffie-hellman-group1-sha1,diffie-hellman-group14-sha1,diffie-hellman-group14-sha256,curve25519-sha256,ecdh-sha2-nistp256,ecdh-sha2-nistp384,ecdh-sha2-nistp521";
+    let kex_list = if let Some(pref) = preferred_kex {
+        let others: Vec<&str> = default_kex.split(',').filter(|k| *k != pref).collect();
+        format!("{},{}", pref, others.join(","))
+    } else {
+        default_kex.to_string()
+    };
+    let kex_algorithms = &kex_list;
     let host_key_algorithms = "ssh-rsa,ssh-dss,ecdsa-sha2-nistp256,ecdsa-sha2-nistp384,ecdsa-sha2-nistp521,ssh-ed25519,rsa-sha2-512,rsa-sha2-256";
 
     let default_ciphers = "aes128-cbc,3des-cbc,aes192-cbc,aes256-cbc,aes128-ctr,aes192-ctr,aes256-ctr";
@@ -152,7 +160,7 @@ pub fn generate_client_kexinit_with_prefs(
 
 /// Generate a client KEXINIT with default algorithm ordering
 pub fn generate_client_kexinit() -> Vec<u8> {
-    generate_client_kexinit_with_prefs(None, None)
+    generate_client_kexinit_with_prefs(None, None, None)
 }
 
 /// Parse server KEXINIT message

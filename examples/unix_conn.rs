@@ -21,6 +21,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Parse flags
     let mut key_file: Option<String> = None;
     let mut kbd_interactive = false;
+    let mut preferred_kex: Option<String> = None;
     let mut preferred_cipher: Option<String> = None;
     let mut preferred_mac: Option<String> = None;
     let mut filtered_args: Vec<String> = Vec::new();
@@ -37,6 +38,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 skip_next = true;
             } else {
                 eprintln!("Error: --key requires a filename argument");
+                std::process::exit(1);
+            }
+        } else if arg == "--kex" {
+            if let Some(next) = args.get(i + 1) {
+                preferred_kex = Some(next.clone());
+                skip_next = true;
+            } else {
+                eprintln!("Error: --kex requires an algorithm name");
                 std::process::exit(1);
             }
         } else if arg == "--cipher" {
@@ -71,8 +80,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("Options:");
         eprintln!("  --key <file>        Use RSA public key authentication");
         eprintln!("  --kbd-interactive   Use keyboard-interactive authentication");
+        eprintln!("  --kex <name>        Prefer KEX (curve25519-sha256, diffie-hellman-group14-sha256, ...)");
         eprintln!("  --cipher <name>     Prefer cipher (aes128-ctr, aes256-ctr, aes128-cbc, ...)");
-        eprintln!("  --mac <name>        Prefer MAC (hmac-sha1, hmac-sha2-256, ...)");
+        eprintln!("  --mac <name>        Prefer MAC (hmac-sha1, hmac-sha2-256, hmac-sha2-256-etm@openssh.com, ...)");
         eprintln!("");
         eprintln!("Examples:");
         eprintln!("  {} 192.168.1.1 ubuntu password \"uname -a\"", filtered_args[0]);
@@ -97,7 +107,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let private_key = std::fs::read(key_path)
             .map_err(|e| format!("Failed to read private key {}: {}", key_path, e))?;
 
-        let prefs = CryptoPrefs { cipher: preferred_cipher.clone(), mac: preferred_mac.clone() };
+        let prefs = CryptoPrefs { kex: preferred_kex.clone(), cipher: preferred_cipher.clone(), mac: preferred_mac.clone() };
         let mut conn = UnixConn::new_with_key_and_prefs(target, username, &private_key, prefs).await?;
         println!("Connected with public key authentication!");
 
@@ -119,7 +129,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         info!("Command: {}", command);
         println!("");
 
-        let prefs = CryptoPrefs { cipher: preferred_cipher.clone(), mac: preferred_mac.clone() };
+        let prefs = CryptoPrefs { kex: preferred_kex.clone(), cipher: preferred_cipher.clone(), mac: preferred_mac.clone() };
         let mut conn = UnixConn::new_with_prefs(target, conn_type, username, password, prefs).await?;
         println!("Connected with {} authentication!", auth_label);
 

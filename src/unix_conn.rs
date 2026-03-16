@@ -83,6 +83,7 @@ impl Default for UnixConnConfig {
 pub struct CryptoPrefs {
     pub cipher: Option<String>,
     pub mac: Option<String>,
+    pub kex: Option<String>,
 }
 
 pub struct UnixConn {
@@ -147,7 +148,7 @@ impl UnixConn {
         preferred_cipher: Option<String>,
         preferred_mac: Option<String>,
     ) -> CryptoPrefs {
-        CryptoPrefs { cipher: preferred_cipher, mac: preferred_mac }
+        CryptoPrefs { kex: None, cipher: preferred_cipher, mac: preferred_mac }
     }
 
     /// Create a new UnixConn with specific crypto preferences
@@ -185,6 +186,9 @@ impl UnixConn {
 
             info!("Connecting to {}...", target);
             let mut transport = client.connect().await?;
+            if let Some(ref kex) = crypto_prefs.kex {
+                transport.set_preferred_kex(kex);
+            }
             if let Some(ref cipher) = crypto_prefs.cipher {
                 transport.set_preferred_cipher(cipher);
             }

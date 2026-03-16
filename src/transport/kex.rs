@@ -156,11 +156,20 @@ impl KexContext {
     pub fn process_server_kex_init(&mut self, data: &[u8]) -> anyhow::Result<()> {
         // Check if this is an ECDH algorithm
         if let Some(curve) = self.get_curve_type() {
-            // For ECDH, data is the encoded public key
-            let decoded = EcdhKeyPair::decode_public_key(curve, data)
+            // For ECDH, data starts with SSH string Q_S (length-prefixed public key)
+            if data.len() < 4 {
+                return Err(anyhow::anyhow!("ECDH server key too short"));
+            }
+            let qs_len = u32::from_be_bytes([data[0], data[1], data[2], data[3]]) as usize;
+            if data.len() < 4 + qs_len {
+                return Err(anyhow::anyhow!("ECDH server key truncated"));
+            }
+            let qs_raw = &data[4..4 + qs_len];
+            let decoded = EcdhKeyPair::decode_public_key(curve, qs_raw)
                 .map_err(|e| anyhow::anyhow!("{}", e))?;
             self.server_ecdh_public = Some(decoded);
-            self.server_ephemeral = Some(data.to_vec());
+            // Store as length-prefixed SSH string for exchange hash
+            self.server_ephemeral = Some(data[..4 + qs_len].to_vec());
         } else {
             // For DH, data starts with length-prefixed MPINT (f)
             // The rest (signature) is ignored here
