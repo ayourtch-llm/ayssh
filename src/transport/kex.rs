@@ -259,14 +259,16 @@ impl KexContext {
     }
 
     /// Compute the exchange hash (H) and set it as session ID
-    /// According to RFC 4253 Section 7.1:
-    /// H = Hash(K_S || V_C || V_S || I_C || I_S || K_C || K_S || e_C || e_S)
-    /// For client: K_C is empty (client doesn't send host key in KEX)
+    /// According to RFC 4253 Section 8:
+    /// H = Hash(V_C || V_S || I_C || I_S || K_S || e || f || K)
     pub fn compute_session_id(&mut self) -> anyhow::Result<Vec<u8>> {
+        let hash_input = self.build_hash_input()?;
+        debug!("Exchange hash input: {} bytes", hash_input.len());
+
         match self.algorithm {
             protocol::KexAlgorithm::DiffieHellmanGroup1Sha1 => {
                 let mut hasher = Sha1::new();
-                self.update_session_hash(&mut hasher)?;
+                hasher.update(&hash_input);
                 Ok(hasher.finalize().to_vec())
             }
             protocol::KexAlgorithm::DiffieHellmanGroup14Sha256 |
@@ -304,49 +306,90 @@ impl KexContext {
         }
     }
 
-    /// Update a hasher with the session hash components
-    /// H = hash(V_C || V_S || I_C || I_S || K_S || e_C || e_S || K) per RFC 4253 Section 7.1
-    fn update_session_hash<H: Digest>(&mut self, hasher: &mut H) -> anyhow::Result<()> {
-        // V_C - client version string (without CRLF)
+    /// Update a hasher with the session hash components per RFC 4253 Section 8.
+    /// H = hash(V_C || V_S || I_C || I_S || K_S || e || f || K)
+    ///
+    /// All fields are encoded as SSH strings (4-byte length prefix + data) or
+    /// SSH mpints (4-byte length prefix + value with sign handling).
+    /// Build the raw hash input for debugging and for direct hashing
+    fn build_hash_input(&self) -> anyhow::Result<Vec<u8>> {
+        fn ssh_string(data: &[u8]) -> Vec<u8> {
+            let mut buf = Vec::with_capacity(4 + data.len());
+            buf.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            buf.extend_from_slice(data);
+            buf
+        }
+
+        let mut input = Vec::new();
+
         if let Some(ref vc) = self.client_version {
             let vc_clean = vc.strip_suffix(b"\r\n").unwrap_or(vc.strip_suffix(b"\n").unwrap_or(vc));
-            hasher.update(vc_clean);
+            input.extend_from_slice(&ssh_string(vc_clean));
         }
-
-        // V_S - server version string (without CRLF)
         if let Some(ref vs) = self.server_version {
             let vs_clean = vs.strip_suffix(b"\r\n").unwrap_or(vs.strip_suffix(b"\n").unwrap_or(vs));
-            hasher.update(vs_clean);
+            input.extend_from_slice(&ssh_string(vs_clean));
         }
-
-        // I_C - client KEXINIT payload
         if let Some(ref ic) = self.client_kexinit {
-            hasher.update(ic);
+            input.extend_from_slice(&ssh_string(ic));
         }
-
-        // I_S - server KEXINIT payload
-        if let Some(ref is) = self.server_kexinit {
-            hasher.update(is);
+        if let Some(ref is_payload) = self.server_kexinit {
+            input.extend_from_slice(&ssh_string(is_payload));
         }
-
-        // K_S - server host key
         if let Some(ref hs) = self.server_host_key {
-            hasher.update(hs);
+            input.extend_from_slice(&ssh_string(hs));
         }
-
-        // e_C - client public key exchange key (already encoded as MPINT or curve point)
         if let Some(ref ec) = self.client_ephemeral {
-            hasher.update(ec);
+            input.extend_from_slice(&ssh_string(ec));
+        }
+        if let Some(ref es) = self.server_ephemeral {
+            input.extend_from_slice(es); // already length-prefixed
+        }
+        if let Some(ref ss) = self.shared_secret {
+            let biguint = num_bigint::BigUint::from_bytes_be(ss);
+            let mpint = crate::crypto::dh::Mpint::encode_length_prefixed(&biguint);
+            input.extend_from_slice(&mpint);
+        } else {
+            return Err(anyhow::anyhow!("Shared secret not computed"));
         }
 
-        // e_S - server public key exchange key
+        Ok(input)
+    }
+
+    fn update_session_hash<H: Digest>(&mut self, hasher: &mut H) -> anyhow::Result<()> {
+        // Helper: encode as SSH string (4-byte big-endian length + data)
+        fn ssh_string(data: &[u8]) -> Vec<u8> {
+            let mut buf = Vec::with_capacity(4 + data.len());
+            buf.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            buf.extend_from_slice(data);
+            buf
+        }
+
+        if let Some(ref vc) = self.client_version {
+            let vc_clean = vc.strip_suffix(b"\r\n").unwrap_or(vc.strip_suffix(b"\n").unwrap_or(vc));
+            hasher.update(&ssh_string(vc_clean));
+        }
+        if let Some(ref vs) = self.server_version {
+            let vs_clean = vs.strip_suffix(b"\r\n").unwrap_or(vs.strip_suffix(b"\n").unwrap_or(vs));
+            hasher.update(&ssh_string(vs_clean));
+        }
+        if let Some(ref ic) = self.client_kexinit {
+            hasher.update(&ssh_string(ic));
+        }
+        if let Some(ref is_payload) = self.server_kexinit {
+            hasher.update(&ssh_string(is_payload));
+        }
+        if let Some(ref hs) = self.server_host_key {
+            hasher.update(&ssh_string(hs));
+        }
+        if let Some(ref ec) = self.client_ephemeral {
+            hasher.update(&ssh_string(ec));
+        }
         if let Some(ref es) = self.server_ephemeral {
+            // server_ephemeral is already length-prefixed from wire data
             hasher.update(es);
         }
-
-        // K - shared secret (as MPINT) - MUST BE LAST per RFC 4253
         if let Some(ref ss) = self.shared_secret {
-            // Convert Vec<u8> to BigUint and encode as length-prefixed MPINT
             let biguint = num_bigint::BigUint::from_bytes_be(ss);
             let mpint = crate::crypto::dh::Mpint::encode_length_prefixed(&biguint);
             hasher.update(&mpint);
@@ -874,5 +917,84 @@ mod tests {
         assert_eq!(keys.mac_key_c2s.len(), 32);  // HMAC-SHA256
         assert_eq!(keys.client_iv.len(), 16);     // CBC mode IV
         assert_eq!(keys.server_iv.len(), 16);     // CBC mode IV
+    }
+
+    /// Verify exchange hash input uses SSH string encoding (4-byte length prefix)
+    /// per RFC 4253 Section 8
+    #[test]
+    fn test_exchange_hash_uses_ssh_string_encoding() {
+        let mut context = KexContext::new(protocol::KexAlgorithm::DiffieHellmanGroup1Sha1);
+
+        // Set up minimal exchange info
+        context.set_exchange_info(
+            b"SSH-2.0-TestClient",
+            b"SSH-2.0-TestServer",
+            b"\x14test_client_kexinit",  // starts with msg type 20
+            b"\x14test_server_kexinit",
+        );
+        context.set_server_host_key(b"test_host_key");
+        context.client_ephemeral = Some(vec![0x42; 32]); // fake client DH pub
+
+        // Set a fake server ephemeral (need length-prefixed for exchange hash)
+        let mut server_eph = Vec::new();
+        server_eph.extend_from_slice(&32u32.to_be_bytes());
+        server_eph.extend_from_slice(&[0x43; 32]);
+        context.server_ephemeral = Some(server_eph);
+        context.shared_secret = Some(vec![0x44; 128]);
+
+        let hash_input = context.build_hash_input().unwrap();
+
+        // Verify V_C starts with 4-byte length prefix
+        let vc_len = u32::from_be_bytes([hash_input[0], hash_input[1], hash_input[2], hash_input[3]]);
+        assert_eq!(vc_len, 18, "V_C length should be 18 for 'SSH-2.0-TestClient'");
+        assert_eq!(&hash_input[4..4+18], b"SSH-2.0-TestClient");
+
+        // Verify V_S starts with 4-byte length prefix after V_C
+        let vs_offset = 4 + 18;
+        let vs_len = u32::from_be_bytes([
+            hash_input[vs_offset], hash_input[vs_offset+1],
+            hash_input[vs_offset+2], hash_input[vs_offset+3],
+        ]);
+        assert_eq!(vs_len, 18, "V_S length should be 18 for 'SSH-2.0-TestServer'");
+
+        // Verify hash input is non-empty and has reasonable size
+        assert!(hash_input.len() > 100, "Hash input should be substantial");
+    }
+
+    /// Verify that exchange hash is deterministic with the same inputs
+    #[test]
+    fn test_exchange_hash_deterministic() {
+        fn make_context() -> KexContext {
+            let group = DhGroup::group1();
+            let mut ctx = KexContext::new(protocol::KexAlgorithm::DiffieHellmanGroup1Sha1);
+
+            // Use fixed keys for reproducibility
+            let private_key = BigUint::from(12345u64);
+            let public_key = group.compute_public_key(&private_key);
+            let server_private = BigUint::from(67890u64);
+            let server_public = group.compute_public_key(&server_private);
+
+            ctx.client_private = Some(private_key);
+            ctx.client_ephemeral = Some(Mpint::encode(&public_key));
+            ctx.server_public = Some(server_public.clone());
+            ctx.server_ephemeral = Some(Mpint::encode_length_prefixed(&server_public));
+            ctx.set_exchange_info(
+                b"SSH-2.0-Client",
+                b"SSH-2.0-Server",
+                b"\x14client_kexinit_data",
+                b"\x14server_kexinit_data",
+            );
+            ctx.set_server_host_key(b"host_key_blob");
+            ctx.compute_shared_secret().unwrap();
+            ctx
+        }
+
+        let ctx1 = make_context();
+        let ctx2 = make_context();
+
+        let hash1 = ctx1.build_hash_input().unwrap();
+        let hash2 = ctx2.build_hash_input().unwrap();
+
+        assert_eq!(hash1, hash2, "Exchange hash input must be deterministic");
     }
 }

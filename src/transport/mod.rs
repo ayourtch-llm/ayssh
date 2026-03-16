@@ -49,6 +49,13 @@ pub struct Transport {
     encrypt_state: Option<EncryptionState>,
     /// Decryption state for server-to-client direction
     decrypt_state: Option<DecryptionState>,
+    /// Buffer for leftover bytes from TCP reads (handles cases where
+    /// multiple SSH packets arrive in a single TCP segment)
+    read_buffer: Vec<u8>,
+    /// Client-to-server packet sequence number (counts ALL packets from connection start per RFC 4253 Section 6.4)
+    send_sequence_number: u32,
+    /// Server-to-client packet sequence number (counts ALL packets from connection start per RFC 4253 Section 6.4)
+    recv_sequence_number: u32,
 }
 
 /// Encryption state for outgoing packets
@@ -95,6 +102,9 @@ impl Transport {
             channel_manager: ChannelTransferManager::new(),
             encrypt_state: None,
             decrypt_state: None,
+            read_buffer: Vec::new(),
+            send_sequence_number: 0,
+            recv_sequence_number: 0,
         }
     }
 
@@ -126,6 +136,53 @@ impl Transport {
     /// Get mutable reference to channel manager
     pub fn channel_manager_mut(&mut self) -> &mut ChannelTransferManager {
         &mut self.channel_manager
+    }
+
+    /// Read exactly one unencrypted SSH binary packet from the stream.
+    /// Handles TCP buffering: if a previous read returned extra bytes
+    /// (e.g., NEWKEYS piggybacked on KEXDH_REPLY), those bytes are used first.
+    /// Returns the full packet bytes including the 4-byte length prefix.
+    async fn read_unencrypted_packet(&mut self, timeout_secs: u64) -> Result<Vec<u8>, crate::error::SshError> {
+        let mut data = std::mem::take(&mut self.read_buffer);
+
+        loop {
+            // Check if we have enough data to determine the packet length
+            if data.len() >= 4 {
+                let packet_len = u32::from_be_bytes([data[0], data[1], data[2], data[3]]) as usize;
+                let total_needed = 4 + packet_len;
+                if data.len() >= total_needed {
+                    // We have a complete packet. Split off any extra bytes for next read.
+                    let remainder = data.split_off(total_needed);
+                    self.read_buffer = remainder;
+                    self.recv_sequence_number = self.recv_sequence_number.wrapping_add(1);
+                    return Ok(data);
+                }
+            }
+
+            // Need more data from the stream
+            let mut buf = vec![0u8; 1024];
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(timeout_secs),
+                self.stream.read(&mut buf),
+            )
+            .await
+            {
+                Ok(Ok(0)) => {
+                    return Err(crate::error::SshError::ConnectionError(
+                        "Connection closed while reading packet".to_string(),
+                    ));
+                }
+                Ok(Ok(n)) => {
+                    data.extend_from_slice(&buf[..n]);
+                }
+                Ok(Err(e)) => {
+                    return Err(crate::error::SshError::IoError(e));
+                }
+                Err(_) => {
+                    return Err(crate::error::SshError::TimeoutError);
+                }
+            }
+        }
     }
 
     /// Perform SSH handshake with the server
@@ -201,67 +258,17 @@ impl Transport {
                kexinit_msg.len(), &kexinit_msg[..std::cmp::min(10, kexinit_msg.len())]);
         
         self.stream_mut().write_all(&kexinit_msg).await?;
-        debug!("Sent client KEXINIT packet ({} bytes total)", kexinit_msg.len());
+        self.send_sequence_number = self.send_sequence_number.wrapping_add(1);
+        debug!("Sent client KEXINIT packet ({} bytes total, seq={})", kexinit_msg.len(), self.send_sequence_number - 1);
         
-        // 5. Receive server KEXINIT - Cisco sends KEXINIT as a binary packet
-        // Format: [packet_length (4 bytes)][padding_length (1 byte)][kexinit_payload][padding]
-        let mut server_kexinit_bytes = Vec::new();
-        let mut buffer = vec![0u8; 1024];
-        
-        // First read the packet length (4 bytes)
-        loop {
-            match tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                self.stream_mut().read(&mut buffer)
-            ).await {
-                Ok(Ok(0)) => {
-                    return Err(crate::error::SshError::ConnectionError(
-                        "Connection closed while reading KEXINIT packet length".to_string()
-                    ));
-                }
-                Ok(Ok(n)) => {
-                    debug!("Received {} bytes from server", n);
-                    server_kexinit_bytes.extend_from_slice(&buffer[..n]);
-                    
-                    // Need at least 4 bytes for packet length
-                    if server_kexinit_bytes.len() >= 4 {
-                        // Parse packet length
-                        let packet_len = u32::from_be_bytes([
-                            server_kexinit_bytes[0],
-                            server_kexinit_bytes[1],
-                            server_kexinit_bytes[2],
-                            server_kexinit_bytes[3]
-                        ]) as usize;
-                        debug!("Server KEXINIT packet length: {} bytes", packet_len);
-                        
-                        // Now we need packet_len + 4 (for the length field itself) bytes total
-                        if server_kexinit_bytes.len() >= packet_len + 4 {
-                            debug!("Successfully received server KEXINIT packet");
-                            debug!("Server KEXINIT raw bytes (first 20): {:?}", &server_kexinit_bytes[..std::cmp::min(20, server_kexinit_bytes.len())]);
-                            break;
-                        }
-                        // Continue reading
-                    }
-                    
-                    // If we have more than 1000 bytes and still can't parse, something is wrong
-                    if server_kexinit_bytes.len() > 1000 {
-                        return Err(crate::error::SshError::ProtocolError(
-                            format!("Could not parse KEXINIT packet after {} bytes", server_kexinit_bytes.len())
-                        ));
-                    }
-                }
-                Ok(Err(e)) => {
-                    return Err(crate::error::SshError::IoError(e));
-                }
-                Err(_) => {
-                    return Err(crate::error::SshError::TimeoutError);
-                }
-            }
-        }
+        // 5. Receive server KEXINIT using buffered packet reader
+        let server_kexinit_bytes = self.read_unencrypted_packet(5).await?;
+        debug!("Successfully received server KEXINIT packet ({} bytes)", server_kexinit_bytes.len());
         
         // Extract the KEXINIT payload from the packet
-        // packet_length includes padding_length byte + payload + padding
-        // So payload starts at offset 5 (4 for length + 1 for padding_length)
+        // packet_length = padding_length_byte(1) + payload + padding
+        // So: payload_length = packet_length - 1 - padding_length
+        // Payload starts at offset 5 (4 for length field + 1 for padding_length byte)
         let packet_len = u32::from_be_bytes([
             server_kexinit_bytes[0],
             server_kexinit_bytes[1],
@@ -270,7 +277,7 @@ impl Transport {
         ]) as usize;
         let padding_len = server_kexinit_bytes[4] as usize;
         let payload_start = 5;
-        let payload_end = 5 + packet_len - padding_len;
+        let payload_end = 4 + packet_len - padding_len; // 4 + (1 + payload + padding) - padding = 5 + payload
         
         debug!("KEXINIT packet_len: {}, padding_len: {}, payload: {}-{}", 
                packet_len, padding_len, payload_start, payload_end);
@@ -349,60 +356,21 @@ impl Transport {
             kexdh_init_msg.put_u8(0);
         }
         
-        debug!("Sending KEXDH_INIT packet (payload={}, padding={}, total={})", 
-               payload_len, padding_length, kexdh_init_msg.len());
+        debug!("Sending KEXDH_INIT packet (payload={}, padding={}, total={}, seq={})",
+               payload_len, padding_length, kexdh_init_msg.len(), self.send_sequence_number);
         self.stream_mut().write_all(&kexdh_init_msg).await?;
+        self.send_sequence_number = self.send_sequence_number.wrapping_add(1);
         
-        // 10. Receive KEXDH_REPLY from server
-        let mut reply_bytes = Vec::new();
-        let mut reply_buffer = vec![0u8; 1024];
-        
-        // First read the packet length (4 bytes)
-        loop {
-            match tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                self.stream_mut().read(&mut reply_buffer)
-            ).await {
-                Ok(Ok(0)) => {
-                    return Err(crate::error::SshError::ConnectionError(
-                        "Connection closed while reading KEXDH_REPLY packet length".to_string()
-                    ));
-                }
-                Ok(Ok(n)) => {
-                    reply_bytes.extend_from_slice(&reply_buffer[..n]);
-                    
-                    if reply_bytes.len() >= 4 {
-                        let packet_len = u32::from_be_bytes([
-                            reply_bytes[0], reply_bytes[1], reply_bytes[2], reply_bytes[3]
-                        ]) as usize;
-                        debug!("KEXDH_REPLY packet length: {} bytes", packet_len);
-                        
-                        if reply_bytes.len() >= packet_len + 4 {
-                            debug!("Successfully received KEXDH_REPLY packet");
-                            break;
-                        }
-                    }
-                    
-                    if reply_bytes.len() > 2000 {
-                        return Err(crate::error::SshError::ProtocolError(
-                            format!("Could not parse KEXDH_REPLY packet after {} bytes", reply_bytes.len())
-                        ));
-                    }
-                }
-                Ok(Err(e)) => {
-                    return Err(crate::error::SshError::IoError(e));
-                }
-                Err(_) => {
-                    return Err(crate::error::SshError::TimeoutError);
-                }
-            }
-        }
+        // 10. Receive KEXDH_REPLY from server using buffered packet reader
+        let reply_bytes = self.read_unencrypted_packet(5).await?;
+        debug!("Successfully received KEXDH_REPLY packet ({} bytes)", reply_bytes.len());
         
         // Extract payload from packet
+        // packet_length = padding_length_byte(1) + payload + padding
         let packet_len = u32::from_be_bytes([reply_bytes[0], reply_bytes[1], reply_bytes[2], reply_bytes[3]]) as usize;
         let padding_len = reply_bytes[4] as usize;
         let payload_start = 5;
-        let payload_end = 5 + packet_len - padding_len;
+        let payload_end = 4 + packet_len - padding_len; // 4 + (1 + payload + padding) - padding = 5 + payload
         
         debug!("KEXDH_REPLY packet_len: {}, padding_len: {}, payload: {}-{}", 
                packet_len, padding_len, payload_start, payload_end);
@@ -472,52 +440,19 @@ impl Transport {
         // 13. Send NEWKEYS message
         let newkeys_msg = crate::transport::kex::encode_newkeys();
         self.stream_mut().write_all(&newkeys_msg).await?;
+        self.send_sequence_number = self.send_sequence_number.wrapping_add(1);
+        debug!("Sent NEWKEYS (seq={})", self.send_sequence_number - 1);
         
-        // 14. Receive NEWKEYS from server - Cisco sends without length prefix
-        let mut newkeys_bytes = Vec::new();
-        let mut newkeys_buffer = vec![0u8; 1024];
-        
-        loop {
-            match tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                self.stream_mut().read(&mut newkeys_buffer)
-            ).await {
-                Ok(Ok(0)) => {
-                    return Err(crate::error::SshError::ConnectionError(
-                        "Connection closed while reading NEWKEYS".to_string()
-                    ));
-                }
-                Ok(Ok(n)) => {
-                    debug!("Received {} bytes for NEWKEYS", n);
-                    newkeys_bytes.extend_from_slice(&newkeys_buffer[..n]);
-                    
-                    // SSH packet format: [length (4 bytes)][padding_length (1 byte)][payload]
-                    // Message type is at byte 5 (index 5), so we need at least 6 bytes
-                    if newkeys_bytes.len() >= 6 && newkeys_bytes[5] == crate::protocol::MessageType::Newkeys as u8 {
-                        debug!("Received valid NEWKEYS message ({} bytes)", newkeys_bytes.len());
-                        break;
-                    }
-                    
-                    if newkeys_bytes.len() > 2000 {
-                        return Err(crate::error::SshError::ProtocolError(
-                            format!("Could not parse NEWKEYS after {} bytes", newkeys_bytes.len())
-                        ));
-                    }
-                }
-                Ok(Err(e)) => {
-                    return Err(crate::error::SshError::IoError(e));
-                }
-                Err(_) => {
-                    return Err(crate::error::SshError::TimeoutError);
-                }
-            }
-        }
-        
+        // 14. Receive NEWKEYS from server using buffered packet reader
+        let newkeys_bytes = self.read_unencrypted_packet(5).await?;
+
+        // Validate NEWKEYS message type (byte 5 = after 4-byte length + 1-byte padding_length)
         if newkeys_bytes.len() < 6 || newkeys_bytes[5] != crate::protocol::MessageType::Newkeys as u8 {
             return Err(crate::error::SshError::ProtocolError(
-                "Expected NEWKEYS from server".to_string()
+                format!("Expected NEWKEYS from server, got {:?}", &newkeys_bytes[..std::cmp::min(10, newkeys_bytes.len())])
             ));
         }
+        debug!("Received valid NEWKEYS message ({} bytes)", newkeys_bytes.len());
         
         // Set up encryption state after NEWKEYS exchange
         // Get the negotiated algorithms from the handshake state
@@ -538,15 +473,17 @@ impl Transport {
             debug!("  server_iv: {:?}", session_keys.server_iv);
             
             // Set up client-to-server encryption state
+            // Sequence numbers continue from the pre-NEWKEYS count per RFC 4253 Section 6.4
+            debug!("Initializing encryption with send_seq={}, recv_seq={}", self.send_sequence_number, self.recv_sequence_number);
             self.encrypt_state = Some(EncryptionState {
                 enc_key: session_keys.enc_key_c2s.clone(),
                 iv: session_keys.client_iv.clone(),
                 mac_key: session_keys.mac_key_c2s.clone(),
-                sequence_number: 0,
+                sequence_number: self.send_sequence_number,
                 enc_algorithm: enc_c2s,
                 mac_algorithm: mac_c2s,
             });
-            
+
             // Set up server-to-client decryption state
             // Note: To decrypt packets FROM server, we need the key that server used to encrypt
             // Server encrypts with enc_key_s2c, so we decrypt with the same key
@@ -554,7 +491,7 @@ impl Transport {
                 dec_key: session_keys.enc_key_s2c.clone(),
                 iv: session_keys.server_iv.clone(),
                 mac_key: session_keys.mac_key_s2c.clone(),
-                sequence_number: 0,
+                sequence_number: self.recv_sequence_number,
                 dec_algorithm: enc_s2c,
                 mac_algorithm: mac_s2c,
             });
@@ -602,130 +539,155 @@ impl Transport {
         Ok(())
     }
 
+    /// Read exactly `n` bytes from the read_buffer + stream
+    async fn read_exact_buffered(&mut self, n: usize) -> Result<Vec<u8>, crate::error::SshError> {
+        let mut data = Vec::with_capacity(n);
+
+        // Drain from read_buffer first
+        let from_buf = std::cmp::min(n, self.read_buffer.len());
+        if from_buf > 0 {
+            data.extend_from_slice(&self.read_buffer[..from_buf]);
+            self.read_buffer = self.read_buffer[from_buf..].to_vec();
+        }
+
+        // Read remaining from stream
+        if data.len() < n {
+            let remaining = n - data.len();
+            let mut buf = vec![0u8; remaining];
+            self.stream.read_exact(&mut buf).await?;
+            data.extend_from_slice(&buf);
+        }
+
+        Ok(data)
+    }
+
     /// Receive an SSH message (with decryption if enabled)
+    ///
+    /// For AES-CBC mode:
+    /// - The encrypted portion is: 4-byte packet_length + padding_length + payload + padding
+    /// - Total encrypted size = 4 + packet_length (must be multiple of cipher block size)
+    /// - MAC is appended unencrypted after the ciphertext
+    /// - Returns the full decrypted packet (packet_length field + padding_length + payload + padding)
     pub async fn recv_message(&mut self) -> Result<Vec<u8>, crate::error::SshError> {
-        // Check if decryption is enabled
-        let decryption_enabled = self.decrypt_state.is_some();
-        
-        if decryption_enabled {
-            let decrypt_state = self.decrypt_state.as_ref().unwrap();
-            
-            // For CBC mode, the packet length field is encrypted (RFC 4253 Section 6.3)
-            // Packet structure: [encrypted: length(4) + padding_len(1) + payload + padding] + [MAC]
-            
-            // Calculate MAC length based on algorithm
-            let mac_len = match decrypt_state.mac_algorithm.as_str() {
+        if self.decrypt_state.is_none() {
+            // Read unencrypted (shouldn't happen after handshake)
+            let len_buf = self.read_exact_buffered(4).await?;
+            let len = u32::from_be_bytes([len_buf[0], len_buf[1], len_buf[2], len_buf[3]]) as usize;
+            let msg_buf = self.read_exact_buffered(len).await?;
+            return Ok(msg_buf);
+        }
+
+        // Extract needed values from decrypt_state before calling async methods
+        let mac_len = {
+            let ds = self.decrypt_state.as_ref().unwrap();
+            match ds.mac_algorithm.as_str() {
                 "hmac-sha1" => 20,
                 "hmac-sha1-96" => 12,
                 "hmac-md5" => 16,
                 "hmac-md5-96" => 12,
                 "hmac-sha2-256" => 32,
                 "hmac-sha2-512" => 64,
-                _ => 20, // Default to HMAC-SHA1
-            };
-            
-            // Read minimum: one AES block (16 bytes) + MAC
-            let min_size = 16 + mac_len;
-            let mut buffer = vec![0u8; min_size];
-            self.stream.read_exact(&mut buffer).await?;
-            debug!("Read minimum {} bytes (16 + MAC:{})", min_size, mac_len);
-            debug!("Raw received bytes (first 36): {:?}", &buffer[..std::cmp::min(36, buffer.len())]);
-            
-            // Save the current IV before decryption (we need it for CBC decryption)
-            let current_iv = decrypt_state.iv.clone();
-            
-            // Decrypt just the first 16 bytes to get packet length (without padding removal)
-            let first_block = &buffer[..16];
-            debug!("Decrypting with key (first 8 bytes): {:?}", &decrypt_state.dec_key[..std::cmp::min(8, decrypt_state.dec_key.len())]);
-            debug!("Decrypting with IV (first 8 bytes): {:?}", &current_iv[..std::cmp::min(8, current_iv.len())]);
-            debug!("Ciphertext first block: {:?}", first_block);
-            let decrypted_first_block = aes_128_cbc_decrypt_raw(
-                &decrypt_state.dec_key,
-                &current_iv,
-                first_block
-            )?;
-            debug!("Decrypted first block: {:?}", &decrypted_first_block[..16]);
-            
-            // For debugging, print the expected packet length for SERVICE_ACCEPT
-            // SERVICE_ACCEPT is message type 6, so the packet should be:
-            // [length (4)][padding_len (1)][6][padding...]
-            // Minimum packet length would be 4+1+6+4 = 15 bytes (with 4 bytes padding)
-            debug!("Expected packet length for SERVICE_ACCEPT: ~15-30 bytes");
-            
-            // Extract packet length from decrypted data (first 4 bytes, big-endian)
-            let packet_length = u32::from_be_bytes([
-                decrypted_first_block[0],
-                decrypted_first_block[1],
-                decrypted_first_block[2],
-                decrypted_first_block[3]
-            ]) as usize;
-            debug!("Extracted packet length: {}", packet_length);
-            
-            // Validate packet length
-            if packet_length < 1 || packet_length > 35000 {
-                return Err(crate::error::SshError::ProtocolError(
-                    format!("Invalid packet length: {}", packet_length)
-                ));
+                _ => 20,
             }
-            
-            // Total bytes needed: packet_length (encrypted portion) + mac_len
-            let total_bytes = packet_length + mac_len;
-            
-            // If packet is larger than minimum, read more bytes
-            if total_bytes > min_size {
-                let additional = total_bytes - min_size;
-                debug!("Need {} additional bytes", additional);
-                let mut additional_data = vec![0u8; additional];
-                self.stream.read_exact(&mut additional_data).await?;
-                buffer.extend_from_slice(&additional_data);
-            }
-            
-            debug!("Total encrypted data with MAC: {} bytes (packet: {} + MAC: {})", 
-                   buffer.len(), packet_length, mac_len);
-            
-            // Split buffer into encrypted portion and MAC
-            let encrypted = &buffer[..packet_length];
-            let received_mac = &buffer[packet_length..];
+        };
 
-            // Decrypt the entire encrypted portion first (per RFC 4253, MAC is over unencrypted data)
-            let decrypt_state = self.decrypt_state.as_mut().unwrap();
-            let decrypted = aes_128_cbc_decrypt(&decrypt_state.dec_key, &decrypt_state.iv, encrypted)?;
-            debug!("Decrypted successfully, got {} bytes", decrypted.len());
+        // Step 1: Read and decrypt the first AES block (16 bytes) to get packet_length
+        let first_block_ciphertext = self.read_exact_buffered(16).await?;
+        debug!("Read first encrypted block: {:?}", &first_block_ciphertext);
 
-            // Update IV for next packet (last 16 bytes of ciphertext for AES)
-            if encrypted.len() >= 16 {
-                decrypt_state.iv = encrypted[encrypted.len() - 16..].to_vec();
-            }
+        let (current_iv, dec_key) = {
+            let ds = self.decrypt_state.as_ref().unwrap();
+            (ds.iv.clone(), ds.dec_key.clone())
+        };
+        let decrypted_first_block = aes_128_cbc_decrypt_raw(
+            &dec_key,
+            &current_iv,
+            &first_block_ciphertext,
+        )?;
+        debug!("Decrypted first block: {:?}", &decrypted_first_block[..16]);
 
-            // Verify HMAC over sequence number + decrypted packet (per RFC 4253 Section 6.4)
-            let mut mac_data = Vec::with_capacity(4 + decrypted.len());
-            mac_data.extend_from_slice(&decrypt_state.sequence_number.to_be_bytes());
-            mac_data.extend_from_slice(&decrypted);
+        // Extract packet_length from first 4 bytes of decrypted data
+        let packet_length = u32::from_be_bytes([
+            decrypted_first_block[0],
+            decrypted_first_block[1],
+            decrypted_first_block[2],
+            decrypted_first_block[3],
+        ]) as usize;
+        debug!("Extracted packet_length: {}", packet_length);
 
-            let mut hmac = HmacSha1::new(&decrypt_state.mac_key);
-            hmac.update(&mac_data);
-            let expected_mac = hmac.finish();
-
-            if !expected_mac.iter().eq(received_mac.iter()) {
-                return Err(crate::error::SshError::ProtocolError(
-                    "MAC verification failed".to_string()
-                ));
-            }
-            debug!("MAC verification successful");
-
-            // Update sequence number
-            decrypt_state.sequence_number = decrypt_state.sequence_number.wrapping_add(1);
-
-            Ok(decrypted)
-        } else {
-            // Read unencrypted (shouldn't happen after handshake)
-            let mut len_buf = [0u8; 4];
-            self.stream.read_exact(&mut len_buf).await?;
-            let len = u32::from_be_bytes(len_buf) as usize;
-            let mut msg_buf = vec![0u8; len];
-            self.stream.read_exact(&mut msg_buf).await?;
-            Ok(msg_buf)
+        if packet_length < 1 || packet_length > 35000 {
+            return Err(crate::error::SshError::ProtocolError(
+                format!("Invalid packet length: {}", packet_length),
+            ));
         }
+
+        // Step 2: Total encrypted size is 4 + packet_length (the 4-byte length field is encrypted too)
+        // We already read 16 bytes, so read the remaining encrypted bytes + MAC
+        let total_encrypted = 4 + packet_length;
+        let remaining_encrypted = total_encrypted - 16; // already read first block
+        let remaining_to_read = remaining_encrypted + mac_len;
+        let rest = self.read_exact_buffered(remaining_to_read).await?;
+
+        // Reassemble the full ciphertext
+        let mut full_ciphertext = Vec::with_capacity(total_encrypted);
+        full_ciphertext.extend_from_slice(&first_block_ciphertext);
+        full_ciphertext.extend_from_slice(&rest[..remaining_encrypted]);
+
+        // Extract MAC
+        let received_mac = &rest[remaining_encrypted..];
+        debug!("Total encrypted: {} bytes, MAC: {} bytes", total_encrypted, received_mac.len());
+
+        // Step 3: Decrypt the full ciphertext (use _raw to avoid PKCS#7 padding removal;
+        // SSH uses its own padding scheme per RFC 4253 Section 6)
+        let decrypt_state = self.decrypt_state.as_mut().unwrap();
+        let decrypted = aes_128_cbc_decrypt_raw(&decrypt_state.dec_key, &decrypt_state.iv, &full_ciphertext)?;
+        debug!("Decrypted {} bytes, first 20: {:?}", decrypted.len(), &decrypted[..std::cmp::min(20, decrypted.len())]);
+
+        // Update IV for next packet (last 16 bytes of ciphertext)
+        if full_ciphertext.len() >= 16 {
+            decrypt_state.iv = full_ciphertext[full_ciphertext.len() - 16..].to_vec();
+        }
+
+        // Step 4: Verify HMAC over sequence_number + unencrypted packet (RFC 4253 Section 6.4)
+        let mut mac_data = Vec::with_capacity(4 + decrypted.len());
+        mac_data.extend_from_slice(&decrypt_state.sequence_number.to_be_bytes());
+        mac_data.extend_from_slice(&decrypted);
+
+        let mut hmac = HmacSha1::new(&decrypt_state.mac_key);
+        hmac.update(&mac_data);
+        let expected_mac = hmac.finish();
+
+        if expected_mac.len() != received_mac.len() || !expected_mac.iter().zip(received_mac.iter()).all(|(a, b)| a == b) {
+            debug!("MAC mismatch! seq={}, expected={:?}, received={:?}",
+                   decrypt_state.sequence_number, &expected_mac[..8], &received_mac[..std::cmp::min(8, received_mac.len())]);
+            return Err(crate::error::SshError::ProtocolError(
+                "MAC verification failed".to_string(),
+            ));
+        }
+        debug!("MAC verification successful (seq={})", decrypt_state.sequence_number);
+
+        // Update sequence number
+        decrypt_state.sequence_number = decrypt_state.sequence_number.wrapping_add(1);
+
+        // Extract payload from decrypted packet:
+        // decrypted = [packet_length: 4][padding_length: 1][payload: N][padding: P]
+        if decrypted.len() < 5 {
+            return Err(crate::error::SshError::ProtocolError(
+                "Decrypted packet too short".to_string(),
+            ));
+        }
+        let padding_len = decrypted[4] as usize;
+        let payload_start = 5;
+        let payload_end = decrypted.len() - padding_len;
+        if payload_end <= payload_start {
+            return Err(crate::error::SshError::ProtocolError(
+                format!("Invalid padding_length {} in decrypted packet of {} bytes", padding_len, decrypted.len()),
+            ));
+        }
+        let payload = decrypted[payload_start..payload_end].to_vec();
+        debug!("Extracted payload: {} bytes, msg_type={}", payload.len(), payload[0]);
+
+        Ok(payload)
     }
 
     /// Encrypt a packet with AES-CBC and HMAC-SHA1
@@ -770,8 +732,8 @@ impl Transport {
             ));
         }
         
-        // Decode service name
-        let service = protocol::SshString::decode(&mut msg.as_slice())
+        // Decode service name (skip message type byte)
+        let service = protocol::SshString::decode(&mut &msg[1..])
             .map_err(|e| crate::error::SshError::ProtocolError(e.to_string()))?
             .to_str()
             .map_err(|e| crate::error::SshError::ProtocolError(e.to_string()))?
@@ -868,16 +830,25 @@ impl Transport {
 
 // Standalone helper functions for encryption/decryption
 fn encrypt_packet_cbc(payload: &[u8], state: &mut EncryptionState) -> Result<Vec<u8>, crate::error::SshError> {
-    // Calculate padding to ensure 8-byte alignment
+    // Calculate padding per RFC 4253 Section 6:
+    // Total of (packet_length || padding_length || payload || padding) must be multiple of
+    // max(8, cipher_block_size). For AES-128-CBC, block size is 16.
+    let block_size: usize = match state.enc_algorithm.as_str() {
+        "aes128-cbc" | "aes192-cbc" | "aes256-cbc" => 16,
+        _ => 8,
+    };
     let payload_len = payload.len();
     let total_without_padding = 4 + 1 + payload_len;
-    let remainder = total_without_padding % 8;
-    let padding_length = if remainder == 0 {
-        8u8
+    let remainder = total_without_padding % block_size;
+    let mut padding_length = if remainder == 0 {
+        block_size as u8
     } else {
-        let p = (8 - remainder) as u8;
-        if p < 4 { p + 8 } else { p }
+        (block_size - remainder) as u8
     };
+    // Ensure minimum padding of 4 bytes per RFC 4253
+    if padding_length < 4 {
+        padding_length += block_size as u8;
+    }
     
     let packet_length = payload_len as u32 + padding_length as u32 + 1;
     
@@ -940,10 +911,10 @@ fn decrypt_packet_cbc(encrypted_with_mac: &[u8], state: &mut DecryptionState) ->
 
     let (encrypted, received_mac) = encrypted_with_mac.split_at(encrypted_with_mac.len() - mac_len);
 
-    // Decrypt using AES-CBC first (per RFC 4253, MAC is over unencrypted data)
+    // Decrypt using AES-CBC (raw, no PKCS#7 removal - SSH uses its own padding)
     let decrypted = match state.dec_algorithm.as_str() {
         "aes128-cbc" => {
-            aes_128_cbc_decrypt(&state.dec_key, &state.iv, encrypted)?
+            aes_128_cbc_decrypt_raw(&state.dec_key, &state.iv, encrypted)?
         }
         _ => {
             return Err(crate::error::SshError::ProtocolError(

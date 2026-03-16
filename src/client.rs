@@ -127,8 +127,8 @@ impl SshClient {
         // Perform SSH handshake (version exchange and key exchange)
         transport.handshake().await?;
 
-        // Request ssh-connection service
-        transport.send_service_request("ssh-connection").await?;
+        // Request ssh-userauth service (RFC 4252 Section 2)
+        transport.send_service_request("ssh-userauth").await?;
         let service = transport.recv_service_accept().await?;
         eprintln!("✓ Service accepted: {}", service);
 

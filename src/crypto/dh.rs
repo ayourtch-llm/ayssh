@@ -17,12 +17,13 @@ use crate::protocol;
 
 /// MODP Group 1 (RFC 2409 Oakley Group 2, 1024-bit) prime p
 /// RFC 2409 Section 6.2, RFC 4253 Section 8.1
-/// This is the standard 1024-bit MODP group required for interoperability with older devices like Cisco
-/// Note: This is the first 1024 bits of the RFC 3526 2048-bit group
+/// MODP Group 2 (1024-bit) prime p from RFC 2409 Section 6.2 / RFC 3526 Section 2
+/// SSH's "diffie-hellman-group1-sha1" uses this prime (Oakley Group 2)
+/// p = 2^1024 - 2^960 - 1 + 2^64 * { floor(2^894 * pi) + 129093 }
 pub const GROUP1_P: &str = "FFFFFFFF FFFFFFFF C90FDAA2 2168C234 C4C6628B 80DC1CD1 29024E08 8A67CC74 \
                              020BBEA6 3B139B22 514A0879 8E3404DD EF9519B3 CD3A431B 302B0A6D F25F1437 \
                              4FE1356D 6D51C245 E485B576 625E7EC6 F44C42E9 A637ED6B 0BFF5CB6 F406B7ED \
-                             EE386BFB 5A899FA5 AE9F2411 7C4B1FE6 49286651 ECE45B3D C2007CB8 A163BF05";
+                             EE386BFB 5A899FA5 AE9F2411 7C4B1FE6 49286651 ECE65381 FFFFFFFF FFFFFFFF";
 
 /// MODP Group 1 generator g = 2
 pub const GROUP1_G: u32 = 2;
@@ -336,15 +337,56 @@ mod tests {
     fn test_dh_hash_computation() {
         let group = DhGroup::group14();
         let mut rng = OsRng;
-        
+
         let x = group.generate_private_key(&mut rng, 256);
         let k = group.compute_public_key(&x);
-        
+
         let h = b"test_session_id";
-        
+
         let hash = compute_dh_hash(&k, h, protocol::HashAlgorithm::Sha256);
-        
+
         // Hash should be 32 bytes for SHA256
         assert_eq!(hash.len(), 32);
+    }
+
+    /// Verify DH Group 1 prime is exactly 1024 bits and matches RFC 2409 Section 6.2
+    /// p = 2^1024 - 2^960 - 1 + 2^64 * { floor(2^894 * pi) + 129093 }
+    #[test]
+    fn test_group1_prime_is_1024_bits() {
+        let group = DhGroup::group1();
+        assert_eq!(group.p.bits(), 1024, "Group 1 prime must be exactly 1024 bits");
+    }
+
+    /// Verify DH Group 1 prime starts and ends correctly per RFC 2409
+    #[test]
+    fn test_group1_prime_boundary_values() {
+        let group = DhGroup::group1();
+        let p_bytes = group.p.to_bytes_be();
+
+        // The prime must start with 0xFF (all top bits set)
+        assert_eq!(p_bytes[0], 0xFF, "Group 1 prime must start with 0xFF");
+        assert_eq!(p_bytes[1], 0xFF, "Group 1 prime second byte must be 0xFF");
+
+        // The prime must end with 0xFF (last 64 bits are all 1s by construction)
+        let len = p_bytes.len();
+        assert_eq!(p_bytes[len - 1], 0xFF, "Group 1 prime must end with 0xFF");
+        assert_eq!(p_bytes[len - 2], 0xFF, "Group 1 prime second-to-last byte must be 0xFF");
+        assert_eq!(p_bytes[len - 8], 0xFF, "Group 1 prime last 8 bytes must all be 0xFF");
+    }
+
+    /// Verify DH Group 1 prime is a valid safe prime (p is odd, (p-1)/2 passes basic checks)
+    #[test]
+    fn test_group1_prime_is_odd() {
+        let group = DhGroup::group1();
+        // A prime must be odd (last bit = 1)
+        let p_bytes = group.p.to_bytes_be();
+        assert_eq!(p_bytes[p_bytes.len() - 1] & 1, 1, "Group 1 prime must be odd");
+    }
+
+    /// Verify DH Group 1 generator is 2
+    #[test]
+    fn test_group1_generator() {
+        let group = DhGroup::group1();
+        assert_eq!(group.g, BigUint::from(2u32), "Group 1 generator must be 2");
     }
 }

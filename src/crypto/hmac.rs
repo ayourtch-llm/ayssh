@@ -109,8 +109,8 @@ impl HmacSha512 {
 
 /// HMAC-SHA1 state machine for streaming computation
 pub struct HmacSha1 {
-    /// SHA1 hasher for streaming computation
-    hasher: Sha1,
+    /// Accumulated message data
+    data: Vec<u8>,
     /// Key for HMAC
     key: Vec<u8>,
 }
@@ -119,56 +119,55 @@ impl HmacSha1 {
     /// Create a new HMAC-SHA1 instance with the given key
     pub fn new(key: &[u8]) -> Self {
         assert!(!key.is_empty(), "HMAC key must not be empty");
-        
+
         Self {
-            hasher: Sha1::new(),
+            data: Vec::new(),
             key: key.to_vec(),
         }
     }
 
     /// Update the HMAC computation with additional data
     pub fn update(&mut self, data: &[u8]) {
-        self.hasher.update(data);
+        self.data.extend_from_slice(data);
     }
 
     /// Finalize the HMAC computation and return the result
-    pub fn finish(mut self) -> [u8; 20] {
-        // Compute HMAC-SHA1 manually since ring doesn't support it
-        // HMAC(K, text) = H(K' XOR opad, H(K' XOR ipad, text))
+    pub fn finish(self) -> [u8; 20] {
+        // HMAC(K, text) = H((K' XOR opad) || H((K' XOR ipad) || text))
         let block_size: usize = 64; // SHA1 block size
-        
+
         let mut k = self.key.clone();
-        
+
         // If key is longer than block size, hash it
         if k.len() > block_size {
             let hash_result = Sha1::new().chain_update(&k).finalize();
             k = hash_result.to_vec();
         }
-        
+
         // Pad key to block size
         k.resize(block_size, 0);
-        
+
         // Create ipad and opad
         let mut ipad = [0x36u8; 64];
         let mut opad = [0x5cu8; 64];
-        
+
         for i in 0..64 {
             ipad[i] ^= k[i];
             opad[i] ^= k[i];
         }
-        
+
         // Compute inner hash: H(K' XOR ipad || text)
         let mut inner_hasher = Sha1::new();
         inner_hasher.update(&ipad);
-        inner_hasher.update(&self.hasher.finalize_reset());
+        inner_hasher.update(&self.data);
         let inner_hash = inner_hasher.finalize();
-        
+
         // Compute outer hash: H(K' XOR opad || inner_hash)
         let mut outer_hasher = Sha1::new();
         outer_hasher.update(&opad);
         outer_hasher.update(&inner_hash);
         let result = outer_hasher.finalize();
-        
+
         result.into()
     }
 }
@@ -310,10 +309,54 @@ mod tests {
         let key1 = b"key1";
         let key2 = b"key2";
         let data = b"same data";
-        
+
         let result1 = compute_sha1(key1, data);
         let result2 = compute_sha1(key2, data);
-        
+
         assert_ne!(result1, result2);
+    }
+
+    /// Verify HMAC-SHA1 against RFC 2202 Test Case 1
+    #[test]
+    fn test_hmac_sha1_rfc2202_test1() {
+        let key = vec![0x0bu8; 20];
+        let data = b"Hi There";
+        let result = compute_sha1(&key, data);
+        let expected = hex::decode("b617318655057264e28bc0b6fb378c8ef146be00").unwrap();
+        assert_eq!(result.as_slice(), expected.as_slice(),
+            "HMAC-SHA1 must match RFC 2202 test vector 1");
+    }
+
+    /// Verify HMAC-SHA1 against Python's hmac module output
+    #[test]
+    fn test_hmac_sha1_known_vector() {
+        let key = b"test_key_1234567";
+        let data = b"test data for hmac verification";
+        let result = compute_sha1(key, data);
+        let expected = hex::decode("ae806996620bbadc010ebad9fac96392e5eb4b20").unwrap();
+        assert_eq!(result.as_slice(), expected.as_slice(),
+            "HMAC-SHA1 must match known test vector");
+    }
+
+    /// Verify that streaming HMAC-SHA1 (multiple updates) produces the same
+    /// result as single-shot computation - this was the original bug where
+    /// update() hashed data through an intermediate SHA1 hasher
+    #[test]
+    fn test_hmac_sha1_streaming_matches_oneshot() {
+        let key = b"test_key_1234567";
+        let data = b"test data for hmac verification";
+
+        // Single-shot
+        let oneshot = compute_sha1(key, data);
+
+        // Streaming (split at various points)
+        for split in 0..=data.len() {
+            let mut hmac = HmacSha1::new(key);
+            hmac.update(&data[..split]);
+            hmac.update(&data[split..]);
+            let streaming = hmac.finish();
+            assert_eq!(oneshot, streaming,
+                "Streaming HMAC-SHA1 (split at {}) must match oneshot", split);
+        }
     }
 }

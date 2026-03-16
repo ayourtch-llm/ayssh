@@ -403,15 +403,19 @@ impl Session {
         use crate::channel::types::ChannelId;
         use crate::protocol::messages::MessageType;
 
-        // Open session channel
+        // Open session channel per RFC 4254 Section 5.1:
+        //   byte      SSH_MSG_CHANNEL_OPEN
+        //   string    channel type ("session")
+        //   uint32    sender channel
+        //   uint32    initial window size
+        //   uint32    maximum packet size
         let mut msg = bytes::BytesMut::new();
         msg.put_u8(MessageType::ChannelOpen as u8);
-        msg.put_u32(0); // recipient channel (0 for server)
-        msg.put_u32(1024); // initial window size
+        msg.put_u32(7); // channel type string length
+        msg.put_slice(b"session"); // channel type
+        msg.put_u32(0); // sender channel (our local channel ID)
+        msg.put_u32(1048576); // initial window size (1MB)
         msg.put_u32(32768); // maximum packet size
-        msg.put_u32(0); // channel type length
-        msg.put_slice(b"session");
-        msg.put_u32(0); // extra data length
 
         transport.send_message(&msg).await?;
 
