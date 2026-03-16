@@ -354,23 +354,42 @@ fn remove_pkcs7_padding(data: &mut Vec<u8>) -> Result<(), CipherError> {
 /// * `Ok(Vec<u8>)` - Encrypted data (no padding added)
 /// * `Err(CipherError)` - Error if key/iv size is invalid or encryption fails
 pub fn aes_128_cbc_encrypt_raw(key: &[u8], iv: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, CipherError> {
-    // Validate key size
-    if key.len() != 16 {
+    aes_cbc_encrypt_raw(key, iv, plaintext)
+}
+
+/// Encrypt data using AES-CBC mode without PKCS#7 padding.
+/// Supports AES-128, AES-192, and AES-256 based on key length.
+pub fn aes_cbc_encrypt_raw(key: &[u8], iv: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, CipherError> {
+    if key.len() != 16 && key.len() != 24 && key.len() != 32 {
         return Err(CipherError::InvalidKeySize { expected: 16, actual: key.len() });
     }
-    
-    // Validate IV size
     if iv.len() != 16 {
         return Err(CipherError::InvalidIvSizeCbc);
     }
-    
-    // Check plaintext length (must be multiple of block size)
     if plaintext.is_empty() || plaintext.len() % 16 != 0 {
         return Err(CipherError::InvalidPadding);
     }
-    
-    // Encrypt without adding padding
-    aes_cbc_encrypt_impl_128(key, iv, plaintext)
+
+    use aes::cipher::{BlockEncrypt, KeyInit};
+    let mut blocks: Vec<u8> = plaintext.to_vec();
+    let mut prev_block = iv.to_vec();
+
+    for chunk in blocks.chunks_mut(16) {
+        for (i, byte) in chunk.iter_mut().enumerate() {
+            *byte ^= prev_block[i];
+        }
+        let mut block = generic_array::GenericArray::<u8, _>::clone_from_slice(chunk);
+        match key.len() {
+            16 => { aes::Aes128::new_from_slice(key).unwrap().encrypt_block(&mut block); }
+            24 => { aes::Aes192::new_from_slice(key).unwrap().encrypt_block(&mut block); }
+            32 => { aes::Aes256::new_from_slice(key).unwrap().encrypt_block(&mut block); }
+            _ => unreachable!(),
+        }
+        chunk.copy_from_slice(&block);
+        prev_block.copy_from_slice(chunk);
+    }
+
+    Ok(blocks)
 }
 
 /// Encrypt data using AES-128-CBC mode
@@ -495,49 +514,41 @@ pub fn aes_128_cbc_decrypt(key: &[u8], iv: &[u8], ciphertext: &[u8]) -> Result<V
 /// * `Ok(Vec<u8>)` - Decrypted data (with padding intact)
 /// * `Err(CipherError)` - Error if key/iv size is invalid or decryption fails
 pub fn aes_128_cbc_decrypt_raw(key: &[u8], iv: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>, CipherError> {
-    // Validate key size
-    if key.len() != 16 {
+    aes_cbc_decrypt_raw(key, iv, ciphertext)
+}
+
+/// Decrypt data using AES-CBC mode without removing padding.
+/// Supports AES-128, AES-192, and AES-256 based on key length.
+pub fn aes_cbc_decrypt_raw(key: &[u8], iv: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>, CipherError> {
+    if key.len() != 16 && key.len() != 24 && key.len() != 32 {
         return Err(CipherError::InvalidKeySize { expected: 16, actual: key.len() });
     }
-    
-    // Validate IV size
     if iv.len() != 16 {
         return Err(CipherError::InvalidIvSizeCbc);
     }
-    
-    // Check ciphertext length (must be multiple of block size)
     if ciphertext.is_empty() || ciphertext.len() % 16 != 0 {
         return Err(CipherError::InvalidPadding);
     }
-    
-    // Decrypt using AES-128
+
     use aes::cipher::{BlockDecrypt, KeyInit};
-    let cipher = aes::Aes128::new_from_slice(key).map_err(|e| {
-        CipherError::CryptoError(format!("Invalid key: {}", e))
-    })?;
-    
     let mut blocks: Vec<u8> = ciphertext.to_vec();
     let mut prev_block = iv.to_vec();
-    
-    // Process data in 16-byte blocks
+
     for chunk in blocks.chunks_mut(16) {
-        // Save the ciphertext block before modifying it (needed for next iteration's prev_block)
         let ciphertext_block: [u8; 16] = chunk.try_into().unwrap();
-        
-        // Decrypt the block first
         let mut block = generic_array::GenericArray::<u8, _>::clone_from_slice(chunk);
-        cipher.decrypt_block(&mut block);
-        
-        // Now XOR the decrypted block with previous ciphertext block (or IV for first block)
+        match key.len() {
+            16 => { aes::Aes128::new_from_slice(key).unwrap().decrypt_block(&mut block); }
+            24 => { aes::Aes192::new_from_slice(key).unwrap().decrypt_block(&mut block); }
+            32 => { aes::Aes256::new_from_slice(key).unwrap().decrypt_block(&mut block); }
+            _ => unreachable!(),
+        }
         for (i, byte) in chunk.iter_mut().enumerate() {
             *byte = block[i] ^ prev_block[i];
         }
-        
-        // Update previous block to the ciphertext block (for next iteration)
         prev_block.copy_from_slice(&ciphertext_block);
     }
-    
-    // Do NOT remove padding - caller handles this
+
     Ok(blocks)
 }
 

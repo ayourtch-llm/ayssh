@@ -4,8 +4,8 @@
 //! packet encryption, and session state management.
 
 use crate::channel::ChannelTransferManager;
-use crate::crypto::cipher::{aes_128_cbc_decrypt, aes_128_cbc_decrypt_raw, aes_128_cbc_encrypt_raw, CipherError};
-use crate::crypto::hmac::{HmacSha1, HmacSha256};
+use crate::crypto::cipher::{aes_cbc_decrypt_raw, aes_cbc_encrypt_raw, CipherError};
+use crate::crypto::hmac::{HmacSha1, HmacSha256, HmacSha512};
 use crate::protocol;
 use bytes::BufMut;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -630,7 +630,7 @@ impl Transport {
         };
 
         let decrypted_first_block = match dec_algo.as_str() {
-            "aes128-cbc" => aes_128_cbc_decrypt_raw(&dec_key, &current_iv, &first_block_ciphertext)?,
+            "aes128-cbc" | "aes192-cbc" | "aes256-cbc" => aes_cbc_decrypt_raw(&dec_key, &current_iv, &first_block_ciphertext)?,
             "aes128-ctr" | "aes192-ctr" | "aes256-ctr" => {
                 use crate::crypto::cipher::aes_ctr_decrypt;
                 aes_ctr_decrypt(&dec_key, &current_iv, &first_block_ciphertext)?
@@ -661,7 +661,7 @@ impl Transport {
         // For CTR mode, total_encrypted may not be block-aligned, but we still
         // need to round up to block boundary for the encrypted data on the wire
         let total_encrypted_padded = match dec_algo.as_str() {
-            "aes128-cbc" => total_encrypted, // CBC: already block-aligned by SSH padding
+            "aes128-cbc" | "aes192-cbc" | "aes256-cbc" => total_encrypted, // CBC: already block-aligned by SSH padding
             _ => total_encrypted,            // CTR: stream cipher, no alignment needed
         };
         let remaining_encrypted = total_encrypted_padded - 16;
@@ -680,7 +680,7 @@ impl Transport {
         // Step 3: Decrypt the full ciphertext
         let decrypt_state = self.decrypt_state.as_mut().unwrap();
         let decrypted = match decrypt_state.dec_algorithm.as_str() {
-            "aes128-cbc" => aes_128_cbc_decrypt_raw(&decrypt_state.dec_key, &decrypt_state.iv, &full_ciphertext)?,
+            "aes128-cbc" | "aes192-cbc" | "aes256-cbc" => aes_cbc_decrypt_raw(&decrypt_state.dec_key, &decrypt_state.iv, &full_ciphertext)?,
             "aes128-ctr" | "aes192-ctr" | "aes256-ctr" => {
                 use crate::crypto::cipher::aes_ctr_decrypt;
                 let pt = aes_ctr_decrypt(&decrypt_state.dec_key, &decrypt_state.iv, &full_ciphertext)?;
@@ -694,7 +694,7 @@ impl Transport {
 
         // Update IV for next packet
         match decrypt_state.dec_algorithm.as_str() {
-            "aes128-cbc" => {
+            "aes128-cbc" | "aes192-cbc" | "aes256-cbc" => {
                 // CBC: IV = last ciphertext block
                 if full_ciphertext.len() >= 16 {
                     decrypt_state.iv = full_ciphertext[full_ciphertext.len() - 16..].to_vec();
@@ -896,8 +896,13 @@ fn compute_mac(algorithm: &str, key: &[u8], data: &[u8]) -> Vec<u8> {
             hmac.update(data);
             hmac.finish().to_vec()
         }
+        "hmac-sha2-512" => {
+            let mut hmac = HmacSha512::new(key);
+            hmac.update(data);
+            hmac.finish().to_vec()
+        }
         _ => {
-            // Default to HMAC-SHA1 (covers hmac-sha1, hmac-sha1-96, etc.)
+            // Default to HMAC-SHA1
             let mut hmac = HmacSha1::new(key);
             hmac.update(data);
             hmac.finish().to_vec()
@@ -963,8 +968,8 @@ fn encrypt_packet_cbc(payload: &[u8], state: &mut EncryptionState) -> Result<Vec
 
     // Encrypt the packet
     let encrypted = match state.enc_algorithm.as_str() {
-        "aes128-cbc" => {
-            let ct = aes_128_cbc_encrypt_raw(&state.enc_key, &state.iv, &packet)?;
+        "aes128-cbc" | "aes192-cbc" | "aes256-cbc" => {
+            let ct = aes_cbc_encrypt_raw(&state.enc_key, &state.iv, &packet)?;
             // Update IV for next packet (last 16 bytes of ciphertext)
             if ct.len() >= 16 {
                 state.iv = ct[ct.len() - 16..].to_vec();
@@ -1010,8 +1015,8 @@ fn decrypt_packet_cbc(encrypted_with_mac: &[u8], state: &mut DecryptionState) ->
 
     // Decrypt using AES-CBC (raw, no PKCS#7 removal - SSH uses its own padding)
     let decrypted = match state.dec_algorithm.as_str() {
-        "aes128-cbc" => {
-            aes_128_cbc_decrypt_raw(&state.dec_key, &state.iv, encrypted)?
+        "aes128-cbc" | "aes192-cbc" | "aes256-cbc" => {
+            aes_cbc_decrypt_raw(&state.dec_key, &state.iv, encrypted)?
         }
         _ => {
             return Err(crate::error::SshError::ProtocolError(
