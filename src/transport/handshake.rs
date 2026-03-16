@@ -4,6 +4,7 @@
 
 use crate::protocol;
 use crate::protocol::KexAlgorithm;
+use crate::transport::kex::SessionKeys;
 use crate::transport::TransportSession;
 use bytes::{Buf, BufMut, BytesMut};
 use std::str::FromStr;
@@ -24,6 +25,16 @@ pub struct HandshakeState {
     pub server_kexinit: Option<Vec<u8>>,
     /// Negotiated algorithms
     pub negotiated: Option<protocol::NegotiatedAlgorithms>,
+    /// Session keys after key exchange
+    pub session_keys: Option<SessionKeys>,
+    /// Client-to-server encryption algorithm
+    pub enc_c2s: Option<String>,
+    /// Server-to-client encryption algorithm
+    pub enc_s2c: Option<String>,
+    /// Client-to-server MAC algorithm
+    pub mac_c2s: Option<String>,
+    /// Server-to-client MAC algorithm
+    pub mac_s2c: Option<String>,
 }
 
 impl Default for HandshakeState {
@@ -32,6 +43,11 @@ impl Default for HandshakeState {
             client_kexinit: None,
             server_kexinit: None,
             negotiated: None,
+            session_keys: None,
+            enc_c2s: None,
+            enc_s2c: None,
+            mac_c2s: None,
+            mac_s2c: None,
         }
     }
 }

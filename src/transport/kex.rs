@@ -338,21 +338,43 @@ impl KexContext {
     }
 
     /// Derive session keys from shared secret and session hash
+    /// 
+    /// Key derivation follows RFC 4253 Section 7.2:
+    /// String K = SSH_KEX_ALG || E_C || E_S || K_S || H
+    /// String V = session_id
+    /// Key = Hash(K || V || A) || Hash(K || V || B) || ...
+    /// where A, B, C, ... are single bytes starting with 1
     pub fn derive_session_keys(&mut self, hash: &[u8]) -> anyhow::Result<SessionKeys> {
         if let Some(ref shared_secret) = self.shared_secret {
-            // Use the session hash as session_id for KDF
-            let enc_key_len = 32; // AES-256
-            let mac_key_len = 32; // SHA-256
-            let iv_len = 12; // For GCM/ChaCha20
+            // Determine key/IV lengths based on the negotiated algorithm
+            // For CBC modes: 16-byte IVs, key length depends on AES variant
+            // For GCM/ChaCha20: 12-byte IVs
+            let (enc_key_len, mac_key_len, iv_len) = match self.algorithm {
+                protocol::KexAlgorithm::DiffieHellmanGroup1Sha1 => (16, 20, 16), // AES-128-CBC, HMAC-SHA1
+                protocol::KexAlgorithm::DiffieHellmanGroup14Sha256 |
+                protocol::KexAlgorithm::DiffieHellmanGroupExchangeSha256 => (16, 32, 16), // AES-128-CBC, HMAC-SHA256
+                protocol::KexAlgorithm::DiffieHellmanGroup14Sha384 |
+                protocol::KexAlgorithm::DiffieHellmanGroup14Sha512 |
+                protocol::KexAlgorithm::DiffieHellmanGroup16Sha512 |
+                protocol::KexAlgorithm::DiffieHellmanGroup18Sha512 => (32, 64, 16), // AES-256-CBC, HMAC-SHA512
+                protocol::KexAlgorithm::Curve25519Sha256 |
+                protocol::KexAlgorithm::EcdhSha2Nistp256 => (32, 32, 12), // AES-256-GCM or ChaCha20
+                protocol::KexAlgorithm::EcdhSha2Nistp384 => (32, 48, 12),
+                protocol::KexAlgorithm::EcdhSha2Nistp521 => (32, 64, 12),
+            };
             
-            let enc_key = kdf::kdf(shared_secret, hash, 1, enc_key_len);
-            let mac_key = kdf::kdf(shared_secret, hash, 2, mac_key_len);
-            let client_iv = kdf::kdf(shared_secret, hash, 3, iv_len);
-            let server_iv = kdf::kdf(shared_secret, hash, 4, iv_len);
+            let enc_key_c2s = kdf::kdf(shared_secret, hash, b'C' as u32, enc_key_len);
+            let enc_key_s2c = kdf::kdf(shared_secret, hash, b'D' as u32, enc_key_len);
+            let mac_key_c2s = kdf::kdf(shared_secret, hash, b'E' as u32, mac_key_len);
+            let mac_key_s2c = kdf::kdf(shared_secret, hash, b'F' as u32, mac_key_len);
+            let client_iv = kdf::kdf(shared_secret, hash, b'A' as u32, iv_len);
+            let server_iv = kdf::kdf(shared_secret, hash, b'B' as u32, iv_len);
             
             Ok(SessionKeys {
-                enc_key,
-                mac_key,
+                enc_key_c2s,
+                enc_key_s2c,
+                mac_key_c2s,
+                mac_key_s2c,
                 client_iv,
                 server_iv,
             })
@@ -363,12 +385,16 @@ impl KexContext {
 }
 
 /// Session keys derived from key exchange
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SessionKeys {
-    /// Encryption key
-    pub enc_key: Vec<u8>,
-    /// MAC key
-    pub mac_key: Vec<u8>,
+    /// Encryption key client to server
+    pub enc_key_c2s: Vec<u8>,
+    /// Encryption key server to client
+    pub enc_key_s2c: Vec<u8>,
+    /// MAC key client to server
+    pub mac_key_c2s: Vec<u8>,
+    /// MAC key server to client
+    pub mac_key_s2c: Vec<u8>,
     /// Client IV
     pub client_iv: Vec<u8>,
     /// Server IV

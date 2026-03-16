@@ -121,10 +121,10 @@ impl<S> TransportSession<S> {
         
         // Initialize cipher state
         let cipher_state = CipherState::new(
-            &session_keys.enc_key,
+            &session_keys.enc_key_c2s,
             &session_id,
-            &session_keys.enc_key,
-            &session_keys.mac_key,
+            &session_keys.enc_key_s2c,
+            &session_keys.mac_key_c2s,
         );
         
         self.session_id = Some(session_id);

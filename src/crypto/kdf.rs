@@ -76,13 +76,27 @@ pub fn kdf(shared_secret: &[u8], session_id: &[u8], counter: u32, desired_length
     for i in 1..=num_blocks {
         let mut hasher = digest::Context::new(&SHA256);
         
-        // Concatenate: session_id || counter || shared_secret || counter
-        // Note: RFC 4253 uses: H(S || C || N || 0x00000001)
-        // where S=session_id, C=counter, N=shared_secret
-        hasher.update(session_id);
-        hasher.update(&counter.to_be_bytes());
+        // RFC 4253 Section 7.2:
+        // K1 = HASH(K || H || X || session_id)   (X is e.g., "A")
+        // K2 = HASH(K || H || K1)
+        // K3 = HASH(K || H || K1 || K2)
+        // ...
+        // key = K1 || K2 || K3 || ...
+        
+        // Encode shared secret as mpint (big-endian with 4-byte length prefix)
+        hasher.update(&shared_secret.len().to_be_bytes());
         hasher.update(shared_secret);
-        hasher.update(&i.to_be_bytes());
+        // Add session_id (H)
+        hasher.update(session_id);
+        
+        if i == 1 {
+            // First block: add counter byte (X) and session_id
+            hasher.update(&[(counter as u8)]);
+            hasher.update(session_id);
+        } else {
+            // Subsequent blocks: add the entire key so far
+            hasher.update(&result);
+        }
         
         let digest = hasher.finish();
         let digest_bytes = digest.as_ref();
