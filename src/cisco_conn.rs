@@ -22,7 +22,7 @@ pub enum ConnectionType {
 }
 
 /// Configuration for CiscoConn command execution
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct CiscoConnConfig {
     /// Target device address (IPv4/IPv6)
     pub target: String,
@@ -38,6 +38,20 @@ pub struct CiscoConnConfig {
     pub read_timeout: Duration,
     /// Custom prompts to detect command completion
     pub prompts: Vec<String>,
+}
+
+impl std::fmt::Debug for CiscoConnConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CiscoConnConfig")
+            .field("target", &self.target)
+            .field("conntype", &self.conntype)
+            .field("username", &self.username)
+            .field("password", &"[REDACTED]")
+            .field("timeout", &self.timeout)
+            .field("read_timeout", &self.read_timeout)
+            .field("prompts", &self.prompts)
+            .finish()
+    }
 }
 
 impl Default for CiscoConnConfig {
@@ -88,6 +102,15 @@ pub struct CiscoConn {
     config: CiscoConnConfig,
     transport: crate::transport::Transport,
     channel_id: u32,
+}
+
+impl std::fmt::Debug for CiscoConn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CiscoConn")
+            .field("config", &self.config)
+            .field("channel_id", &self.channel_id)
+            .finish_non_exhaustive()
+    }
 }
 
 impl CiscoConn {

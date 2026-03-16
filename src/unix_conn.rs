@@ -22,7 +22,7 @@ pub enum ConnectionType {
 }
 
 /// Configuration for UnixConn command execution
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct UnixConnConfig {
     /// Target host address (IPv4/IPv6)
     pub target: String,
@@ -38,6 +38,20 @@ pub struct UnixConnConfig {
     pub read_timeout: Duration,
     /// Custom prompts to detect command completion
     pub prompts: Vec<String>,
+}
+
+impl std::fmt::Debug for UnixConnConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UnixConnConfig")
+            .field("target", &self.target)
+            .field("conntype", &self.conntype)
+            .field("username", &self.username)
+            .field("password", &"[REDACTED]")
+            .field("timeout", &self.timeout)
+            .field("read_timeout", &self.read_timeout)
+            .field("prompts", &self.prompts)
+            .finish()
+    }
 }
 
 impl Default for UnixConnConfig {
@@ -90,6 +104,15 @@ pub struct UnixConn {
     config: UnixConnConfig,
     transport: crate::transport::Transport,
     channel_id: u32,
+}
+
+impl std::fmt::Debug for UnixConn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UnixConn")
+            .field("config", &self.config)
+            .field("channel_id", &self.channel_id)
+            .finish_non_exhaustive()
+    }
 }
 
 impl UnixConn {
