@@ -62,7 +62,7 @@ impl<S> TransportSession<S> {
     pub fn init_kex(&mut self) -> Result<(), SshError> {
         use rand::RngCore;
         
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rngs::OsRng;
         self.kex_context.generate_client_key(&mut rng)?;
         self.state = SessionState::KexInProgress;
         

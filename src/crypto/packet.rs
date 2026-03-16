@@ -64,7 +64,7 @@ impl Packet {
         let mut padding = vec![0u8; padding_len];
 
         // Fill padding with random data
-        rand::thread_rng().fill(&mut padding[..]);
+        rand::rngs::OsRng.fill(&mut padding[..]);
 
         Packet {
             length: payload.len() as u32,
@@ -86,7 +86,7 @@ impl Packet {
         let mut padding = vec![0u8; padding_len];
 
         // Fill padding with random data
-        rand::thread_rng().fill(&mut padding[..]);
+        rand::rngs::OsRng.fill(&mut padding[..]);
 
         Packet {
             length: payload.len() as u32,
@@ -297,7 +297,7 @@ impl PacketWriter {
         let mut padding = vec![0u8; padding_len];
 
         // Fill padding with random data
-        rand::thread_rng().fill(&mut padding[..]);
+        rand::rngs::OsRng.fill(&mut padding[..]);
 
         Packet {
             length: self.payload.len() as u32,

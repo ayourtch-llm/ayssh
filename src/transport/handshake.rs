@@ -98,7 +98,7 @@ pub fn generate_client_kexinit_with_prefs(
     buf.put_u8(20);
 
     let mut cookie = [0u8; 16];
-    rand::thread_rng().fill_bytes(&mut cookie);
+    rand::rngs::OsRng.fill_bytes(&mut cookie);
     buf.put(&cookie[..]);
 
     let default_kex = "diffie-hellman-group1-sha1,diffie-hellman-group14-sha1,diffie-hellman-group14-sha256,curve25519-sha256,ecdh-sha2-nistp256,ecdh-sha2-nistp384,ecdh-sha2-nistp521";
@@ -369,33 +369,50 @@ pub const SSH_SERVER_VERSION_STRING: &str = "SSH-2.0-ayssh_test_server\r\n";
 
 /// Receive SSH version string
 pub async fn recv_version<T: AsyncReadExt + Unpin>(stream: &mut T) -> Result<String, crate::error::SshError> {
-    // Cisco devices send version string without length prefix, just line-based with CRLF
-    // We'll use a BufReader to read line-by-line
-    use tokio::io::AsyncBufReadExt;
-    let mut reader = tokio::io::BufReader::new(stream);
-    let mut buf = String::new();
-    
-    match reader.read_line(&mut buf).await {
-        Ok(n) => {
-            debug!("Read {} bytes from version line", n);
-            debug!("Raw version bytes: {:?}", buf.as_bytes());
-            
-            // Remove CRLF terminator if present
-            if buf.ends_with("\r\n") {
-                buf.pop();
-                buf.pop();
-            } else if buf.ends_with('\n') {
-                buf.pop();
+    // Read version string byte-by-byte to avoid BufReader consuming
+    // bytes from the next SSH packet (KEXINIT). A BufReader would
+    // buffer extra bytes and lose them when dropped.
+    let mut buf = Vec::with_capacity(256);
+    let mut byte = [0u8; 1];
+
+    loop {
+        match stream.read_exact(&mut byte).await {
+            Ok(_) => {
+                buf.push(byte[0]);
+                if byte[0] == b'\n' {
+                    break;
+                }
+                if buf.len() > 255 {
+                    return Err(crate::error::SshError::ProtocolError(
+                        "Version string too long".to_string()
+                    ));
+                }
             }
-            
-            debug!("Cleaned version string: {:?}", buf);
-            Ok(buf)
-        }
-        Err(e) => {
-            debug!("Error reading version line: {}", e);
-            Err(e.into())
+            Err(e) => {
+                debug!("Error reading version byte: {}", e);
+                return Err(e.into());
+            }
         }
     }
+
+    debug!("Read {} bytes from version line", buf.len());
+    debug!("Raw version bytes: {:?}", &buf);
+
+    let mut version = String::from_utf8(buf)
+        .map_err(|e| crate::error::SshError::ProtocolError(
+            format!("Invalid UTF-8 in version: {}", e)
+        ))?;
+
+    // Remove CRLF terminator
+    if version.ends_with("\r\n") {
+        version.pop();
+        version.pop();
+    } else if version.ends_with('\n') {
+        version.pop();
+    }
+
+    debug!("Cleaned version string: {:?}", version);
+    Ok(version)
 }
 
 /// Perform the key exchange handshake

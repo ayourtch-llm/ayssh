@@ -66,7 +66,7 @@ impl EcdsaKeyPair {
         let public_key = k256::PublicKey::from(&self.private_key);
         let verifying_key = VerifyingKey::<NistP256>::from(&public_key);
         
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rngs::OsRng;
         let signature = verifying_key.sign_with_rng(&mut rng, data);
         
         Ok(signature.to_der().as_bytes().to_vec())

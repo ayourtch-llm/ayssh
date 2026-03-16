@@ -21,7 +21,7 @@ impl HostKeyPair {
         use ed25519_dalek::SigningKey;
         use rand::RngCore;
         let mut secret = [0u8; 32];
-        rand::thread_rng().fill_bytes(&mut secret);
+        rand::rngs::OsRng.fill_bytes(&mut secret);
         let signing_key = SigningKey::from_bytes(&secret);
         Self::Ed25519(signing_key)
     }

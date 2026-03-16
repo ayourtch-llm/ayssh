@@ -92,7 +92,7 @@ impl EcdhKeyPair {
         use p256::SecretKey;
         use p256::elliptic_curve::sec1::ToEncodedPoint;
 
-        let secret_key = SecretKey::random(&mut rand::thread_rng());
+        let secret_key = SecretKey::random(&mut rand::rngs::OsRng);
         let private_key = secret_key.to_bytes().to_vec();
 
         let public_key_bytes = secret_key.public_key()
@@ -112,7 +112,7 @@ impl EcdhKeyPair {
         use p384::SecretKey;
         use p384::elliptic_curve::sec1::ToEncodedPoint;
         
-        let secret_key = SecretKey::random(&mut rand::thread_rng());
+        let secret_key = SecretKey::random(&mut rand::rngs::OsRng);
         let private_key = secret_key.to_bytes().to_vec();
         
         let public_key_bytes = secret_key.public_key()
@@ -132,7 +132,7 @@ impl EcdhKeyPair {
         use p521::SecretKey;
         use p521::elliptic_curve::sec1::ToEncodedPoint;
         
-        let secret_key = SecretKey::random(&mut rand::thread_rng());
+        let secret_key = SecretKey::random(&mut rand::rngs::OsRng);
         let private_key = secret_key.to_bytes().to_vec();
         
         let public_key_bytes = secret_key.public_key()

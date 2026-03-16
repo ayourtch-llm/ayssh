@@ -76,7 +76,7 @@ impl RsaKeyPair {
 
     /// Generic signing with any hash algorithm
     fn sign_with_hash<H: Digest + 'static>(&self, data: &[u8]) -> Result<Signature, RsaError> {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rngs::OsRng;
         
         self.private_key
             .sign::<Pss<H>, _>(&mut rng, data)

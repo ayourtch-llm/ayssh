@@ -342,7 +342,7 @@ impl Transport {
         let mut kex_context = KexContext::new(algorithm);
         
         use rand::RngCore;
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rngs::OsRng;
         kex_context.generate_client_key(&mut rng)?;
         
         // 9. Send KEXDH_INIT message with client ephemeral key

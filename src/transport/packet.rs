@@ -90,7 +90,7 @@ impl Packet {
     fn generate_padding(&self) -> Vec<u8> {
         use rand::RngCore;
         let mut padding = vec![0u8; self.padding_length as usize];
-        rand::thread_rng().fill_bytes(&mut padding);
+        rand::rngs::OsRng.fill_bytes(&mut padding);
         padding
     }
 

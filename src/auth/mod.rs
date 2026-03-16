@@ -80,7 +80,7 @@ pub struct Authenticator<'a> {
     /// List of available authentication methods
     pub available_methods: HashSet<String>,
     /// Keyboard-interactive responses handler
-    keyboard_interactive_handler: Option<Box<dyn Fn(&keyboard::Challenge) -> Result<Vec<String>, SshError> + Send>>,
+    keyboard_interactive_handler: Option<Box<dyn Fn(&keyboard::Challenge) -> Result<Vec<String>, SshError> + Send + Sync>>,
 }
 
 impl<'a> Authenticator<'a> {
@@ -118,7 +118,7 @@ impl<'a> Authenticator<'a> {
     /// Sets the keyboard-interactive response handler
     pub fn with_keyboard_interactive_handler<F>(mut self, handler: F) -> Self
     where
-        F: Fn(&keyboard::Challenge) -> Result<Vec<String>, SshError> + Send + 'static,
+        F: Fn(&keyboard::Challenge) -> Result<Vec<String>, SshError> + Send + Sync + 'static,
     {
         self.keyboard_interactive_handler = Some(Box::new(handler));
         self

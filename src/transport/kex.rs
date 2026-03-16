@@ -581,7 +581,7 @@ pub fn encode_newkeys() -> Vec<u8> {
 
     // RFC 4253 Section 6: padding SHOULD be random bytes
     let mut padding = vec![0u8; padding_length as usize];
-    rand::thread_rng().fill(&mut padding[..]);
+    rand::rngs::OsRng.fill(&mut padding[..]);
     msg.extend_from_slice(&padding);
 
     msg
@@ -611,7 +611,7 @@ pub async fn perform_kex(
     server_host_key: &[u8],
 ) -> anyhow::Result<SessionKeys> {
     // Step 1: Generate client's ephemeral key
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rngs::OsRng;
     context.generate_client_key(&mut rng)?;
     
     // Step 2: Send KEX_INIT to server (simulated - in real implementation, this would be sent over the network)
