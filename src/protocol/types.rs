@@ -208,6 +208,10 @@ impl SshBoolean {
     }
 
     /// Decode a boolean from a buffer
+    ///
+    /// Per RFC 4251 Section 5: "All non-zero values MUST be interpreted as TRUE"
+    /// Applications MUST NOT store values other than 0 and 1, but on decode
+    /// any non-zero value is accepted as TRUE.
     pub fn decode(buf: &mut impl Buf) -> SshResult<Self> {
         if buf.remaining() < 1 {
             return Err(SshError::BufferTooSmall {
@@ -218,8 +222,7 @@ impl SshBoolean {
         let byte = buf.get_u8();
         match byte {
             0 => Ok(Self(false)),
-            1 => Ok(Self(true)),
-            _ => Err(SshError::InvalidBoolean(byte)),
+            _ => Ok(Self(true)),
         }
     }
 }
@@ -239,21 +242,29 @@ impl SshMpint {
     }
 
     /// Create a new SshMpint from a u64 value
+    ///
+    /// Per RFC 4251 Section 5: "The value zero MUST be stored as a string
+    /// with zero bytes of data."
     pub fn from_u64(value: u64) -> Self {
-        let mut bytes = Vec::new();
         if value == 0 {
-            bytes.push(0);
-        } else {
-            // Convert to big-endian bytes
-            for i in (0..8).rev() {
-                bytes.push((value >> (i * 8)) as u8);
-            }
-            // Remove leading zero bytes
-            let mut start = 0;
-            while start < bytes.len() - 1 && bytes[start] == 0 {
-                start += 1;
-            }
-            bytes.drain(..start);
+            // RFC 4251: zero is stored as empty data (length=0)
+            return Self(Bytes::new());
+        }
+        let mut bytes = Vec::new();
+        // Convert to big-endian bytes
+        for i in (0..8).rev() {
+            bytes.push((value >> (i * 8)) as u8);
+        }
+        // Remove leading zero bytes
+        let mut start = 0;
+        while start < bytes.len() - 1 && bytes[start] == 0 {
+            start += 1;
+        }
+        bytes.drain(..start);
+        // RFC 4251: If the most significant bit would be set for a positive number,
+        // the number MUST be preceded by a zero byte.
+        if bytes[0] & 0x80 != 0 {
+            bytes.insert(0, 0);
         }
         Self(Bytes::from(bytes))
     }
@@ -270,6 +281,12 @@ impl SshMpint {
     }
 
     /// Decode an mpint from a buffer (expects length prefix)
+    ///
+    /// Per RFC 4251 Section 5:
+    /// - The value zero MUST be stored as a string with zero bytes of data
+    /// - Unnecessary leading bytes with the value 0 or 255 MUST NOT be included
+    /// - If the most significant bit would be set for a positive number,
+    ///   the number MUST be preceded by a zero byte
     pub fn decode(buf: &mut impl Buf) -> SshResult<Self> {
         if buf.remaining() < 4 {
             return Err(SshError::BufferTooSmall {
@@ -288,8 +305,20 @@ impl SshMpint {
 
         let data = buf.copy_to_bytes(len);
 
-        // mpint cannot be empty or all zeros
-        if data.is_empty() || data.iter().all(|&b| b == 0) {
+        // Zero-length data represents the value 0 (RFC 4251)
+        if data.is_empty() {
+            return Ok(Self(data));
+        }
+
+        // Check for unnecessary leading zeros:
+        // A leading 0x00 byte is only valid if the next byte has MSB set (positive number sign padding)
+        if data.len() > 1 && data[0] == 0x00 && (data[1] & 0x80) == 0 {
+            return Err(SshError::InvalidMpint);
+        }
+
+        // Check for unnecessary leading 0xFF bytes (negative number):
+        // A leading 0xFF byte is only valid if the next byte does NOT have MSB set
+        if data.len() > 1 && data[0] == 0xFF && (data[1] & 0x80) != 0 {
             return Err(SshError::InvalidMpint);
         }
 
@@ -298,6 +327,11 @@ impl SshMpint {
 
     /// Get the value as u64 (if it fits)
     pub fn to_u64(&self) -> SshResult<u64> {
+        // Empty data represents zero (RFC 4251)
+        if self.0.is_empty() {
+            return Ok(0);
+        }
+
         if self.0.len() > 8 {
             return Err(SshError::InvalidUint32(self.0.len() as u64));
         }
@@ -307,6 +341,81 @@ impl SshMpint {
         bytes[offset..].copy_from_slice(&self.0);
 
         Ok(u64::from_be_bytes(bytes))
+    }
+}
+
+/// SSH name-list type (RFC 4251 Section 5)
+///
+/// A name-list is a comma-separated list of names. Each name MUST have
+/// a non-zero length and MUST NOT contain a comma. Names MUST be in US-ASCII.
+/// Terminating null characters MUST NOT be used.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SshNameList {
+    names: Vec<String>,
+}
+
+impl SshNameList {
+    /// Create a new SshNameList from a vector of names
+    pub fn new(names: Vec<String>) -> SshResult<Self> {
+        for name in &names {
+            Self::validate_name(name)?;
+        }
+        Ok(Self { names })
+    }
+
+    /// Create an empty name-list
+    pub fn empty() -> Self {
+        Self { names: vec![] }
+    }
+
+    /// Validate a single algorithm/method name per RFC 4251 Section 6
+    ///
+    /// Names MUST be printable US-ASCII, non-empty, no longer than 64 characters,
+    /// MUST NOT contain commas, whitespace, control characters, or null bytes.
+    fn validate_name(name: &str) -> SshResult<()> {
+        if name.is_empty() {
+            return Err(SshError::Serialization("Name in name-list MUST have non-zero length".to_string()));
+        }
+        if name.len() > 64 {
+            return Err(SshError::Serialization("Name MUST NOT be longer than 64 characters".to_string()));
+        }
+        for byte in name.bytes() {
+            if byte == b',' {
+                return Err(SshError::Serialization("Name MUST NOT contain comma".to_string()));
+            }
+            if byte == 0 {
+                return Err(SshError::Serialization("Name MUST NOT contain null byte".to_string()));
+            }
+            if byte < 32 || byte == 127 {
+                return Err(SshError::Serialization("Name MUST be printable US-ASCII".to_string()));
+            }
+        }
+        Ok(())
+    }
+
+    /// Get the names as a slice
+    pub fn names(&self) -> &[String] {
+        &self.names
+    }
+
+    /// Encode as a comma-separated SSH string
+    pub fn encode(&self, buf: &mut BytesMut) {
+        let joined = self.names.join(",");
+        SshString::from_str(&joined).encode(buf);
+    }
+
+    /// Decode from an SSH string (comma-separated)
+    pub fn decode(buf: &mut impl Buf) -> SshResult<Self> {
+        let s = SshString::decode(buf)?;
+        let text = s.to_str()?;
+        if text.is_empty() {
+            return Ok(Self::empty());
+        }
+        let names: Vec<String> = text.split(',').map(|s| s.to_string()).collect();
+        for name in &names {
+            Self::validate_name(name)?;
+        }
+        Ok(Self { names })
     }
 }
 
@@ -384,8 +493,18 @@ mod tests {
 
     #[test]
     fn test_ssh_boolean_invalid() {
+        // RFC 4251: All non-zero values MUST be interpreted as TRUE
         let mut buf = BytesMut::from(&[2u8][..]);
-        assert!(SshBoolean::decode(&mut buf).is_err());
+        let result = SshBoolean::decode(&mut buf).unwrap();
+        assert!(result.as_bool()); // non-zero = true
+
+        let mut buf = BytesMut::from(&[255u8][..]);
+        let result = SshBoolean::decode(&mut buf).unwrap();
+        assert!(result.as_bool()); // non-zero = true
+
+        let mut buf = BytesMut::from(&[128u8][..]);
+        let result = SshBoolean::decode(&mut buf).unwrap();
+        assert!(result.as_bool()); // non-zero = true
     }
 
     #[test]
@@ -403,8 +522,91 @@ mod tests {
 
     #[test]
     fn test_ssh_mpint_zero() {
+        // RFC 4251: "The value zero MUST be stored as a string with zero bytes of data"
         let mpint = SshMpint::from_u64(0);
+        assert_eq!(mpint.as_bytes().len(), 0); // zero-length data
         assert_eq!(mpint.to_u64().unwrap(), 0);
+
+        // Verify encode produces length=0
+        let mut buf = BytesMut::with_capacity(10);
+        mpint.encode(&mut buf);
+        assert_eq!(&buf[..], &[0x00, 0x00, 0x00, 0x00]); // 4-byte length prefix = 0
+    }
+
+    #[test]
+    fn test_ssh_mpint_zero_decode() {
+        // RFC 4251: Zero-length data decodes as zero
+        let mut buf = BytesMut::from(&[0x00, 0x00, 0x00, 0x00][..]);
+        let mpint = SshMpint::decode(&mut buf).unwrap();
+        assert_eq!(mpint.to_u64().unwrap(), 0);
+    }
+
+    #[test]
+    fn test_ssh_mpint_roundtrip() {
+        // Test roundtrip encode/decode for various values
+        for value in [1u64, 42, 127, 128, 255, 256, 65535, 0x7FFFFFFF, 0x80000000, u64::MAX] {
+            let mpint = SshMpint::from_u64(value);
+            let mut buf = BytesMut::with_capacity(20);
+            mpint.encode(&mut buf);
+            let decoded = SshMpint::decode(&mut buf).unwrap();
+            assert_eq!(mpint.as_bytes(), decoded.as_bytes(), "Roundtrip failed for {}", value);
+        }
+    }
+
+    #[test]
+    fn test_ssh_mpint_positive_msb_set() {
+        // RFC 4251: If MSB would be set for positive number, MUST be preceded by zero byte
+        let mpint = SshMpint::from_u64(0x80);  // 128 - MSB set
+        assert_eq!(mpint.as_bytes(), &[0x00, 0x80]); // leading zero byte required
+
+        let mpint = SshMpint::from_u64(0xFF);  // 255 - MSB set
+        assert_eq!(mpint.as_bytes(), &[0x00, 0xFF]); // leading zero byte required
+
+        let mpint = SshMpint::from_u64(0x7F);  // 127 - MSB not set
+        assert_eq!(mpint.as_bytes(), &[0x7F]); // no leading zero needed
+    }
+
+    #[test]
+    fn test_ssh_mpint_reject_unnecessary_leading_zeros() {
+        // RFC 4251: "Unnecessary leading bytes with the value 0 or 255 MUST NOT be included"
+        // 0x00 0x42 has unnecessary leading zero (0x42 doesn't have MSB set)
+        let mut buf = BytesMut::from(&[0x00, 0x00, 0x00, 0x02, 0x00, 0x42][..]);
+        assert!(SshMpint::decode(&mut buf).is_err());
+    }
+
+    #[test]
+    fn test_ssh_mpint_valid_leading_zero() {
+        // 0x00 0x80 is valid - leading zero needed because 0x80 has MSB set (positive number)
+        let mut buf = BytesMut::from(&[0x00, 0x00, 0x00, 0x02, 0x00, 0x80][..]);
+        let mpint = SshMpint::decode(&mut buf).unwrap();
+        assert_eq!(mpint.as_bytes(), &[0x00, 0x80]);
+    }
+
+    #[test]
+    fn test_ssh_mpint_rfc4251_examples() {
+        // RFC 4251 Section 5 examples:
+        // value (hex)   representation (hex)
+        // 0             00 00 00 00
+        // 9a378f9b2e332a7 00 00 00 08 09 a3 78 f9 b2 e3 32 a7
+        // 80             00 00 00 02 00 80
+
+        // Zero
+        let mpint = SshMpint::from_u64(0);
+        let mut buf = BytesMut::with_capacity(20);
+        mpint.encode(&mut buf);
+        assert_eq!(&buf[..], &[0x00, 0x00, 0x00, 0x00]);
+
+        // 0x80 (needs leading zero)
+        let mpint = SshMpint::from_u64(0x80);
+        let mut buf = BytesMut::with_capacity(20);
+        mpint.encode(&mut buf);
+        assert_eq!(&buf[..], &[0x00, 0x00, 0x00, 0x02, 0x00, 0x80]);
+
+        // 0x9a378f9b2e332a7
+        let mpint = SshMpint::from_u64(0x09a378f9b2e332a7);
+        let mut buf = BytesMut::with_capacity(20);
+        mpint.encode(&mut buf);
+        assert_eq!(&buf[..], &[0x00, 0x00, 0x00, 0x08, 0x09, 0xa3, 0x78, 0xf9, 0xb2, 0xe3, 0x32, 0xa7]);
     }
 
     #[test]
@@ -422,5 +624,98 @@ mod tests {
         assert_eq!(s.len(), 11);
         // Should allow null bytes in the string data
         assert_eq!(s.as_bytes(), b"hello\x00world");
+    }
+
+    // SshNameList tests (RFC 4251 Section 5)
+
+    #[test]
+    fn test_ssh_name_list_valid() {
+        let nl = SshNameList::new(vec!["aes128-cbc".to_string(), "3des-cbc".to_string()]).unwrap();
+        assert_eq!(nl.names().len(), 2);
+        assert_eq!(nl.names()[0], "aes128-cbc");
+        assert_eq!(nl.names()[1], "3des-cbc");
+    }
+
+    #[test]
+    fn test_ssh_name_list_empty() {
+        let nl = SshNameList::empty();
+        assert_eq!(nl.names().len(), 0);
+    }
+
+    #[test]
+    fn test_ssh_name_list_encode_decode() {
+        let nl = SshNameList::new(vec!["hmac-sha2-256".to_string(), "hmac-sha1".to_string()]).unwrap();
+        let mut buf = BytesMut::with_capacity(100);
+        nl.encode(&mut buf);
+        let decoded = SshNameList::decode(&mut buf).unwrap();
+        assert_eq!(nl, decoded);
+    }
+
+    #[test]
+    fn test_ssh_name_list_reject_empty_name() {
+        // RFC 4251: "A name MUST have a non-zero length"
+        assert!(SshNameList::new(vec!["".to_string()]).is_err());
+    }
+
+    #[test]
+    fn test_ssh_name_list_reject_comma() {
+        // RFC 4251: Name "MUST NOT contain a comma"
+        assert!(SshNameList::new(vec!["aes,cbc".to_string()]).is_err());
+    }
+
+    #[test]
+    fn test_ssh_name_list_reject_null_byte() {
+        // RFC 4251: "Terminating null characters MUST NOT be used"
+        assert!(SshNameList::new(vec!["aes\x00cbc".to_string()]).is_err());
+    }
+
+    #[test]
+    fn test_ssh_name_list_reject_control_chars() {
+        // RFC 4251: Names MUST be printable US-ASCII
+        assert!(SshNameList::new(vec!["aes\x01cbc".to_string()]).is_err());
+    }
+
+    #[test]
+    fn test_ssh_name_list_reject_too_long_name() {
+        // RFC 4251: Names MUST NOT be longer than 64 characters
+        let long_name = "a".repeat(65);
+        assert!(SshNameList::new(vec![long_name]).is_err());
+
+        // 64 chars is OK
+        let name_64 = "a".repeat(64);
+        assert!(SshNameList::new(vec![name_64]).is_ok());
+    }
+
+    #[test]
+    fn test_ssh_name_list_domain_name_format() {
+        // RFC 4251 Section 6: Domain-specific names with @ sign are valid
+        let nl = SshNameList::new(vec!["aes256-gcm@openssh.com".to_string()]).unwrap();
+        assert_eq!(nl.names()[0], "aes256-gcm@openssh.com");
+    }
+
+    // Boolean encoding tests (RFC 4251 Section 5)
+
+    #[test]
+    fn test_ssh_boolean_encode_stores_only_0_or_1() {
+        // RFC 4251: "applications MUST NOT store values other than 0 and 1"
+        let t = SshBoolean::new(true);
+        let mut buf = BytesMut::with_capacity(1);
+        t.encode(&mut buf);
+        assert_eq!(buf[0], 1);
+
+        let f = SshBoolean::new(false);
+        let mut buf = BytesMut::with_capacity(1);
+        f.encode(&mut buf);
+        assert_eq!(buf[0], 0);
+    }
+
+    #[test]
+    fn test_ssh_boolean_nonzero_is_true() {
+        // RFC 4251: "All non-zero values MUST be interpreted as TRUE"
+        for v in [1u8, 2, 42, 127, 128, 255] {
+            let mut buf = BytesMut::from(&[v][..]);
+            let b = SshBoolean::decode(&mut buf).unwrap();
+            assert!(b.as_bool(), "value {} should decode as true", v);
+        }
     }
 }

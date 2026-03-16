@@ -7,6 +7,7 @@ use crate::protocol::KexAlgorithm;
 use crate::transport::kex::SessionKeys;
 use crate::transport::TransportSession;
 use bytes::{Buf, BufMut, BytesMut};
+use rand::RngCore;
 use std::str::FromStr;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::{debug};
@@ -91,9 +92,10 @@ pub fn generate_client_kexinit() -> Vec<u8> {
     // SSH_MSG_KEXINIT message type byte (20)
     buf.put_u8(20);
     
-    // 16 bytes of random cookie
-    buf.put(&[0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07][..]);
-    buf.put(&[0x08, 0x09, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15][..]);
+    // 16 bytes of random cookie (RFC 4253 Section 7.1: "MUST be a random value")
+    let mut cookie = [0u8; 16];
+    rand::thread_rng().fill_bytes(&mut cookie);
+    buf.put(&cookie[..]);
     
     // Negotiation strings (algorithm lists)
     // Cisco devices typically support diffie-hellman-group1-sha1 and diffie-hellman-group14-sha1

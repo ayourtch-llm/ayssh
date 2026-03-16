@@ -164,6 +164,17 @@ impl KexContext {
             // For DH, data starts with length-prefixed MPINT (f)
             // The rest (signature) is ignored here
             let (server_public, _remaining) = Mpint::decode_length_prefixed(data)?;
+
+            // RFC 4253 Section 8: "Values of 'e' or 'f' that are not in the range
+            // [1, p-1] MUST NOT be sent or accepted by either side."
+            let one = num_bigint::BigUint::from(1u8);
+            let group_p = self.get_dh_group_prime();
+            if server_public < one || server_public >= group_p {
+                return Err(anyhow::anyhow!(
+                    "Server DH public key out of range [1, p-1] (RFC 4253 Section 8)"
+                ));
+            }
+
             self.server_public = Some(server_public);
             
             // Store the encoded MPINT as server_ephemeral for session hash computation
@@ -175,6 +186,19 @@ impl KexContext {
             }
         }
         Ok(())
+    }
+
+    /// Get the DH group prime p for the current algorithm
+    fn get_dh_group_prime(&self) -> num_bigint::BigUint {
+        match self.algorithm {
+            protocol::KexAlgorithm::DiffieHellmanGroup1Sha1 => {
+                DhGroup::group1().p
+            }
+            _ => {
+                // All other DH algorithms use group14 or larger
+                DhGroup::group14().p
+            }
+        }
     }
 
     /// Compute the shared secret and session ID

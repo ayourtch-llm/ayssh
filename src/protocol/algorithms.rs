@@ -125,39 +125,40 @@ impl AlgorithmProposal {
     }
 
     /// Select common algorithms from client and server proposals
-    /// Server's preference order is used for selection (RFC 4253)
+    /// Per RFC 4253 Section 7.1: The chosen algorithm MUST be the first algorithm
+    /// on the client's name-list that is also on the server's name-list.
     pub fn select_common_algorithms(&self, server: &Self) -> Result<NegotiatedAlgorithms, ProtocolError> {
-        let kex = self.select_first_matching_server_preference("kex", &server.kex_algorithms)
+        let kex = self.select_first_matching_client_preference("kex", &server.kex_algorithms)
             .ok_or_else(|| ProtocolError::AlgorithmNegotiationFailed(
                 "No common key exchange algorithm".to_string()
             ))?;
         
-        let host_key = self.select_first_matching_server_preference("host_key", &server.server_host_key_algorithms)
+        let host_key = self.select_first_matching_client_preference("host_key", &server.server_host_key_algorithms)
             .ok_or_else(|| ProtocolError::AlgorithmNegotiationFailed(
                 "No common host key algorithm".to_string()
             ))?;
         
-        let enc_c2s = self.select_first_matching_server_preference("enc_c2s", &server.encryption_algorithms_c2s)
+        let enc_c2s = self.select_first_matching_client_preference("enc_c2s", &server.encryption_algorithms_c2s)
             .ok_or_else(|| ProtocolError::AlgorithmNegotiationFailed(
                 "No common client-to-server encryption algorithm".to_string()
             ))?;
         
-        let enc_s2c = self.select_first_matching_server_preference("enc_s2c", &server.encryption_algorithms_s2c)
+        let enc_s2c = self.select_first_matching_client_preference("enc_s2c", &server.encryption_algorithms_s2c)
             .ok_or_else(|| ProtocolError::AlgorithmNegotiationFailed(
                 "No common server-to-client encryption algorithm".to_string()
             ))?;
         
-        let mac_c2s = self.select_first_matching_server_preference("mac_c2s", &server.mac_algorithms_c2s)
+        let mac_c2s = self.select_first_matching_client_preference("mac_c2s", &server.mac_algorithms_c2s)
             .ok_or_else(|| ProtocolError::AlgorithmNegotiationFailed(
                 "No common client-to-server MAC algorithm".to_string()
             ))?;
         
-        let mac_s2c = self.select_first_matching_server_preference("mac_s2c", &server.mac_algorithms_s2c)
+        let mac_s2c = self.select_first_matching_client_preference("mac_s2c", &server.mac_algorithms_s2c)
             .ok_or_else(|| ProtocolError::AlgorithmNegotiationFailed(
                 "No common server-to-client MAC algorithm".to_string()
             ))?;
         
-        let compression = self.select_first_matching_server_preference("compression", &server.compression_algorithms)
+        let compression = self.select_first_matching_client_preference("compression", &server.compression_algorithms)
             .ok_or_else(|| ProtocolError::AlgorithmNegotiationFailed(
                 "No common compression algorithm".to_string()
             ))?;
@@ -205,23 +206,23 @@ impl AlgorithmProposal {
         None
     }
 
-    /// Find the first algorithm from the server's list that appears in our list
-    /// Uses server's preference order (first match wins) - as per RFC 4253
-    fn select_first_matching_server_preference(&self, category: &str, server_list: &[String]) -> Option<String> {
-        for algo in server_list {
-            // Check if this algorithm is in our list
-            let in_our_list = match category {
-                "kex" => self.kex_algorithms.contains(algo),
-                "host_key" => self.server_host_key_algorithms.contains(algo),
-                "enc_c2s" => self.encryption_algorithms_c2s.contains(algo),
-                "enc_s2c" => self.encryption_algorithms_s2c.contains(algo),
-                "mac_c2s" => self.mac_algorithms_c2s.contains(algo),
-                "mac_s2c" => self.mac_algorithms_s2c.contains(algo),
-                "compression" => self.compression_algorithms.contains(algo),
-                _ => false,
-            };
+    /// Find the first algorithm from the client's list (self) that appears in the server's list
+    /// Per RFC 4253 Section 7.1: "The first algorithm on the client's name-list
+    /// that is also on the server's name-list MUST be chosen"
+    fn select_first_matching_client_preference(&self, category: &str, server_list: &[String]) -> Option<String> {
+        let client_list = match category {
+            "kex" => &self.kex_algorithms,
+            "host_key" => &self.server_host_key_algorithms,
+            "enc_c2s" => &self.encryption_algorithms_c2s,
+            "enc_s2c" => &self.encryption_algorithms_s2c,
+            "mac_c2s" => &self.mac_algorithms_c2s,
+            "mac_s2c" => &self.mac_algorithms_s2c,
+            "compression" => &self.compression_algorithms,
+            _ => return None,
+        };
 
-            if in_our_list {
+        for algo in client_list {
+            if server_list.contains(algo) {
                 return Some(algo.clone());
             }
         }
@@ -624,8 +625,9 @@ mod tests {
         
         let negotiated = client.select_common_algorithms(&server).unwrap();
         
-        // Server's preference should win: curve25519-sha256 (first in server's list)
-        assert_eq!(negotiated.kex, "curve25519-sha256");
+        // RFC 4253 Section 7.1: Client's preference should win
+        // "The first algorithm on the client's name-list that is also on the server's name-list"
+        assert_eq!(negotiated.kex, "diffie-hellman-group14-sha256");
     }
 
     #[test]
@@ -635,13 +637,20 @@ mod tests {
         
         let negotiated = client.select_common_algorithms(&server).unwrap();
         
-        // Verify all selected algorithms are from server's list
+        // Verify all selected algorithms are from both client's and server's lists
+        assert!(client.kex_algorithms.contains(&negotiated.kex));
         assert!(server.kex_algorithms.contains(&negotiated.kex));
+        assert!(client.server_host_key_algorithms.contains(&negotiated.host_key));
         assert!(server.server_host_key_algorithms.contains(&negotiated.host_key));
+        assert!(client.encryption_algorithms_c2s.contains(&negotiated.enc_c2s));
         assert!(server.encryption_algorithms_c2s.contains(&negotiated.enc_c2s));
+        assert!(client.encryption_algorithms_s2c.contains(&negotiated.enc_s2c));
         assert!(server.encryption_algorithms_s2c.contains(&negotiated.enc_s2c));
+        assert!(client.mac_algorithms_c2s.contains(&negotiated.mac_c2s));
         assert!(server.mac_algorithms_c2s.contains(&negotiated.mac_c2s));
+        assert!(client.mac_algorithms_s2c.contains(&negotiated.mac_s2c));
         assert!(server.mac_algorithms_s2c.contains(&negotiated.mac_s2c));
+        assert!(client.compression_algorithms.contains(&negotiated.compression));
         assert!(server.compression_algorithms.contains(&negotiated.compression));
     }
 
@@ -744,5 +753,48 @@ mod tests {
         
         assert_eq!(proposal.kex_algorithms[0], "custom-kex");
         assert!(proposal.first_kex_packet_follows);
+    }
+
+    #[test]
+    fn test_rfc4253_client_preference_wins() {
+        // RFC 4253 Section 7.1: "The first algorithm on the client's name-list
+        // that is also on the server's name-list MUST be chosen."
+        let client = AlgorithmProposal {
+            kex_algorithms: vec![
+                "diffie-hellman-group14-sha256".to_string(), // client prefers this
+                "curve25519-sha256".to_string(),
+            ],
+            encryption_algorithms_c2s: vec![
+                "aes128-gcm@openssh.com".to_string(), // client prefers this
+                "aes256-gcm@openssh.com".to_string(),
+            ],
+            encryption_algorithms_s2c: vec![
+                "aes128-gcm@openssh.com".to_string(),
+                "aes256-gcm@openssh.com".to_string(),
+            ],
+            ..AlgorithmProposal::client_proposal()
+        };
+        let server = AlgorithmProposal {
+            kex_algorithms: vec![
+                "curve25519-sha256".to_string(),  // server prefers this
+                "diffie-hellman-group14-sha256".to_string(),
+            ],
+            encryption_algorithms_c2s: vec![
+                "aes256-gcm@openssh.com".to_string(), // server prefers this
+                "aes128-gcm@openssh.com".to_string(),
+            ],
+            encryption_algorithms_s2c: vec![
+                "aes256-gcm@openssh.com".to_string(),
+                "aes128-gcm@openssh.com".to_string(),
+            ],
+            ..AlgorithmProposal::server_proposal()
+        };
+
+        let negotiated = client.select_common_algorithms(&server).unwrap();
+
+        // Client preference MUST win per RFC
+        assert_eq!(negotiated.kex, "diffie-hellman-group14-sha256");
+        assert_eq!(negotiated.enc_c2s, "aes128-gcm@openssh.com");
+        assert_eq!(negotiated.enc_s2c, "aes128-gcm@openssh.com");
     }
 }
