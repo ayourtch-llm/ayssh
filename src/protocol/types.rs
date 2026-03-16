@@ -332,13 +332,22 @@ impl SshMpint {
             return Ok(0);
         }
 
-        if self.0.len() > 8 {
+        let data = &self.0[..];
+
+        // Skip leading zero byte used for sign extension (positive number with MSB set)
+        let effective = if data.len() > 1 && data[0] == 0x00 {
+            &data[1..]
+        } else {
+            data
+        };
+
+        if effective.len() > 8 {
             return Err(SshError::InvalidUint32(self.0.len() as u64));
         }
 
         let mut bytes = [0u8; 8];
-        let offset = 8 - self.0.len();
-        bytes[offset..].copy_from_slice(&self.0);
+        let offset = 8 - effective.len();
+        bytes[offset..].copy_from_slice(effective);
 
         Ok(u64::from_be_bytes(bytes))
     }

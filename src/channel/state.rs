@@ -237,6 +237,31 @@ impl ChannelManager {
         
         Ok(ChannelClose { channel_id })
     }
+
+    /// Receive a close message on a channel
+    ///
+    /// Per RFC 4254 Section 5.3: "Upon receiving this message, a party MUST
+    /// send back an SSH_MSG_CHANNEL_CLOSE unless it has already sent this
+    /// message for the channel."
+    ///
+    /// Returns `Ok(Some(ChannelClose))` if a close response needs to be sent,
+    /// or `Ok(None)` if close was already sent.
+    pub fn receive_close(&self, channel_id: ChannelId) -> Result<Option<ChannelClose>, String> {
+        let mut guard = self.channels.lock().unwrap();
+
+        let channel = guard.get_mut(&channel_id).ok_or_else(|| {
+            format!("Channel {} not found", channel_id.to_u32())
+        })?;
+
+        let needs_response = channel.state != ChannelState::Closed;
+        channel.state = ChannelState::Closed;
+
+        if needs_response {
+            Ok(Some(ChannelClose { channel_id }))
+        } else {
+            Ok(None)
+        }
+    }
     
     /// Send channel request
     pub fn send_request(
