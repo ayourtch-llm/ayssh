@@ -1012,4 +1012,170 @@ mod tests {
         let _ = Transport::send_channel_request;
         let _ = Transport::send_channel_request_string;
     }
+
+    /// Test encrypt → decrypt round-trip with AES-128-CBC + HMAC-SHA1.
+    /// Verifies that encrypt_packet_cbc and decrypt_packet_cbc are symmetric.
+    #[test]
+    fn test_encrypt_decrypt_roundtrip() {
+        let enc_key = vec![0x01u8; 16]; // 128-bit key
+        let mac_key = vec![0x02u8; 20]; // HMAC-SHA1 key
+        let iv = vec![0x03u8; 16];      // 128-bit IV
+
+        let payload = b"Hello, SSH!";
+
+        let mut enc_state = EncryptionState {
+            enc_key: enc_key.clone(),
+            iv: iv.clone(),
+            mac_key: mac_key.clone(),
+            sequence_number: 3, // typical after handshake
+            enc_algorithm: "aes128-cbc".to_string(),
+            mac_algorithm: "hmac-sha1".to_string(),
+        };
+
+        let encrypted = encrypt_packet_cbc(payload, &mut enc_state).unwrap();
+
+        // Encrypted data should be larger than payload (packet framing + MAC)
+        assert!(encrypted.len() > payload.len());
+        // After encryption, sequence number should have incremented
+        assert_eq!(enc_state.sequence_number, 4);
+
+        // Decrypt
+        let mut dec_state = DecryptionState {
+            dec_key: enc_key,
+            iv: iv,
+            mac_key: mac_key,
+            sequence_number: 3, // must match sender's sequence
+            dec_algorithm: "aes128-cbc".to_string(),
+            mac_algorithm: "hmac-sha1".to_string(),
+        };
+
+        let decrypted = decrypt_packet_cbc(&encrypted, &mut dec_state).unwrap();
+
+        // Decrypted data is the full packet: [length(4)][padding_len(1)][payload][padding]
+        // Extract the payload
+        let packet_len = u32::from_be_bytes([decrypted[0], decrypted[1], decrypted[2], decrypted[3]]) as usize;
+        let padding_len = decrypted[4] as usize;
+        let payload_start = 5;
+        let payload_end = 4 + packet_len - padding_len;
+        let recovered = &decrypted[payload_start..payload_end];
+
+        assert_eq!(recovered, payload);
+    }
+
+    /// Test that encrypted packets are always 16-byte aligned (AES block size).
+    #[test]
+    fn test_encrypt_packet_alignment() {
+        let enc_key = vec![0x01u8; 16];
+        let mac_key = vec![0x02u8; 20];
+        let iv = vec![0x03u8; 16];
+
+        // Test various payload sizes
+        for payload_len in [1, 5, 10, 15, 16, 19, 32, 100] {
+            let payload = vec![0xABu8; payload_len];
+
+            let mut state = EncryptionState {
+                enc_key: enc_key.clone(),
+                iv: iv.clone(),
+                mac_key: mac_key.clone(),
+                sequence_number: 0,
+                enc_algorithm: "aes128-cbc".to_string(),
+                mac_algorithm: "hmac-sha1".to_string(),
+            };
+
+            let encrypted = encrypt_packet_cbc(&payload, &mut state).unwrap();
+            let mac_len = 20; // HMAC-SHA1
+            let encrypted_portion = encrypted.len() - mac_len;
+
+            assert_eq!(encrypted_portion % 16, 0,
+                "Encrypted portion must be 16-byte aligned for AES-128 (payload_len={})", payload_len);
+        }
+    }
+
+    /// Test that sequence numbers are correctly incremented and used in MAC.
+    #[test]
+    fn test_sequence_number_in_mac() {
+        let enc_key = vec![0x01u8; 16];
+        let mac_key = vec![0x02u8; 20];
+        let iv = vec![0x03u8; 16];
+        let payload = b"test";
+
+        // Encrypt with seq 3
+        let mut enc_state = EncryptionState {
+            enc_key: enc_key.clone(),
+            iv: iv.clone(),
+            mac_key: mac_key.clone(),
+            sequence_number: 3,
+            enc_algorithm: "aes128-cbc".to_string(),
+            mac_algorithm: "hmac-sha1".to_string(),
+        };
+        let encrypted = encrypt_packet_cbc(payload, &mut enc_state).unwrap();
+
+        // Decrypting with the WRONG sequence number should fail MAC verification
+        let mut dec_state_wrong = DecryptionState {
+            dec_key: enc_key.clone(),
+            iv: iv.clone(),
+            mac_key: mac_key.clone(),
+            sequence_number: 0, // wrong!
+            dec_algorithm: "aes128-cbc".to_string(),
+            mac_algorithm: "hmac-sha1".to_string(),
+        };
+        let result = decrypt_packet_cbc(&encrypted, &mut dec_state_wrong);
+        assert!(result.is_err(), "Decryption with wrong sequence number must fail MAC check");
+
+        // Decrypting with the CORRECT sequence number should succeed
+        let mut dec_state_correct = DecryptionState {
+            dec_key: enc_key,
+            iv: iv,
+            mac_key: mac_key,
+            sequence_number: 3, // correct
+            dec_algorithm: "aes128-cbc".to_string(),
+            mac_algorithm: "hmac-sha1".to_string(),
+        };
+        let result = decrypt_packet_cbc(&encrypted, &mut dec_state_correct);
+        assert!(result.is_ok(), "Decryption with correct sequence number must succeed");
+    }
+
+    /// Test multiple packets with IV chaining.
+    #[test]
+    fn test_multiple_packets_iv_chaining() {
+        let enc_key = vec![0x01u8; 16];
+        let mac_key = vec![0x02u8; 20];
+        let iv = vec![0x03u8; 16];
+
+        let mut enc_state = EncryptionState {
+            enc_key: enc_key.clone(),
+            iv: iv.clone(),
+            mac_key: mac_key.clone(),
+            sequence_number: 3,
+            enc_algorithm: "aes128-cbc".to_string(),
+            mac_algorithm: "hmac-sha1".to_string(),
+        };
+
+        let mut dec_state = DecryptionState {
+            dec_key: enc_key,
+            iv: iv,
+            mac_key: mac_key,
+            sequence_number: 3,
+            dec_algorithm: "aes128-cbc".to_string(),
+            mac_algorithm: "hmac-sha1".to_string(),
+        };
+
+        // Send/receive multiple packets
+        for i in 0..5 {
+            let payload = format!("Message #{}", i);
+            let encrypted = encrypt_packet_cbc(payload.as_bytes(), &mut enc_state).unwrap();
+            let decrypted = decrypt_packet_cbc(&encrypted, &mut dec_state).unwrap();
+
+            // Extract payload
+            let packet_len = u32::from_be_bytes([decrypted[0], decrypted[1], decrypted[2], decrypted[3]]) as usize;
+            let padding_len = decrypted[4] as usize;
+            let payload_end = 4 + packet_len - padding_len;
+            let recovered = &decrypted[5..payload_end];
+            assert_eq!(recovered, payload.as_bytes(), "Packet {} round-trip failed", i);
+        }
+
+        // Both sides should have the same sequence number after 5 packets
+        assert_eq!(enc_state.sequence_number, 8); // started at 3, sent 5
+        assert_eq!(dec_state.sequence_number, 8);
+    }
 }
