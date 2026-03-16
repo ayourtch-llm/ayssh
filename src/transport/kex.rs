@@ -363,12 +363,17 @@ impl KexContext {
                 protocol::KexAlgorithm::EcdhSha2Nistp521 => (32, 64, 12),
             };
             
-            let enc_key_c2s = kdf::kdf(shared_secret, hash, b'C' as u32, enc_key_len);
-            let enc_key_s2c = kdf::kdf(shared_secret, hash, b'D' as u32, enc_key_len);
-            let mac_key_c2s = kdf::kdf(shared_secret, hash, b'E' as u32, mac_key_len);
-            let mac_key_s2c = kdf::kdf(shared_secret, hash, b'F' as u32, mac_key_len);
-            let client_iv = kdf::kdf(shared_secret, hash, b'A' as u32, iv_len);
-            let server_iv = kdf::kdf(shared_secret, hash, b'B' as u32, iv_len);
+            let hash_algo = match self.algorithm {
+                protocol::KexAlgorithm::DiffieHellmanGroup1Sha1 => kdf::HashAlgorithm::Sha1,
+                _ => kdf::HashAlgorithm::Sha256,
+            };
+            
+            let enc_key_c2s = kdf::kdf(shared_secret, hash, b'C' as u32, enc_key_len, hash_algo);
+            let enc_key_s2c = kdf::kdf(shared_secret, hash, b'D' as u32, enc_key_len, hash_algo);
+            let mac_key_c2s = kdf::kdf(shared_secret, hash, b'E' as u32, mac_key_len, hash_algo);
+            let mac_key_s2c = kdf::kdf(shared_secret, hash, b'F' as u32, mac_key_len, hash_algo);
+            let client_iv = kdf::kdf(shared_secret, hash, b'A' as u32, iv_len, hash_algo);
+            let server_iv = kdf::kdf(shared_secret, hash, b'B' as u32, iv_len, hash_algo);
             
             Ok(SessionKeys {
                 enc_key_c2s,

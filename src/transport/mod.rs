@@ -4,7 +4,7 @@
 //! packet encryption, and session state management.
 
 use crate::channel::ChannelTransferManager;
-use crate::crypto::cipher::{aes_128_cbc_decrypt, aes_128_cbc_encrypt, CipherError};
+use crate::crypto::cipher::{aes_128_cbc_decrypt, aes_128_cbc_decrypt_raw, aes_128_cbc_encrypt, CipherError};
 use crate::crypto::hmac::HmacSha1;
 use crate::protocol;
 use bytes::BufMut;
@@ -600,31 +600,116 @@ impl Transport {
         let decryption_enabled = self.decrypt_state.is_some();
         
         if decryption_enabled {
-            // Read encrypted packet
-            let mut len_buf = [0u8; 4];
-            self.stream.read_exact(&mut len_buf).await?;
-            let len = u32::from_be_bytes(len_buf) as usize;
-            debug!("Received encrypted packet, length: {}", len);
+            let decrypt_state = self.decrypt_state.as_ref().unwrap();
             
-            // Read the encrypted packet (length + padding_length + payload + padding + MAC)
-            let mut encrypted_buf = vec![0u8; len];
-            self.stream.read_exact(&mut encrypted_buf[..len]).await?;
-            debug!("Read {} bytes of encrypted data", len);
+            // For CBC mode, the packet length field is encrypted (RFC 4253 Section 6.3)
+            // Packet structure: [encrypted: length(4) + padding_len(1) + payload + padding] + [MAC]
             
-            // Decrypt the packet
+            // Calculate MAC length based on algorithm
+            let mac_len = match decrypt_state.mac_algorithm.as_str() {
+                "hmac-sha1" => 20,
+                "hmac-sha1-96" => 12,
+                "hmac-md5" => 16,
+                "hmac-md5-96" => 12,
+                "hmac-sha2-256" => 32,
+                "hmac-sha2-512" => 64,
+                _ => 20, // Default to HMAC-SHA1
+            };
+            
+            // Read minimum: one AES block (16 bytes) + MAC
+            let min_size = 16 + mac_len;
+            let mut buffer = vec![0u8; min_size];
+            self.stream.read_exact(&mut buffer).await?;
+            debug!("Read minimum {} bytes (16 + MAC:{})", min_size, mac_len);
+            
+            // Decrypt just the first 16 bytes to get packet length (without padding removal)
+            let first_block = &buffer[..16];
+            debug!("Decrypting with key (first 8 bytes): {:?}", &decrypt_state.dec_key[..std::cmp::min(8, decrypt_state.dec_key.len())]);
+            debug!("Decrypting with IV (first 8 bytes): {:?}", &decrypt_state.iv[..std::cmp::min(8, decrypt_state.iv.len())]);
+            debug!("Ciphertext first block: {:?}", first_block);
+            let decrypted_first_block = aes_128_cbc_decrypt_raw(
+                &decrypt_state.dec_key,
+                &decrypt_state.iv,
+                first_block
+            )?;
+            debug!("Decrypted first block: {:?}", &decrypted_first_block[..16]);
+            
+            // For debugging, print the expected packet length for SERVICE_ACCEPT
+            // SERVICE_ACCEPT is message type 6, so the packet should be:
+            // [length (4)][padding_len (1)][6][padding...]
+            // Minimum packet length would be 4+1+6+4 = 15 bytes (with 4 bytes padding)
+            debug!("Expected packet length for SERVICE_ACCEPT: ~15-30 bytes");
+            
+            // Extract packet length from decrypted data (first 4 bytes, big-endian)
+            let packet_length = u32::from_be_bytes([
+                decrypted_first_block[0],
+                decrypted_first_block[1],
+                decrypted_first_block[2],
+                decrypted_first_block[3]
+            ]) as usize;
+            debug!("Extracted packet length: {}", packet_length);
+            
+            // Validate packet length
+            if packet_length < 1 || packet_length > 35000 {
+                return Err(crate::error::SshError::ProtocolError(
+                    format!("Invalid packet length: {}", packet_length)
+                ));
+            }
+            
+            // Total bytes needed: packet_length (encrypted portion) + mac_len
+            let total_bytes = packet_length + mac_len;
+            
+            // If packet is larger than minimum, read more bytes
+            if total_bytes > min_size {
+                let additional = total_bytes - min_size;
+                debug!("Need {} additional bytes", additional);
+                let mut additional_data = vec![0u8; additional];
+                self.stream.read_exact(&mut additional_data).await?;
+                buffer.extend_from_slice(&additional_data);
+            }
+            
+            debug!("Total encrypted data with MAC: {} bytes (packet: {} + MAC: {})", 
+                   buffer.len(), packet_length, mac_len);
+            
+            // Split buffer into encrypted portion and MAC
+            let encrypted = &buffer[..packet_length];
+            let received_mac = &buffer[packet_length..];
+            
+            // Verify HMAC over sequence number + encrypted data
+            let mut mac_data = Vec::with_capacity(4 + encrypted.len());
+            mac_data.extend_from_slice(&decrypt_state.sequence_number.to_be_bytes());
+            mac_data.extend_from_slice(encrypted);
+            
+            let mut hmac = HmacSha1::new(&decrypt_state.mac_key);
+            hmac.update(&mac_data);
+            let expected_mac = hmac.finish();
+            
+            if !expected_mac.iter().eq(received_mac.iter()) {
+                return Err(crate::error::SshError::ProtocolError(
+                    "MAC verification failed".to_string()
+                ));
+            }
+            debug!("MAC verification successful");
+            
+            // Decrypt the entire encrypted portion
             let decrypt_state = self.decrypt_state.as_mut().unwrap();
-            debug!("Decrypting with key len: {}, iv len: {}", decrypt_state.dec_key.len(), decrypt_state.iv.len());
-            let decrypted = decrypt_packet_cbc(&encrypted_buf, decrypt_state)?;
+            let decrypted = aes_128_cbc_decrypt(&decrypt_state.dec_key, &decrypt_state.iv, encrypted)?;
             debug!("Decrypted successfully, got {} bytes", decrypted.len());
+            
+            // Update IV for next packet (last 16 bytes of ciphertext for AES)
+            if encrypted.len() >= 16 {
+                decrypt_state.iv = encrypted[encrypted.len() - 16..].to_vec();
+            }
+            
+            // Update sequence number
+            decrypt_state.sequence_number = decrypt_state.sequence_number.wrapping_add(1);
+            
             Ok(decrypted)
         } else {
             // Read unencrypted (shouldn't happen after handshake)
-            // Read length prefix (4 bytes)
             let mut len_buf = [0u8; 4];
             self.stream.read_exact(&mut len_buf).await?;
             let len = u32::from_be_bytes(len_buf) as usize;
-
-            // Read the message
             let mut msg_buf = vec![0u8; len];
             self.stream.read_exact(&mut msg_buf).await?;
             Ok(msg_buf)

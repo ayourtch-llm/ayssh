@@ -452,6 +452,69 @@ pub fn aes_128_cbc_decrypt(key: &[u8], iv: &[u8], ciphertext: &[u8]) -> Result<V
     Ok(blocks)
 }
 
+/// Decrypt data using AES-128-CBC mode WITHOUT removing padding
+///
+/// This function performs raw CBC decryption without PKCS#7 padding removal.
+/// It is used for SSH transport layer where individual blocks need to be
+/// decrypted without padding (e.g., decrypting the first block to get packet length).
+///
+/// # Arguments
+///
+/// * `key` - 16-byte (128-bit) encryption key
+/// * `iv` - 16-byte (128-bit) initialization vector (must match encryption IV)
+/// * `ciphertext` - Data to decrypt (must be multiple of 16 bytes)
+///
+/// # Returns
+///
+/// * `Ok(Vec<u8>)` - Decrypted data (with padding intact)
+/// * `Err(CipherError)` - Error if key/iv size is invalid or decryption fails
+pub fn aes_128_cbc_decrypt_raw(key: &[u8], iv: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>, CipherError> {
+    // Validate key size
+    if key.len() != 16 {
+        return Err(CipherError::InvalidKeySize { expected: 16, actual: key.len() });
+    }
+    
+    // Validate IV size
+    if iv.len() != 16 {
+        return Err(CipherError::InvalidIvSizeCbc);
+    }
+    
+    // Check ciphertext length (must be multiple of block size)
+    if ciphertext.is_empty() || ciphertext.len() % 16 != 0 {
+        return Err(CipherError::InvalidPadding);
+    }
+    
+    // Decrypt using AES-128
+    use aes::cipher::{BlockDecrypt, KeyInit};
+    let cipher = aes::Aes128::new_from_slice(key).map_err(|e| {
+        CipherError::CryptoError(format!("Invalid key: {}", e))
+    })?;
+    
+    let mut blocks: Vec<u8> = ciphertext.to_vec();
+    let mut prev_block = iv.to_vec();
+    
+    // Process data in 16-byte blocks
+    for chunk in blocks.chunks_mut(16) {
+        // Save the ciphertext block before modifying it (needed for next iteration's prev_block)
+        let ciphertext_block: [u8; 16] = chunk.try_into().unwrap();
+        
+        // Decrypt the block first
+        let mut block = generic_array::GenericArray::<u8, _>::clone_from_slice(chunk);
+        cipher.decrypt_block(&mut block);
+        
+        // Now XOR the decrypted block with previous ciphertext block (or IV for first block)
+        for (i, byte) in chunk.iter_mut().enumerate() {
+            *byte = block[i] ^ prev_block[i];
+        }
+        
+        // Update previous block to the ciphertext block (for next iteration)
+        prev_block.copy_from_slice(&ciphertext_block);
+    }
+    
+    // Do NOT remove padding - caller handles this
+    Ok(blocks)
+}
+
 /// Encrypt data using AES-256-CBC mode
 ///
 /// # Arguments

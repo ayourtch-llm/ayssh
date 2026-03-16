@@ -29,6 +29,14 @@
 //! - m = ceil(L / H.len)
 
 use ring::digest::{self, SHA256};
+use sha1::{Sha1, Digest};
+
+/// Hash algorithm for KDF
+#[derive(Debug, Clone, Copy)]
+pub enum HashAlgorithm {
+    Sha1,
+    Sha256,
+}
 
 /// Derive cryptographic keys using the SSH KDF
 ///
@@ -64,49 +72,78 @@ use ring::digest::{self, SHA256};
 /// - The shared secret should be securely erased after key derivation
 /// - Different counters produce different keys from the same inputs
 /// - The session ID ensures keys are unique per session
-pub fn kdf(shared_secret: &[u8], session_id: &[u8], counter: u32, desired_length: usize) -> Vec<u8> {
+pub fn kdf(shared_secret: &[u8], session_id: &[u8], counter: u32, desired_length: usize, hash_algo: HashAlgorithm) -> Vec<u8> {
     if desired_length == 0 {
         return Vec::new();
     }
 
     let mut result = Vec::with_capacity(desired_length);
-    const HASH_LEN: usize = 32; // SHA-256 produces 32 bytes
-    let num_blocks = (desired_length + HASH_LEN - 1) / HASH_LEN;
+    let hash_len = match hash_algo {
+        HashAlgorithm::Sha1 => 20, // SHA-1 produces 20 bytes
+        HashAlgorithm::Sha256 => 32, // SHA-256 produces 32 bytes
+    };
+    let num_blocks = (desired_length + hash_len - 1) / hash_len;
 
     for i in 1..=num_blocks {
-        let mut hasher = digest::Context::new(&SHA256);
-        
-        // RFC 4253 Section 7.2:
-        // K1 = HASH(K || H || X || session_id)   (X is e.g., "A")
-        // K2 = HASH(K || H || K1)
-        // K3 = HASH(K || H || K1 || K2)
-        // ...
-        // key = K1 || K2 || K3 || ...
-        
-        // Encode shared secret as mpint (big-endian with 4-byte length prefix)
-        hasher.update(&shared_secret.len().to_be_bytes());
-        hasher.update(shared_secret);
-        // Add session_id (H)
-        hasher.update(session_id);
-        
-        if i == 1 {
-            // First block: add counter byte (X) and session_id
-            hasher.update(&[(counter as u8)]);
-            hasher.update(session_id);
-        } else {
-            // Subsequent blocks: add the entire key so far
-            hasher.update(&result);
-        }
-        
-        let digest = hasher.finish();
-        let digest_bytes = digest.as_ref();
+        let hash_output = match hash_algo {
+            HashAlgorithm::Sha1 => {
+                // RFC 4253 Section 7.2:
+                // K1 = HASH(K || H || X || session_id)   (X is e.g., "A")
+                // K2 = HASH(K || H || K1)
+                // K3 = HASH(K || H || K1 || K2)
+                // ...
+                // key = K1 || K2 || K3 || ...
+                
+                let mut hasher = Sha1::new();
+                // Encode shared secret as mpint (length-prefixed)
+                // First convert to BigUint to handle sign bit correctly
+                let k_mpint = crate::crypto::dh::Mpint::encode_length_prefixed(
+                    &num_bigint::BigUint::from_bytes_be(shared_secret)
+                );
+                hasher.update(&k_mpint);
+                // H is the exchange hash
+                hasher.update(session_id);
+                
+                if i == 1 {
+                    // First block: add counter byte (X) and session_id
+                    hasher.update(&[(counter as u8)]);
+                    hasher.update(session_id);
+                } else {
+                    // Subsequent blocks: add the entire key so far
+                    hasher.update(&result);
+                }
+                
+                hasher.finalize().as_slice().to_vec()
+            }
+            HashAlgorithm::Sha256 => {
+                let mut hasher = digest::Context::new(&SHA256);
+                // Encode shared secret as mpint (length-prefixed)
+                let k_mpint = crate::crypto::dh::Mpint::encode_length_prefixed(
+                    &num_bigint::BigUint::from_bytes_be(shared_secret)
+                );
+                hasher.update(&k_mpint);
+                // Add H (exchange hash)
+                hasher.update(session_id);
+                
+                if i == 1 {
+                    // First block: add counter byte (X) and session_id
+                    hasher.update(&[(counter as u8)]);
+                    hasher.update(session_id);
+                } else {
+                    // Subsequent blocks: add the entire key so far
+                    hasher.update(&result);
+                }
+                
+                hasher.finish().as_ref().to_vec()
+            }
+        };
         
         // Add full block or truncate to desired length
         let remaining = desired_length - result.len();
-        if remaining >= HASH_LEN {
-            result.extend_from_slice(digest_bytes);
+        if remaining >= hash_len {
+            result.extend_from_slice(&hash_output);
         } else {
-            result.extend_from_slice(&digest_bytes[..remaining]);
+            result.extend_from_slice(&hash_output[..remaining]);
         }
     }
 

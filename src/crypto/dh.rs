@@ -229,9 +229,15 @@ pub fn derive_keys(
     let kh = compute_dh_hash(k, h, hash_algorithm);
     
     // Use KDF to derive all needed keys
-    let enc_key = kdf::kdf(&kh, h, 1, enc_key_len);
-    let mac_key = kdf::kdf(&kh, h, 2, mac_key_len);
-    let iv = kdf::kdf(&kh, h, 3, iv_len);
+    let kdf_algo = match hash_algorithm {
+        protocol::HashAlgorithm::Sha1 => kdf::HashAlgorithm::Sha1,
+        protocol::HashAlgorithm::Sha256 |
+        protocol::HashAlgorithm::Sha384 |
+        protocol::HashAlgorithm::Sha512 => kdf::HashAlgorithm::Sha256,
+    };
+    let enc_key = kdf::kdf(&kh, h, 1, enc_key_len, kdf_algo);
+    let mac_key = kdf::kdf(&kh, h, 2, mac_key_len, kdf_algo);
+    let iv = kdf::kdf(&kh, h, 3, iv_len, kdf_algo);
     
     Ok((enc_key, mac_key, iv))
 }
