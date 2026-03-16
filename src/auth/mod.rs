@@ -200,7 +200,7 @@ impl<'a> Authenticator<'a> {
         msg.write_string(b"publickey");
         msg.write_bool(false); // no signature yet (initial request)
         msg.write_string(b"ssh-rsa"); // algorithm
-        msg.write_bytes(&public_key_blob);
+        msg.write_string(&public_key_blob); // public key blob as SSH string (length-prefixed)
 
         self.transport.send_message(&msg.as_bytes()).await?;
 
@@ -253,27 +253,38 @@ impl<'a> Authenticator<'a> {
         }
     }
 
-    /// Extracts public key blob from RSA private key
+    /// Extracts public key blob from RSA private key.
+    /// Encodes as SSH wire format: string("ssh-rsa") || mpint(e) || mpint(n)
     fn extract_public_key_blob(&self, private_key: &rsa::RsaPrivateKey) -> Result<Vec<u8>, SshError> {
         use rsa::traits::PublicKeyParts;
         use bytes::{BufMut, BytesMut};
-        
+
+        // Helper: encode a BigUint as SSH mpint (with 0x00 prefix if high bit set)
+        fn put_mpint(buf: &mut BytesMut, value: &[u8]) {
+            if !value.is_empty() && (value[0] & 0x80) != 0 {
+                buf.put_u32((value.len() + 1) as u32);
+                buf.put_u8(0x00);
+                buf.put_slice(value);
+            } else {
+                buf.put_u32(value.len() as u32);
+                buf.put_slice(value);
+            }
+        }
+
         let mut buf = BytesMut::new();
-        
+
         // Public key algorithm string
         buf.put_u32(b"ssh-rsa".len() as u32);
         buf.put_slice(b"ssh-rsa");
-        
-        // Public exponent e
+
+        // Public exponent e (as mpint)
         let e = private_key.e().to_bytes_be();
-        buf.put_u32(e.len() as u32);
-        buf.put_slice(&e);
-        
-        // Modulus n
+        put_mpint(&mut buf, &e);
+
+        // Modulus n (as mpint)
         let n = private_key.n().to_bytes_be();
-        buf.put_u32(n.len() as u32);
-        buf.put_slice(&n);
-        
+        put_mpint(&mut buf, &n);
+
         Ok(buf.to_vec())
     }
 
@@ -309,8 +320,8 @@ impl<'a> Authenticator<'a> {
         msg.write_string(b"publickey");
         msg.write_bool(true); // has signature
         msg.write_string(b"ssh-rsa"); // algorithm
-        msg.write_bytes(public_key_blob);
-        msg.write_bytes(&signature.encode()); // SSH-encoded signature
+        msg.write_string(public_key_blob); // public key blob as SSH string
+        msg.write_string(&signature.encode()); // SSH-encoded signature as SSH string
 
         self.transport.send_message(&msg.as_bytes()).await?;
 

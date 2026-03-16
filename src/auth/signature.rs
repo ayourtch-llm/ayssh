@@ -79,42 +79,29 @@ impl SshSignature {
 pub struct RsaSignatureEncoder;
 
 impl RsaSignatureEncoder {
-    /// Encode RSA signature
-    /// data: SHA-256 hash of (session_id + SSH_MSG_USERAUTH_REQUEST + ...)
+    /// Encode RSA signature per RFC 4253 Section 6.6.
+    /// The `ssh-rsa` algorithm uses RSASSA-PKCS1-v1_5 with SHA-1.
+    /// SSH signature wire format: string("ssh-rsa") || string(signature_blob)
     pub fn encode(
         private_key: &rsa::RsaPrivateKey,
         data: &[u8],
     ) -> Result<SshSignature, SshError> {
         use signature::Signer;
-        
-        // Create signing key with empty prefix (unprefixed signatures)
-        let signing_key = rsa::pkcs1v15::SigningKey::<sha2::Sha256>::new_unprefixed(private_key.clone());
-        
-        // Sign the data
-        let signature = signing_key.sign(data);
-        
-        // SSH RSA signature format:
-        // string "ssh-rsa"
-        // mpint e (public exponent, typically 65537)
-        // mpint s (signature)
-        let mut buf = BytesMut::new();
-        
-        // Algorithm name (4-byte length prefix)
-        buf.put_u32(SSH_SIG_ALGORITHM_RSA.len() as u32);
-        buf.put_slice(SSH_SIG_ALGORITHM_RSA.as_bytes());
-        
-        // Public exponent (65537 = 0x010001) as mpint
-        let e = vec![0x01, 0x00, 0x01];
-        buf.put_u32(e.len() as u32);
-        buf.put_slice(&e);
-        
-        // Signature (convert to positive mpint - big-endian) as mpint
-        let signature_bytes = signature.to_bytes();
-        let s = Self::to_positive_mpint(signature_bytes.as_ref());
-        buf.put_u32(s.len() as u32);
-        buf.put_slice(&s);
-        
-        Ok(SshSignature::new(SSH_SIG_ALGORITHM_RSA, buf.to_vec()))
+
+        // ssh-rsa uses RSASSA-PKCS1-v1_5 with SHA-1 (RFC 4253 Section 6.6)
+        // Hash the data with SHA-1 first, then sign the hash
+        use sha1::Digest;
+        let hash = sha1::Sha1::digest(data);
+
+        // Sign with PKCS1v15 + SHA-1 OID
+        use rsa::Pkcs1v15Sign;
+        let scheme = Pkcs1v15Sign::new::<sha1::Sha1>();
+        let signature = private_key.sign(scheme, &hash)
+            .map_err(|e| SshError::CryptoError(format!("RSA signing failed: {}", e)))?;
+
+        // Return with raw signature bytes - SshSignature::encode() handles
+        // the wire format: string("ssh-rsa") || string(signature_blob)
+        Ok(SshSignature::new(SSH_SIG_ALGORITHM_RSA, signature))
     }
 
     /// Convert signature to positive mpint (big-endian, no sign bit)

@@ -42,8 +42,9 @@ mod tests {
         assert_eq!(signature.algorithm, "ssh-rsa");
         assert!(!signature.data.is_empty());
 
-        // Verify the signature data can be decoded
-        let decoded = SshSignature::decode(&signature.data).unwrap();
+        // Verify the encoded signature can be decoded back
+        let encoded = signature.encode();
+        let decoded = SshSignature::decode(&encoded).unwrap();
         assert_eq!(decoded.algorithm, "ssh-rsa");
         assert!(!decoded.data.is_empty());
     }
@@ -76,13 +77,15 @@ mod tests {
         // Sign the data
         let signature = RsaSignatureEncoder::encode(&private_key, &sig_data).unwrap();
 
-        // Verify the signature
-        let decoded = SshSignature::decode(&signature.data).unwrap();
+        // Verify the encoded signature can be round-tripped
+        let encoded = signature.encode();
+        let decoded = SshSignature::decode(&encoded).unwrap();
 
-        // Note: Full verification would require extracting the public key and verifying
-        // For now, we just verify the signature can be decoded and has correct format
         assert_eq!(decoded.algorithm, "ssh-rsa");
         assert!(!decoded.data.is_empty());
+
+        // Verify the raw signature is the right size for RSA-2048 (256 bytes)
+        assert_eq!(signature.data.len(), 256);
     }
 
     #[test]
