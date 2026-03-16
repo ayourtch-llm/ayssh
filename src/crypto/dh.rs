@@ -388,4 +388,35 @@ mod tests {
         let group = DhGroup::group1();
         assert_eq!(group.g, BigUint::from(2u32), "Group 1 generator must be 2");
     }
+
+    /// Verify DH Group 14 prime is exactly 2048 bits
+    #[test]
+    fn test_group14_prime_is_2048_bits() {
+        let group = DhGroup::group14();
+        assert_eq!(group.p.bits(), 2048, "Group 14 prime must be exactly 2048 bits");
+    }
+
+    /// Verify DH Group 14 prime starts and ends with FFFFFFFFFFFFFFFF
+    /// (by construction from the formula p = 2^2048 - 2^1984 - 1 + 2^64 * {...})
+    #[test]
+    fn test_group14_prime_boundary_values() {
+        let group = DhGroup::group14();
+        let p_bytes = group.p.to_bytes_be();
+
+        assert_eq!(p_bytes[0], 0xFF, "Group 14 prime must start with 0xFF");
+        assert_eq!(p_bytes[1], 0xFF, "Group 14 prime second byte must be 0xFF");
+
+        let len = p_bytes.len();
+        for i in 0..8 {
+            assert_eq!(p_bytes[len - 1 - i], 0xFF,
+                "Group 14 prime last 8 bytes must all be 0xFF (byte {} from end)", i);
+        }
+    }
+
+    /// Verify DH Group 14 generator is 2
+    #[test]
+    fn test_group14_generator() {
+        let group = DhGroup::group14();
+        assert_eq!(group.g, BigUint::from(2u32), "Group 14 generator must be 2");
+    }
 }

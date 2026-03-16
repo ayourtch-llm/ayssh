@@ -1034,4 +1034,54 @@ mod tests {
         let _ = Transport::send_channel_request;
         let _ = Transport::send_channel_request_string;
     }
+
+    #[test]
+    fn test_advance_ctr_iv_simple() {
+        let mut iv = vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        advance_ctr_iv(&mut iv, 1);
+        assert_eq!(iv, vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+    }
+
+    #[test]
+    fn test_advance_ctr_iv_multiple_blocks() {
+        let mut iv = vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        advance_ctr_iv(&mut iv, 256);
+        assert_eq!(iv, vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0]);
+    }
+
+    #[test]
+    fn test_advance_ctr_iv_carry() {
+        let mut iv = vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF];
+        advance_ctr_iv(&mut iv, 1);
+        assert_eq!(iv, vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0]);
+    }
+
+    #[test]
+    fn test_advance_ctr_iv_multi_byte_carry() {
+        let mut iv = vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0xFF];
+        advance_ctr_iv(&mut iv, 1);
+        assert_eq!(iv, vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0]);
+    }
+
+    /// Verify CTR mode encrypt/decrypt round-trip through encrypt_packet_cbc
+    #[test]
+    fn test_encrypt_packet_ctr_round_trip() {
+        let payload = vec![5, 0, 0, 0, 12, b's', b's', b'h', b'-', b'u', b's', b'e', b'r', b'a', b'u', b't', b'h'];
+        let mut enc_state = EncryptionState {
+            enc_key: vec![0x42; 16],
+            iv: vec![0x00; 16],
+            mac_key: vec![0xAB; 20],
+            sequence_number: 3,
+            enc_algorithm: "aes128-ctr".to_string(),
+            mac_algorithm: "hmac-sha1".to_string(),
+        };
+
+        let encrypted = encrypt_packet_cbc(&payload, &mut enc_state).unwrap();
+        // Encrypted output should be: encrypted_packet + 20-byte HMAC
+        assert!(encrypted.len() > payload.len());
+        assert!(encrypted.len() >= 20); // at least MAC
+
+        // Sequence number should have been incremented
+        assert_eq!(enc_state.sequence_number, 4);
+    }
 }

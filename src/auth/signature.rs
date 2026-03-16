@@ -458,4 +458,54 @@ mod tests {
         // The boolean is at position: 24 + 1 + 12 + 18 = 55
         assert_eq!(sig_data[55], 0); // FALSE
     }
+
+    /// Verify RSA signature uses SHA-1 (not SHA-256) and produces correct size
+    /// ssh-rsa uses RSASSA-PKCS1-v1_5 with SHA-1 per RFC 4253 Section 6.6
+    #[test]
+    fn test_rsa_signature_uses_sha1_and_correct_size() {
+        let mut rng = OsRng;
+        let private_key = RsaPrivateKey::new(&mut rng, 2048).unwrap();
+
+        let data = b"test data for SHA-1 signature verification";
+        let signature = RsaSignatureEncoder::encode(&private_key, data).unwrap();
+
+        // RSA-2048 signature should be exactly 256 bytes (2048 bits)
+        assert_eq!(signature.data.len(), 256,
+            "RSA-2048 signature must be exactly 256 bytes");
+
+        // The data field should be raw signature bytes, not wrapped with algorithm name
+        // If it were double-wrapped, it would be > 256 bytes
+        assert_eq!(signature.algorithm, "ssh-rsa");
+
+        // Verify we can verify the signature with SHA-1
+        use rsa::pkcs1v15::VerifyingKey;
+        use rsa::signature::Verifier;
+        use sha1::Digest;
+        let public_key = private_key.to_public_key();
+        let hash = sha1::Sha1::digest(data);
+        let scheme = rsa::Pkcs1v15Sign::new::<sha1::Sha1>();
+        // If this doesn't panic, the signature is valid SHA-1
+        public_key.verify(scheme, &hash, &signature.data)
+            .expect("Signature must verify with SHA-1");
+    }
+
+    /// Verify SshSignature::encode produces the correct wire format
+    #[test]
+    fn test_ssh_signature_wire_format() {
+        let sig = SshSignature::new("ssh-rsa", vec![0x42; 256]);
+        let encoded = sig.encode();
+
+        // Wire format: string("ssh-rsa") || string(signature_blob)
+        // = [0,0,0,7]["ssh-rsa"][0,0,1,0][256 bytes]
+        assert_eq!(encoded.len(), 4 + 7 + 4 + 256);
+
+        // Check algorithm string
+        let alg_len = u32::from_be_bytes([encoded[0], encoded[1], encoded[2], encoded[3]]);
+        assert_eq!(alg_len, 7);
+        assert_eq!(&encoded[4..11], b"ssh-rsa");
+
+        // Check signature blob
+        let sig_len = u32::from_be_bytes([encoded[11], encoded[12], encoded[13], encoded[14]]);
+        assert_eq!(sig_len, 256);
+    }
 }
