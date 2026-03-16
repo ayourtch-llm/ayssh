@@ -438,8 +438,8 @@ impl Session {
                         format!("Channel open rejected (msg_type=92)")
                     ));
                 }
-                80 => {          // SSH_MSG_GLOBAL_REQUEST - skip
-                    tracing::debug!("Skipping global request during channel open");
+                2 | 4 | 80 => {  // SSH_MSG_IGNORE(2), SSH_MSG_DEBUG(4), SSH_MSG_GLOBAL_REQUEST(80)
+                    tracing::debug!("Skipping message type {} during channel open", msg[0]);
                     continue;
                 }
                 other => {

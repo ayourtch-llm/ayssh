@@ -99,9 +99,24 @@ impl RsaSignatureEncoder {
         let signature = private_key.sign(scheme, &hash)
             .map_err(|e| SshError::CryptoError(format!("RSA signing failed: {}", e)))?;
 
-        // Return with raw signature bytes - SshSignature::encode() handles
-        // the wire format: string("ssh-rsa") || string(signature_blob)
         Ok(SshSignature::new(SSH_SIG_ALGORITHM_RSA, signature))
+    }
+
+    /// Encode RSA signature using SHA-256 (rsa-sha2-256, RFC 8332).
+    /// Used by modern OpenSSH (8.8+) which disables ssh-rsa (SHA-1).
+    pub fn encode_sha256(
+        private_key: &rsa::RsaPrivateKey,
+        data: &[u8],
+    ) -> Result<SshSignature, SshError> {
+        use sha2::Digest;
+        let hash = sha2::Sha256::digest(data);
+
+        use rsa::Pkcs1v15Sign;
+        let scheme = Pkcs1v15Sign::new::<sha2::Sha256>();
+        let signature = private_key.sign(scheme, &hash)
+            .map_err(|e| SshError::CryptoError(format!("RSA-SHA256 signing failed: {}", e)))?;
+
+        Ok(SshSignature::new("rsa-sha2-256", signature))
     }
 
     /// Convert signature to positive mpint (big-endian, no sign bit)

@@ -185,44 +185,54 @@ impl<'a> Authenticator<'a> {
         self.process_auth_response(msg)
     }
 
-    /// Tries public key authentication
+    /// Tries public key authentication.
+    /// Attempts rsa-sha2-256 first (modern OpenSSH), falls back to ssh-rsa (legacy Cisco).
     async fn try_publickey_auth(&mut self, private_key_pem: &[u8]) -> Result<AuthenticationResult, SshError> {
-        // Parse the OpenSSH private key to get the RSA key
         let private_key = self.parse_private_key(private_key_pem)?;
-
-        // Extract public key blob from the RSA private key
         let public_key_blob = self.extract_public_key_blob(&private_key)?;
 
-        let mut msg = Message::new();
-        msg.write_byte(MessageType::UserauthRequest.value());
-        msg.write_string(self.username.as_bytes());
-        msg.write_string(b"ssh-connection");
-        msg.write_string(b"publickey");
-        msg.write_bool(false); // no signature yet (initial request)
-        msg.write_string(b"ssh-rsa"); // algorithm
-        msg.write_string(&public_key_blob); // public key blob as SSH string (length-prefixed)
+        // Try rsa-sha2-256 first (required by OpenSSH 8.8+), then ssh-rsa fallback
+        for algorithm in &["rsa-sha2-256", "ssh-rsa"] {
+            debug!("Trying publickey auth with algorithm: {}", algorithm);
 
-        self.transport.send_message(&msg.as_bytes()).await?;
+            // The public key blob always uses "ssh-rsa" as the key type inside,
+            // but the algorithm in the auth request can be "rsa-sha2-256"
+            let mut msg = Message::new();
+            msg.write_byte(MessageType::UserauthRequest.value());
+            msg.write_string(self.username.as_bytes());
+            msg.write_string(b"ssh-connection");
+            msg.write_string(b"publickey");
+            msg.write_bool(false); // no signature yet
+            msg.write_string(algorithm.as_bytes());
+            msg.write_string(&public_key_blob);
 
-        let response = self.transport.recv_message().await?;
-        let msg = Message::from(response);
+            self.transport.send_message(&msg.as_bytes()).await?;
 
-        match msg.msg_type() {
-            Some(MessageType::UserauthSuccess) => Ok(AuthenticationResult::Success),
-            Some(MessageType::UserauthFailure) => self.process_auth_response(msg),
-            Some(MessageType::UserauthInfoRequest) => {
-                // Message 60 = SSH_MSG_USERAUTH_PK_OK in publickey context (RFC 4252 Section 7)
-                debug!("Server accepted public key, sending signature");
-                self.send_signature(private_key, &public_key_blob).await
-            }
-            other => {
-                debug!("Unexpected pubkey auth response: {:?}", other);
-                Ok(AuthenticationResult::Failure {
-                    partial_success: Vec::new(),
-                    available_methods: Vec::new(),
-                })
+            let response = self.transport.recv_message().await?;
+            let msg = Message::from(response);
+
+            match msg.msg_type() {
+                Some(MessageType::UserauthSuccess) => return Ok(AuthenticationResult::Success),
+                Some(MessageType::UserauthInfoRequest) => {
+                    // Message 60 = SSH_MSG_USERAUTH_PK_OK
+                    debug!("Server accepted public key with {}, sending signature", algorithm);
+                    return self.send_signature_with_algo(private_key, &public_key_blob, algorithm).await;
+                }
+                Some(MessageType::UserauthFailure) => {
+                    debug!("Server rejected {} algorithm, trying next", algorithm);
+                    continue;
+                }
+                other => {
+                    debug!("Unexpected pubkey auth response: {:?}", other);
+                    continue;
+                }
             }
         }
+
+        Ok(AuthenticationResult::Failure {
+            partial_success: Vec::new(),
+            available_methods: Vec::new(),
+        })
     }
 
     /// Parses OpenSSH private key to extract RSA private key
@@ -288,9 +298,14 @@ impl<'a> Authenticator<'a> {
         Ok(buf.to_vec())
     }
 
-    /// Sends signature for public key authentication using real RSA signing
-    async fn send_signature(&mut self, private_key: rsa::RsaPrivateKey, public_key_blob: &[u8]) -> Result<AuthenticationResult, SshError> {
-        // Get the real session ID from the transport layer
+    /// Sends signature for public key authentication using the specified algorithm.
+    /// "ssh-rsa" uses SHA-1, "rsa-sha2-256" uses SHA-256.
+    async fn send_signature_with_algo(
+        &mut self,
+        private_key: rsa::RsaPrivateKey,
+        public_key_blob: &[u8],
+        algorithm: &str,
+    ) -> Result<AuthenticationResult, SshError> {
         let session_id = self.transport.session_id()
             .ok_or_else(|| SshError::ProtocolError("Session ID not available for signature".to_string()))?
             .to_vec();
@@ -302,14 +317,17 @@ impl<'a> Authenticator<'a> {
             "ssh-connection",
             "publickey",
             true,
-            "ssh-rsa",
+            algorithm,
             public_key_blob,
         );
 
-        debug!("Creating RSA signature over {} bytes of data", signature_data.len());
+        debug!("Creating RSA signature ({}) over {} bytes of data", algorithm, signature_data.len());
 
-        // Encode the signature using RSA signature encoder
-        let signature = RsaSignatureEncoder::encode(&private_key, &signature_data)?;
+        // Sign with the appropriate hash algorithm
+        let signature = match algorithm {
+            "rsa-sha2-256" => RsaSignatureEncoder::encode_sha256(&private_key, &signature_data)?,
+            _ => RsaSignatureEncoder::encode(&private_key, &signature_data)?,
+        };
 
         debug!("Signature encoded successfully ({} bytes)", signature.data.len());
 
@@ -319,9 +337,9 @@ impl<'a> Authenticator<'a> {
         msg.write_string(b"ssh-connection");
         msg.write_string(b"publickey");
         msg.write_bool(true); // has signature
-        msg.write_string(b"ssh-rsa"); // algorithm
-        msg.write_string(public_key_blob); // public key blob as SSH string
-        msg.write_string(&signature.encode()); // SSH-encoded signature as SSH string
+        msg.write_string(algorithm.as_bytes());
+        msg.write_string(public_key_blob);
+        msg.write_string(&signature.encode());
 
         self.transport.send_message(&msg.as_bytes()).await?;
 
