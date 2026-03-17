@@ -259,5 +259,216 @@ mod tests {
             );
         }
     }
+
+    // --- Packet construction ---
+
+    #[test]
+    fn test_packet_new() {
+        let pkt = Packet::new(vec![1, 2, 3]);
+        assert_eq!(pkt.length, 3);
+        assert_eq!(pkt.payload, vec![1, 2, 3]);
+        assert!(pkt.padlen >= 4);
+        assert_eq!(pkt.padding.len(), pkt.padlen as usize);
+    }
+
+    #[test]
+    fn test_packet_new_empty_payload() {
+        let pkt = Packet::new(vec![]);
+        assert_eq!(pkt.length, 0);
+        assert!(pkt.payload.is_empty());
+        assert!(pkt.padlen >= 4);
+    }
+
+    #[test]
+    fn test_packet_with_message_type() {
+        let pkt = Packet::with_message_type(21, vec![0xAA, 0xBB]);
+        // payload should be [msg_type, ...data]
+        assert_eq!(pkt.payload[0], 21);
+        assert_eq!(pkt.payload[1], 0xAA);
+        assert_eq!(pkt.payload[2], 0xBB);
+        assert_eq!(pkt.length, 3);
+    }
+
+    #[test]
+    fn test_packet_with_message_type_no_extra_data() {
+        let pkt = Packet::with_message_type(5, vec![]);
+        assert_eq!(pkt.payload, vec![5]);
+        assert_eq!(pkt.length, 1);
+    }
+
+    #[test]
+    fn test_packet_new_with_padding() {
+        let pkt = Packet::new_with_padding(vec![10, 20], 12);
+        assert_eq!(pkt.length, 2);
+        assert_eq!(pkt.padlen, 12);
+        assert_eq!(pkt.padding.len(), 12);
+        assert_eq!(pkt.payload, vec![10, 20]);
+    }
+
+    // --- Serialize ---
+
+    #[test]
+    fn test_serialize_structure() {
+        let pkt = Packet::new_with_padding(vec![0xAA], 4);
+        let data = pkt.serialize();
+        // length field (4 bytes BE) = payload length = 1
+        assert_eq!(&data[0..4], &[0, 0, 0, 1]);
+        // padlen field (1 byte) = 4
+        assert_eq!(data[4], 4);
+        // payload
+        assert_eq!(data[5], 0xAA);
+        // padding (4 bytes)
+        assert_eq!(data.len(), 4 + 1 + 1 + 4); // length + padlen + payload + padding
+    }
+
+    #[test]
+    fn test_serialize_empty_payload() {
+        let pkt = Packet::new_with_padding(vec![], 8);
+        let data = pkt.serialize();
+        assert_eq!(&data[0..4], &[0, 0, 0, 0]); // length = 0
+        assert_eq!(data[4], 8); // padlen = 8
+        assert_eq!(data.len(), 4 + 1 + 0 + 8);
+    }
+
+    // --- Deserialize ---
+
+    #[test]
+    fn test_deserialize_valid() {
+        // Build: length=3, padlen=5, payload=[1,2,3], padding=[0;5]
+        let mut data = vec![];
+        data.extend_from_slice(&3u32.to_be_bytes()); // length
+        data.push(5); // padlen
+        data.extend_from_slice(&[1, 2, 3]); // payload
+        data.extend_from_slice(&[0; 5]); // padding
+
+        let pkt = Packet::deserialize(&data).unwrap();
+        assert_eq!(pkt.length, 3);
+        assert_eq!(pkt.padlen, 5);
+        assert_eq!(pkt.payload, vec![1, 2, 3]);
+        assert_eq!(pkt.padding, vec![0; 5]);
+    }
+
+    #[test]
+    fn test_deserialize_too_short_for_header() {
+        let data = vec![0, 0, 0]; // only 3 bytes, need at least 5
+        let result = Packet::deserialize(&data);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("too short"));
+    }
+
+    #[test]
+    fn test_deserialize_incomplete_payload() {
+        // Header says length=10 padlen=4, but only provide 2 bytes of payload
+        let mut data = vec![];
+        data.extend_from_slice(&10u32.to_be_bytes());
+        data.push(4);
+        data.extend_from_slice(&[0; 2]); // only 2 bytes, need 10+4=14
+        let result = Packet::deserialize(&data);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("incomplete"));
+    }
+
+    #[test]
+    fn test_deserialize_exact_size() {
+        // Exactly the right number of bytes, no extra
+        let mut data = vec![];
+        data.extend_from_slice(&2u32.to_be_bytes());
+        data.push(4);
+        data.extend_from_slice(&[0xAA, 0xBB]); // payload
+        data.extend_from_slice(&[0xCC; 4]); // padding
+        let pkt = Packet::deserialize(&data).unwrap();
+        assert_eq!(pkt.payload, vec![0xAA, 0xBB]);
+        assert_eq!(pkt.padding, vec![0xCC; 4]);
+    }
+
+    #[test]
+    fn test_deserialize_extra_trailing_bytes_ignored() {
+        let mut data = vec![];
+        data.extend_from_slice(&1u32.to_be_bytes());
+        data.push(4);
+        data.extend_from_slice(&[0x42]); // payload
+        data.extend_from_slice(&[0; 4]); // padding
+        data.extend_from_slice(&[0xFF; 10]); // extra trailing bytes
+        let pkt = Packet::deserialize(&data).unwrap();
+        assert_eq!(pkt.payload, vec![0x42]);
+        assert_eq!(pkt.padding.len(), 4);
+    }
+
+    #[test]
+    fn test_deserialize_zero_length_zero_padding() {
+        // Edge: length=0, padlen=0 — valid structure (empty packet)
+        let mut data = vec![];
+        data.extend_from_slice(&0u32.to_be_bytes());
+        data.push(0);
+        let pkt = Packet::deserialize(&data).unwrap();
+        assert_eq!(pkt.length, 0);
+        assert_eq!(pkt.padlen, 0);
+        assert!(pkt.payload.is_empty());
+        assert!(pkt.padding.is_empty());
+    }
+
+    // --- total_size ---
+
+    #[test]
+    fn test_total_size() {
+        let pkt = Packet::new_with_padding(vec![1, 2, 3], 5);
+        // HEADER_SIZE(5) + payload(3) + padding(5) = 13
+        assert_eq!(pkt.total_size(), 5 + 3 + 5);
+    }
+
+    #[test]
+    fn test_total_size_matches_serialize_len() {
+        let pkt = Packet::new(vec![10, 20, 30, 40, 50]);
+        assert_eq!(pkt.total_size(), pkt.serialize().len());
+    }
+
+    // --- Roundtrip ---
+
+    #[test]
+    fn test_serialize_deserialize_roundtrip() {
+        let original = Packet::new(vec![1, 2, 3, 4, 5]);
+        let serialized = original.serialize();
+        let deserialized = Packet::deserialize(&serialized).unwrap();
+        assert_eq!(deserialized.length, original.length);
+        assert_eq!(deserialized.padlen, original.padlen);
+        assert_eq!(deserialized.payload, original.payload);
+        assert_eq!(deserialized.padding, original.padding);
+    }
+
+    #[test]
+    fn test_serialize_deserialize_roundtrip_empty() {
+        let original = Packet::new(vec![]);
+        let serialized = original.serialize();
+        let deserialized = Packet::deserialize(&serialized).unwrap();
+        assert_eq!(deserialized.payload, original.payload);
+        assert_eq!(deserialized.padding.len(), original.padding.len());
+    }
+
+    #[test]
+    fn test_serialize_deserialize_roundtrip_large() {
+        let payload = vec![0xAB; 500];
+        let original = Packet::new(payload);
+        let serialized = original.serialize();
+        let deserialized = Packet::deserialize(&serialized).unwrap();
+        assert_eq!(deserialized.payload, original.payload);
+    }
+
+    // --- Clone / Debug ---
+
+    #[test]
+    fn test_packet_clone() {
+        let pkt = Packet::new(vec![1, 2]);
+        let cloned = pkt.clone();
+        assert_eq!(pkt.payload, cloned.payload);
+        assert_eq!(pkt.padlen, cloned.padlen);
+    }
+
+    #[test]
+    fn test_packet_debug() {
+        let pkt = Packet::new(vec![42]);
+        let debug = format!("{:?}", pkt);
+        assert!(debug.contains("Packet"));
+        assert!(debug.contains("42"));
+    }
 }
 
