@@ -1213,3 +1213,212 @@ fn test_key_cipher_matrix_against_real_sshd() {
     }
     assert!(passed >= 6, "At least 6 key×cipher combos should work");
 }
+
+/// Test bidirectional data: send data to `cat` on real sshd, read it back.
+/// This verifies both our encrypt (client→server) and decrypt (server→client)
+/// paths work correctly in a real session.
+#[test]
+fn test_bidirectional_data_against_real_sshd() {
+    skip_if_no_sshd!();
+    let _lock = TEST_MUTEX.lock().unwrap();
+
+    let sshd_path = find_sshd().unwrap();
+    let tmpdir = tempfile::TempDir::new().unwrap();
+    let tmppath = tmpdir.path();
+
+    let host_key_path = tmppath.join("host_key");
+    std::process::Command::new("ssh-keygen")
+        .args(["-t", "ed25519", "-f"])
+        .arg(&host_key_path)
+        .args(["-N", "", "-q"])
+        .status().unwrap();
+
+    let auth_keys_path = tmppath.join("authorized_keys");
+    let pubkey = std::fs::read_to_string("tests/keys/test_ed25519.pub").unwrap();
+    std::fs::write(&auth_keys_path, pubkey.trim()).unwrap();
+
+    let port = find_free_port();
+    let config_path = tmppath.join("sshd_config");
+    let pid_path = tmppath.join("sshd.pid");
+    std::fs::write(&config_path, format!(
+        "Port {}\nListenAddress 127.0.0.1\nHostKey {}\nAuthorizedKeysFile {}\n\
+         PubkeyAuthentication yes\nPasswordAuthentication no\n\
+         KbdInteractiveAuthentication no\nStrictModes no\nPidFile {}\nLogLevel ERROR\n",
+        port, host_key_path.display(), auth_keys_path.display(), pid_path.display(),
+    )).unwrap();
+
+    let mut child = std::process::Command::new(&sshd_path)
+        .args(["-D", "-e", "-f"])
+        .arg(&config_path)
+        .stderr(std::process::Stdio::piped())
+        .spawn().unwrap();
+
+    let start = std::time::Instant::now();
+    while start.elapsed() < Duration::from_secs(5) {
+        if std::net::TcpStream::connect(format!("127.0.0.1:{}", port)).is_ok() { break; }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    let current_user = std::env::var("USER")
+        .or_else(|_| std::env::var("LOGNAME"))
+        .unwrap_or_else(|_| "test".to_string());
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all().build().unwrap();
+
+    let result = rt.block_on(async {
+        let stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port)).await?;
+        let mut transport = ayssh::transport::Transport::new(stream);
+        transport.handshake().await?;
+        transport.send_service_request("ssh-userauth").await?;
+        transport.recv_service_accept().await?;
+
+        let key_data = std::fs::read("tests/keys/test_ed25519").unwrap();
+        let mut auth = ayssh::auth::Authenticator::new(&mut transport, current_user)
+            .with_private_key(key_data);
+        auth.available_methods.insert("publickey".to_string());
+        auth.authenticate().await?;
+
+        let session = ayssh::session::Session::open(&mut transport).await?;
+        let ch = session.remote_channel_id();
+
+        // Exec "cat" — it will echo back whatever we send
+        let mut req = bytes::BytesMut::new();
+        req.put_u8(98); // CHANNEL_REQUEST
+        req.put_u32(ch);
+        let req_type = b"exec";
+        req.put_u32(req_type.len() as u32);
+        req.put_slice(req_type);
+        req.put_u8(1); // want_reply
+        let command = b"cat";
+        req.put_u32(command.len() as u32);
+        req.put_slice(command);
+        transport.send_message(&req).await?;
+
+        // Skip channel success
+        let _ = transport.recv_message().await?;
+
+        // Send data TO the server via CHANNEL_DATA
+        let test_payload = b"HELLO_FROM_CLIENT_1234567890\n";
+        let mut data_msg = bytes::BytesMut::new();
+        data_msg.put_u8(94); // CHANNEL_DATA
+        data_msg.put_u32(ch);
+        data_msg.put_u32(test_payload.len() as u32);
+        data_msg.put_slice(test_payload);
+        transport.send_message(&data_msg).await?;
+
+        // Send EOF to signal end of input
+        let mut eof_msg = bytes::BytesMut::new();
+        eof_msg.put_u8(96); // CHANNEL_EOF
+        eof_msg.put_u32(ch);
+        transport.send_message(&eof_msg).await?;
+
+        // Read back the echoed data
+        let mut output = Vec::new();
+        for _ in 0..20 {
+            let msg = transport.recv_message().await?;
+            if msg.is_empty() { continue; }
+            match msg[0] {
+                94 => { // CHANNEL_DATA
+                    let data_len = u32::from_be_bytes([msg[5], msg[6], msg[7], msg[8]]) as usize;
+                    output.extend_from_slice(&msg[9..9+data_len]);
+                }
+                96 | 97 => break, // EOF or CLOSE
+                _ => continue,
+            }
+        }
+
+        assert_eq!(output, test_payload,
+            "cat should echo back exactly what we sent");
+        eprintln!("[bidi_test] Sent {} bytes, got {} bytes back — match!",
+            test_payload.len(), output.len());
+
+        Ok::<(), ayssh::error::SshError>(())
+    });
+
+    let _ = child.kill();
+    let _ = child.wait();
+    result.expect("Bidirectional data test failed");
+}
+
+/// Test rapid sequential connections to the same sshd instance.
+/// Verifies connection cleanup and no resource leaks.
+#[test]
+fn test_rapid_sequential_connections() {
+    skip_if_no_sshd!();
+    let _lock = TEST_MUTEX.lock().unwrap();
+
+    let sshd = SshdInstance::start().expect("Failed to start sshd");
+    let mut passed = 0;
+
+    for i in 0..5 {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all().build().unwrap();
+
+        let result = rt.block_on(async {
+            let stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", sshd.port)).await?;
+            let mut transport = ayssh::transport::Transport::new(stream);
+            transport.handshake().await?;
+            transport.send_service_request("ssh-userauth").await?;
+            transport.recv_service_accept().await?;
+            Ok::<(), ayssh::error::SshError>(())
+        });
+
+        match result {
+            Ok(()) => passed += 1,
+            Err(e) => eprintln!("  Connection {} failed: {}", i, e),
+        }
+    }
+
+    eprintln!("[sequential] {}/5 rapid connections succeeded", passed);
+    assert_eq!(passed, 5, "All 5 sequential connections should succeed");
+}
+
+/// Test KEX × cipher cross-product to verify different combinations work.
+#[test]
+fn test_kex_cipher_cross_product() {
+    skip_if_no_sshd!();
+    let _lock = TEST_MUTEX.lock().unwrap();
+
+    let combos: Vec<(&str, &str)> = vec![
+        ("curve25519-sha256", "aes128-ctr"),
+        ("curve25519-sha256", "chacha20-poly1305@openssh.com"),
+        ("ecdh-sha2-nistp256", "aes256-gcm@openssh.com"),
+        ("ecdh-sha2-nistp384", "aes256-ctr"),
+        ("diffie-hellman-group14-sha256", "aes128-gcm@openssh.com"),
+        ("diffie-hellman-group14-sha256", "chacha20-poly1305@openssh.com"),
+    ];
+
+    let sshd = SshdInstance::start().expect("Failed to start sshd");
+    let mut passed = 0;
+    let mut failed = Vec::new();
+
+    for (kex, cipher) in &combos {
+        eprint!("  {}+{} ... ", kex, cipher);
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all().build().unwrap();
+
+        let result = rt.block_on(async {
+            let stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", sshd.port)).await?;
+            let mut transport = ayssh::transport::Transport::new(stream);
+            transport.set_preferred_kex(kex);
+            transport.set_preferred_cipher(cipher);
+            transport.handshake().await?;
+            transport.send_service_request("ssh-userauth").await?;
+            transport.recv_service_accept().await?;
+            Ok::<(), ayssh::error::SshError>(())
+        });
+
+        match result {
+            Ok(()) => { passed += 1; eprintln!("ok"); }
+            Err(e) => { failed.push(format!("{}+{}: {}", kex, cipher, e)); eprintln!("FAILED ({})", e); }
+        }
+    }
+
+    eprintln!("\n  KEX×Cipher interop: {}/{} passed", passed, combos.len());
+    if !failed.is_empty() {
+        eprintln!("  Failures: {:?}", failed);
+    }
+    assert!(passed >= 4, "At least 4 KEX×Cipher combos should work");
+}

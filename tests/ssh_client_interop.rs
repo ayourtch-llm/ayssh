@@ -477,3 +477,165 @@ fn test_openssh_client_mac_negotiation() {
     eprintln!("\n  Client MAC interop: {}/{} passed", passed, macs.len());
     assert!(passed >= 4, "At least 4 MACs should work against real ssh client");
 }
+
+/// Test CBC ciphers with real OpenSSH client → our server.
+/// CBC is less common but still used by older clients/Cisco devices.
+#[test]
+fn test_openssh_client_cbc_ciphers() {
+    skip_if_no_ssh!();
+    let _lock = TEST_MUTEX.lock().unwrap();
+    let ssh_path = find_ssh().unwrap();
+
+    let cbc_ciphers = ["aes128-cbc", "aes256-cbc"];
+    let mut passed = 0;
+
+    for cipher in &cbc_ciphers {
+        eprint!("  cbc_cipher={} ... ", cipher);
+
+        let ssh_path = ssh_path.clone();
+        let cipher = cipher.to_string();
+
+        let result = std::panic::catch_unwind(move || {
+            run_server_test(
+                HostKeyPair::generate_ed25519(),
+                AlgorithmFilter { kex: None, cipher: None, mac: None },
+                move |port| {
+                    let mut args = ssh_base_args(port);
+                    args.extend([
+                        "-o".into(), format!("Ciphers={}", cipher),
+                        "-o".into(), "PreferredAuthentications=publickey".to_string(),
+                        "-i".into(), "tests/keys/test_ed25519".into(),
+                        "-l".into(), "testuser".into(),
+                        "127.0.0.1".into(),
+                        "cat".into(),
+                    ]);
+
+                    let output = Command::new(&ssh_path)
+                        .args(&args)
+                        .output()
+                        .expect("Failed to run ssh");
+
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    assert!(stdout.contains("INTEROP_OK"));
+                },
+            );
+        });
+
+        match result {
+            Ok(()) => { passed += 1; eprintln!("ok"); }
+            Err(_) => { eprintln!("FAILED"); }
+        }
+    }
+
+    eprintln!("\n  Client CBC cipher interop: {}/{} passed", passed, cbc_ciphers.len());
+    assert!(passed >= 1, "At least 1 CBC cipher should work");
+}
+
+/// Test rapid sequential connections from ssh client to our server.
+/// Verifies our server handles connection cleanup properly.
+#[test]
+fn test_openssh_client_rapid_connections() {
+    skip_if_no_ssh!();
+    let _lock = TEST_MUTEX.lock().unwrap();
+    let ssh_path = find_ssh().unwrap();
+
+    let mut passed = 0;
+    for i in 0..3 {
+        let ssh_path = ssh_path.clone();
+        let i = i;
+
+        let result = std::panic::catch_unwind(move || {
+            run_server_test(
+                HostKeyPair::generate_ed25519(),
+                AlgorithmFilter::default(),
+                move |port| {
+                    let mut args = ssh_base_args(port);
+                    args.extend([
+                        "-o".into(), "PreferredAuthentications=publickey".to_string(),
+                        "-i".into(), "tests/keys/test_ed25519".into(),
+                        "-l".into(), "testuser".into(),
+                        "127.0.0.1".into(),
+                        "cat".into(),
+                    ]);
+
+                    let output = Command::new(&ssh_path)
+                        .args(&args)
+                        .output()
+                        .expect("Failed to run ssh");
+
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    assert!(stdout.contains("INTEROP_OK"),
+                        "Connection {} failed", i);
+                },
+            );
+        });
+
+        match result {
+            Ok(()) => passed += 1,
+            Err(_) => eprintln!("  Connection {} failed", i),
+        }
+    }
+
+    eprintln!("[rapid_client] {}/3 rapid connections succeeded", passed);
+    assert_eq!(passed, 3, "All 3 rapid connections should succeed");
+}
+
+/// Test KEX × cipher combinations from real ssh client → our server.
+#[test]
+fn test_openssh_client_kex_cipher_combos() {
+    skip_if_no_ssh!();
+    let _lock = TEST_MUTEX.lock().unwrap();
+    let ssh_path = find_ssh().unwrap();
+
+    let combos: Vec<(&str, &str)> = vec![
+        ("curve25519-sha256", "aes128-ctr"),
+        ("curve25519-sha256", "chacha20-poly1305@openssh.com"),
+        ("ecdh-sha2-nistp256", "aes256-gcm@openssh.com"),
+        ("diffie-hellman-group14-sha256", "aes256-ctr"),
+    ];
+
+    let mut passed = 0;
+
+    for (kex, cipher) in &combos {
+        eprint!("  {}+{} ... ", kex, cipher);
+
+        let ssh_path = ssh_path.clone();
+        let kex = kex.to_string();
+        let cipher = cipher.to_string();
+
+        let result = std::panic::catch_unwind(move || {
+            run_server_test(
+                HostKeyPair::generate_ed25519(),
+                AlgorithmFilter { kex: None, cipher: None, mac: None },
+                move |port| {
+                    let mut args = ssh_base_args(port);
+                    args.extend([
+                        "-o".into(), format!("KexAlgorithms={}", kex),
+                        "-o".into(), format!("Ciphers={}", cipher),
+                        "-o".into(), "PreferredAuthentications=publickey".to_string(),
+                        "-i".into(), "tests/keys/test_ed25519".into(),
+                        "-l".into(), "testuser".into(),
+                        "127.0.0.1".into(),
+                        "cat".into(),
+                    ]);
+
+                    let output = Command::new(&ssh_path)
+                        .args(&args)
+                        .output()
+                        .expect("Failed to run ssh");
+
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    assert!(stdout.contains("INTEROP_OK"));
+                },
+            );
+        });
+
+        match result {
+            Ok(()) => { passed += 1; eprintln!("ok"); }
+            Err(_) => { eprintln!("FAILED"); }
+        }
+    }
+
+    eprintln!("\n  Client KEX×Cipher interop: {}/{} passed", passed, combos.len());
+    assert!(passed >= 3, "At least 3 KEX×Cipher combos should work");
+}
