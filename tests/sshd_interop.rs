@@ -127,7 +127,7 @@ impl SshdInstance {
              KbdInteractiveAuthentication no\n\
              StrictModes no\n\
              PidFile {pid}\n\
-             LogLevel ERROR\n",
+             LogLevel DEBUG3\n",
             port = port,
             host_key = host_key_path.display(),
             auth_keys = auth_keys_path.display(),
@@ -160,6 +160,22 @@ impl SshdInstance {
             port,
             _tmpdir: tmpdir,
         })
+    }
+}
+
+impl SshdInstance {
+    /// Capture sshd's stderr log output (call after test, before drop)
+    fn capture_log(&mut self) -> String {
+        use std::io::Read;
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        if let Some(ref mut stderr) = self.child.stderr {
+            let mut log = String::new();
+            let _ = stderr.read_to_string(&mut log);
+            log
+        } else {
+            String::new()
+        }
     }
 }
 
@@ -372,6 +388,54 @@ fn test_kex_algorithms_against_real_sshd() {
     assert!(passed >= 3, "At least 3 KEX algorithms should work against sshd");
 }
 
+/// Debug test: try chacha20-poly1305 against real sshd and capture server log
+#[test]
+fn test_chacha20_debug_against_real_sshd() {
+    skip_if_no_sshd!();
+
+    let mut sshd = SshdInstance::start().expect("Failed to start sshd");
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let result = rt.block_on(async {
+        let stream =
+            tokio::net::TcpStream::connect(format!("127.0.0.1:{}", sshd.port)).await?;
+        let mut transport = ayssh::transport::Transport::new(stream);
+        transport.set_preferred_cipher("chacha20-poly1305@openssh.com");
+        transport.handshake().await?;
+        eprintln!("[chacha20_debug] handshake OK, session_id={} bytes", transport.session_id().unwrap().len());
+
+        transport.send_service_request("ssh-userauth").await?;
+        eprintln!("[chacha20_debug] SERVICE_REQUEST sent");
+        transport.recv_service_accept().await?;
+        eprintln!("[chacha20_debug] SERVICE_ACCEPT received");
+        Ok::<(), ayssh::error::SshError>(())
+    });
+
+    let sshd_log = sshd.capture_log();
+    // Print the relevant sshd log lines
+    for line in sshd_log.lines() {
+        if line.contains("chacha") || line.contains("Cipher") || line.contains("cipher")
+            || line.contains("MAC") || line.contains("error") || line.contains("Error")
+            || line.contains("fatal") || line.contains("bad") || line.contains("corrupt")
+            || line.contains("packet") || line.contains("disconnect")
+            || line.contains("kex") || line.contains("NEWKEYS")
+            || line.contains("service") || line.contains("userauth")
+        {
+            eprintln!("[sshd] {}", line);
+        }
+    }
+
+    match result {
+        Ok(()) => eprintln!("[chacha20_debug] SUCCESS!"),
+        Err(e) => eprintln!("[chacha20_debug] FAILED: {}", e),
+    }
+    // Don't assert — this is a debug test
+}
+
 /// Test with each supported cipher against real sshd.
 #[test]
 fn test_ciphers_against_real_sshd() {
@@ -405,11 +469,14 @@ fn test_ciphers_against_real_sshd() {
                 tokio::net::TcpStream::connect(format!("127.0.0.1:{}", sshd.port)).await?;
             let mut transport = ayssh::transport::Transport::new(stream);
             transport.set_preferred_cipher(cipher);
-            transport.handshake().await?;
+            transport.handshake().await
+                .map_err(|e| { eprintln!("    handshake failed: {}", e); e })?;
 
             // Verify we can exchange encrypted messages
-            transport.send_service_request("ssh-userauth").await?;
-            transport.recv_service_accept().await?;
+            transport.send_service_request("ssh-userauth").await
+                .map_err(|e| { eprintln!("    send_service_request failed: {}", e); e })?;
+            transport.recv_service_accept().await
+                .map_err(|e| { eprintln!("    recv_service_accept failed: {}", e); e })?;
             Ok::<(), ayssh::error::SshError>(())
         });
 
