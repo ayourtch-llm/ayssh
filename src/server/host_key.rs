@@ -6,6 +6,13 @@
 use crate::error::SshError;
 use bytes::{BufMut, BytesMut};
 
+/// ECDSA curve for host keys
+#[derive(Debug, Clone, Copy)]
+pub enum EcdsaCurve {
+    Nistp256,
+    Nistp384,
+}
+
 /// A server host key pair (private + public)
 #[derive(Clone)]
 pub enum HostKeyPair {
@@ -13,6 +20,8 @@ pub enum HostKeyPair {
     Ed25519(ed25519_dalek::SigningKey),
     /// RSA host key
     Rsa(Box<rsa::RsaPrivateKey>),
+    /// ECDSA host key (curve + signing key bytes)
+    Ecdsa(EcdsaCurve, Vec<u8>),
 }
 
 impl HostKeyPair {
@@ -34,6 +43,37 @@ impl HostKeyPair {
         Ok(Self::Rsa(Box::new(private_key)))
     }
 
+    /// Generate a new ECDSA P-256 host key pair
+    pub fn generate_ecdsa_p256() -> Self {
+        let secret = p256::SecretKey::random(&mut rand::rngs::OsRng);
+        Self::Ecdsa(EcdsaCurve::Nistp256, secret.to_bytes().to_vec())
+    }
+
+    /// Generate a new ECDSA P-384 host key pair
+    pub fn generate_ecdsa_p384() -> Self {
+        let secret = p384::SecretKey::random(&mut rand::rngs::OsRng);
+        Self::Ecdsa(EcdsaCurve::Nistp384, secret.to_bytes().to_vec())
+    }
+
+    /// Load an ECDSA key from OpenSSH private key format
+    pub fn load_openssh_ecdsa(path: &std::path::Path) -> Result<Self, SshError> {
+        let key_data = std::fs::read(path)
+            .map_err(|e| SshError::IoError(e))?;
+        let pem_content = String::from_utf8_lossy(&key_data);
+        let private_key = crate::auth::key::PrivateKey::parse_pem(&pem_content)?;
+        match private_key {
+            crate::auth::key::PrivateKey::Ecdsa(curve, scalar) => {
+                let host_curve = match curve {
+                    crate::auth::key::EcdsaCurve::Nistp256 => EcdsaCurve::Nistp256,
+                    crate::auth::key::EcdsaCurve::Nistp384 => EcdsaCurve::Nistp384,
+                    _ => return Err(SshError::CryptoError("Unsupported ECDSA curve for host key".to_string())),
+                };
+                Ok(Self::Ecdsa(host_curve, scalar))
+            }
+            _ => Err(SshError::CryptoError("Expected ECDSA key".to_string())),
+        }
+    }
+
     /// Load an RSA key from OpenSSH private key format
     pub fn load_openssh_rsa(path: &std::path::Path) -> Result<Self, SshError> {
         let key_data = std::fs::read(path)
@@ -51,6 +91,8 @@ impl HostKeyPair {
         match self {
             Self::Ed25519(_) => "ssh-ed25519",
             Self::Rsa(_) => "ssh-rsa",
+            Self::Ecdsa(EcdsaCurve::Nistp256, _) => "ecdsa-sha2-nistp256",
+            Self::Ecdsa(EcdsaCurve::Nistp384, _) => "ecdsa-sha2-nistp384",
         }
     }
 
@@ -79,6 +121,27 @@ impl HostKeyPair {
                 // Modulus n (as mpint)
                 let n = private_key.n().to_bytes_be();
                 put_mpint(&mut buf, &n);
+            }
+            Self::Ecdsa(curve, scalar) => {
+                let (algo, curve_name, pubkey_bytes) = match curve {
+                    EcdsaCurve::Nistp256 => {
+                        use p256::elliptic_curve::sec1::ToEncodedPoint;
+                        let secret = p256::SecretKey::from_slice(scalar)
+                            .expect("Invalid P-256 host key");
+                        let point = secret.public_key().to_encoded_point(false);
+                        ("ecdsa-sha2-nistp256", "nistp256", point.as_bytes().to_vec())
+                    }
+                    EcdsaCurve::Nistp384 => {
+                        use p384::elliptic_curve::sec1::ToEncodedPoint;
+                        let secret = p384::SecretKey::from_slice(scalar)
+                            .expect("Invalid P-384 host key");
+                        let point = secret.public_key().to_encoded_point(false);
+                        ("ecdsa-sha2-nistp384", "nistp384", point.as_bytes().to_vec())
+                    }
+                };
+                put_string(&mut buf, algo.as_bytes());
+                put_string(&mut buf, curve_name.as_bytes());
+                put_string(&mut buf, &pubkey_bytes);
             }
         }
         buf.to_vec()
@@ -116,6 +179,35 @@ impl HostKeyPair {
                 buf.put_u32(sig_bytes.len() as u32);
                 buf.put_slice(&sig_bytes);
             }
+            Self::Ecdsa(curve, scalar) => {
+                use signature::Signer;
+
+                let (algo, sig_blob) = match curve {
+                    EcdsaCurve::Nistp256 => {
+                        let secret = p256::SecretKey::from_slice(scalar)
+                            .map_err(|e| SshError::CryptoError(format!("P-256: {}", e)))?;
+                        let signing_key = p256::ecdsa::SigningKey::from(secret);
+                        let sig: p256::ecdsa::Signature = signing_key.sign(data);
+                        let r = sig.r().to_bytes();
+                        let s = sig.s().to_bytes();
+                        ("ecdsa-sha2-nistp256", encode_rs_mpint(&r, &s))
+                    }
+                    EcdsaCurve::Nistp384 => {
+                        let secret = p384::SecretKey::from_slice(scalar)
+                            .map_err(|e| SshError::CryptoError(format!("P-384: {}", e)))?;
+                        let signing_key = p384::ecdsa::SigningKey::from(secret);
+                        let sig: p384::ecdsa::Signature = signing_key.sign(data);
+                        let r = sig.r().to_bytes();
+                        let s = sig.s().to_bytes();
+                        ("ecdsa-sha2-nistp384", encode_rs_mpint(&r, &s))
+                    }
+                };
+
+                buf.put_u32(algo.len() as u32);
+                buf.put_slice(algo.as_bytes());
+                buf.put_u32(sig_blob.len() as u32);
+                buf.put_slice(&sig_blob);
+            }
         }
         Ok(buf.to_vec())
     }
@@ -126,8 +218,23 @@ impl std::fmt::Debug for HostKeyPair {
         match self {
             Self::Ed25519(_) => write!(f, "HostKeyPair::Ed25519(...)"),
             Self::Rsa(_) => write!(f, "HostKeyPair::Rsa(...)"),
+            Self::Ecdsa(curve, _) => write!(f, "HostKeyPair::Ecdsa({:?}, ...)", curve),
         }
     }
+}
+
+/// Encode an SSH string: 4-byte length prefix + data
+fn put_string(buf: &mut BytesMut, data: &[u8]) {
+    buf.put_u32(data.len() as u32);
+    buf.put_slice(data);
+}
+
+/// Encode ECDSA r and s values as mpint(r) || mpint(s)
+fn encode_rs_mpint(r: &[u8], s: &[u8]) -> Vec<u8> {
+    let mut blob = BytesMut::new();
+    put_mpint(&mut blob, r);
+    put_mpint(&mut blob, s);
+    blob.to_vec()
 }
 
 /// Encode a big-endian byte array as SSH mpint (with 0x00 prefix if high bit set)
@@ -213,6 +320,66 @@ mod tests {
         assert_eq!(&sig[4..11], b"ssh-rsa");
         let sig_len = u32::from_be_bytes([sig[11], sig[12], sig[13], sig[14]]) as usize;
         assert_eq!(sig_len, 256); // RSA-2048 signature
+    }
+
+    #[test]
+    fn test_generate_ecdsa_p256() {
+        let key = HostKeyPair::generate_ecdsa_p256();
+        assert_eq!(key.algorithm_name(), "ecdsa-sha2-nistp256");
+
+        let blob = key.public_key_blob();
+        let alg_len = u32::from_be_bytes([blob[0], blob[1], blob[2], blob[3]]) as usize;
+        assert_eq!(alg_len, 19); // "ecdsa-sha2-nistp256"
+        assert_eq!(&blob[4..23], b"ecdsa-sha2-nistp256");
+    }
+
+    #[test]
+    fn test_generate_ecdsa_p384() {
+        let key = HostKeyPair::generate_ecdsa_p384();
+        assert_eq!(key.algorithm_name(), "ecdsa-sha2-nistp384");
+    }
+
+    #[test]
+    fn test_ecdsa_p256_sign() {
+        let key = HostKeyPair::generate_ecdsa_p256();
+        let data = b"test exchange hash for ECDSA";
+        let sig = key.sign(data).unwrap();
+
+        // Verify structure: string("ecdsa-sha2-nistp256") || string(mpint(r) || mpint(s))
+        let alg_len = u32::from_be_bytes([sig[0], sig[1], sig[2], sig[3]]) as usize;
+        assert_eq!(alg_len, 19);
+        assert_eq!(&sig[4..23], b"ecdsa-sha2-nistp256");
+        // sig_blob follows
+        let sig_blob_len = u32::from_be_bytes([sig[23], sig[24], sig[25], sig[26]]) as usize;
+        assert!(sig_blob_len > 0);
+    }
+
+    #[test]
+    fn test_ecdsa_p384_sign() {
+        let key = HostKeyPair::generate_ecdsa_p384();
+        let data = b"test exchange hash for P-384";
+        let sig = key.sign(data).unwrap();
+        let alg_len = u32::from_be_bytes([sig[0], sig[1], sig[2], sig[3]]) as usize;
+        assert_eq!(alg_len, 19); // "ecdsa-sha2-nistp384"
+    }
+
+    #[test]
+    fn test_load_ecdsa_from_test_keys() {
+        let path = std::path::Path::new("tests/keys/test_ecdsa_256");
+        let key = HostKeyPair::load_openssh_ecdsa(path).unwrap();
+        assert_eq!(key.algorithm_name(), "ecdsa-sha2-nistp256");
+        let blob = key.public_key_blob();
+        assert!(!blob.is_empty());
+    }
+
+    #[test]
+    fn test_ecdsa_different_keys_different_sigs() {
+        let key1 = HostKeyPair::generate_ecdsa_p256();
+        let key2 = HostKeyPair::generate_ecdsa_p256();
+        let data = b"same data different keys";
+        let sig1 = key1.sign(data).unwrap();
+        let sig2 = key2.sign(data).unwrap();
+        assert_ne!(sig1, sig2);
     }
 
     #[test]

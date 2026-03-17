@@ -229,6 +229,85 @@ fn test_openssh_client_with_rsa_host_key() {
     );
 }
 
+/// Test with ECDSA P-256 host key — verifies the client accepts our ECDSA signatures
+#[test]
+fn test_openssh_client_with_ecdsa_p256_host_key() {
+    skip_if_no_ssh!();
+    let _lock = TEST_MUTEX.lock().unwrap();
+    let ssh_path = find_ssh().unwrap();
+
+    let host_key = HostKeyPair::generate_ecdsa_p256();
+
+    run_server_test(
+        host_key,
+        AlgorithmFilter::default(),
+        move |port| {
+            let mut args = ssh_base_args(port);
+            args.extend([
+                "-o".into(), "PreferredAuthentications=publickey".to_string(),
+                "-o".into(), "HostKeyAlgorithms=ecdsa-sha2-nistp256".to_string(),
+                "-i".into(), "tests/keys/test_ed25519".into(),
+                "-l".into(), "testuser".into(),
+                "127.0.0.1".into(),
+                "cat".into(),
+            ]);
+
+            let output = Command::new(&ssh_path)
+                .args(&args)
+                .output()
+                .expect("Failed to run ssh");
+
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            eprintln!("[ssh_client_ecdsa] exit={}, stdout={:?}, stderr={:?}",
+                output.status.code().unwrap_or(-1), stdout.trim(), stderr.trim());
+
+            assert!(
+                stdout.contains("INTEROP_OK"),
+                "ECDSA P-256 host key: expected INTEROP_OK, got stdout={:?} stderr={:?}",
+                stdout, stderr
+            );
+        },
+    );
+}
+
+/// Test with ECDSA P-384 host key
+#[test]
+fn test_openssh_client_with_ecdsa_p384_host_key() {
+    skip_if_no_ssh!();
+    let _lock = TEST_MUTEX.lock().unwrap();
+    let ssh_path = find_ssh().unwrap();
+
+    let host_key = HostKeyPair::generate_ecdsa_p384();
+
+    run_server_test(
+        host_key,
+        AlgorithmFilter::default(),
+        move |port| {
+            let mut args = ssh_base_args(port);
+            args.extend([
+                "-o".into(), "PreferredAuthentications=publickey".to_string(),
+                "-o".into(), "HostKeyAlgorithms=ecdsa-sha2-nistp384".to_string(),
+                "-i".into(), "tests/keys/test_ed25519".into(),
+                "-l".into(), "testuser".into(),
+                "127.0.0.1".into(),
+                "cat".into(),
+            ]);
+
+            let output = Command::new(&ssh_path)
+                .args(&args)
+                .output()
+                .expect("Failed to run ssh");
+
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                stdout.contains("INTEROP_OK"),
+                "ECDSA P-384 host key: expected INTEROP_OK",
+            );
+        },
+    );
+}
+
 /// Test various cipher preferences from the client side
 #[test]
 fn test_openssh_client_cipher_negotiation() {
