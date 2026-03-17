@@ -13,6 +13,11 @@ use std::io::Write;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
+use std::sync::Mutex;
+
+/// Global mutex to serialize tests — multiple sshd instances + our client
+/// connections can interfere when run in parallel with the full test suite.
+static TEST_MUTEX: Mutex<()> = Mutex::new(());
 use std::time::Duration;
 
 /// Find sshd binary, checking common locations
@@ -213,6 +218,7 @@ macro_rules! skip_if_no_sshd {
 #[test]
 fn test_handshake_against_real_sshd() {
     skip_if_no_sshd!();
+    let _lock = TEST_MUTEX.lock().unwrap();
 
     let sshd = SshdInstance::start().expect("Failed to start sshd");
     eprintln!("[sshd_interop] sshd running on port {}", sshd.port);
@@ -256,6 +262,7 @@ fn test_handshake_against_real_sshd() {
 #[test]
 fn test_service_request_against_real_sshd() {
     skip_if_no_sshd!();
+    let _lock = TEST_MUTEX.lock().unwrap();
 
     let sshd = SshdInstance::start().expect("Failed to start sshd");
 
@@ -293,6 +300,7 @@ fn test_service_request_against_real_sshd() {
 #[test]
 fn test_ed25519_auth_against_real_sshd() {
     skip_if_no_sshd!();
+    let _lock = TEST_MUTEX.lock().unwrap();
 
     let sshd = SshdInstance::start().expect("Failed to start sshd");
     let current_user = std::env::var("USER")
@@ -339,6 +347,7 @@ fn test_ed25519_auth_against_real_sshd() {
 #[test]
 fn test_kex_algorithms_against_real_sshd() {
     skip_if_no_sshd!();
+    let _lock = TEST_MUTEX.lock().unwrap();
 
     let kex_algorithms = [
         "curve25519-sha256",
@@ -398,6 +407,7 @@ fn test_kex_algorithms_against_real_sshd() {
 #[test]
 fn test_chacha20_debug_against_real_sshd() {
     skip_if_no_sshd!();
+    let _lock = TEST_MUTEX.lock().unwrap();
 
     // Use a dedicated sshd with DEBUG3 for this test
     let mut sshd = SshdInstance::start_with_loglevel("DEBUG3").expect("Failed to start sshd");
@@ -447,6 +457,7 @@ fn test_chacha20_debug_against_real_sshd() {
 #[test]
 fn test_ciphers_against_real_sshd() {
     skip_if_no_sshd!();
+    let _lock = TEST_MUTEX.lock().unwrap();
 
     let ciphers = [
         "aes128-ctr",
@@ -515,6 +526,7 @@ fn test_ciphers_against_real_sshd() {
 #[test]
 fn test_macs_against_real_sshd() {
     skip_if_no_sshd!();
+    let _lock = TEST_MUTEX.lock().unwrap();
 
     let macs = [
         "hmac-sha1",
@@ -573,6 +585,7 @@ fn test_macs_against_real_sshd() {
 #[test]
 fn test_rsa_auth_against_real_sshd() {
     skip_if_no_sshd!();
+    let _lock = TEST_MUTEX.lock().unwrap();
 
     // We need authorized_keys to include the RSA pubkey.
     // Start a custom sshd with both ed25519 and RSA keys authorized.
@@ -674,6 +687,7 @@ fn test_rsa_auth_against_real_sshd() {
 #[test]
 fn test_cipher_mac_combos_against_real_sshd() {
     skip_if_no_sshd!();
+    let _lock = TEST_MUTEX.lock().unwrap();
 
     // Representative combinations — not exhaustive but covers interesting pairs
     let combos: Vec<(&str, &str)> = vec![
