@@ -166,13 +166,13 @@ impl PublicKeyAuthenticator {
         // Curve name
         let (curve_name, public_key_bytes) = match curve {
             crate::auth::key::EcdsaCurve::Nistp256 => {
-                use k256::SecretKey;
-                use k256::ecdsa::SigningKey;
-                
+                use p256::SecretKey;
+                use p256::ecdsa::SigningKey;
+
                 let secret_key = SecretKey::from_slice(scalar)
                     .map_err(|_| SshError::CryptoError("Invalid ECDSA P-256 key".into()))?;
                 let signing_key = SigningKey::from(secret_key);
-                let public_key = k256::ecdsa::VerifyingKey::from(&signing_key);
+                let public_key = p256::ecdsa::VerifyingKey::from(&signing_key);
                 let encoded_point = public_key.to_encoded_point(false);
                 (b"nistp256", encoded_point.as_bytes().to_vec())
             }
@@ -254,8 +254,8 @@ impl PublicKeyAuthenticator {
             PrivateKey::Ecdsa(curve, scalar) => {
                 match curve {
                     crate::auth::key::EcdsaCurve::Nistp256 => {
-                        use k256::SecretKey;
-                        use k256::ecdsa::SigningKey;
+                        use p256::SecretKey;
+                        use p256::ecdsa::SigningKey;
                         let secret_key = SecretKey::from_slice(scalar)
                             .map_err(|_| SshError::CryptoError("Invalid ECDSA P-256 key".into()))?;
                         let signing_key = SigningKey::from(secret_key);

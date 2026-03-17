@@ -122,108 +122,86 @@ impl RsaSignatureEncoder {
 pub struct EcdsaSignatureEncoder;
 
 impl EcdsaSignatureEncoder {
-    /// Encode ECDSA signature for NISTP256
-    pub fn encode_nistp256(
-        private_key: &k256::ecdsa::SigningKey,
-        data: &[u8],
-    ) -> Result<SshSignature, SshError> {
-        use k256::ecdsa::Signature;
-        use signature::Signer;
-        
-        // Sign the data
-        let signature: Signature = private_key.sign(data);
-        
-        // Get r and s as bytes (32 bytes each for P-256)
-        let r_bytes = signature.r().to_bytes();
-        let s_bytes = signature.s().to_bytes();
-        
-        // Concatenate r and s (64 bytes total for P-256)
-        let mut rs = Vec::with_capacity(64);
-        rs.extend_from_slice(&r_bytes[..32]);
-        rs.extend_from_slice(&s_bytes[..32]);
-        
-        let mut buf = BytesMut::new();
-        
-        // Algorithm name (4-byte length prefix)
-        buf.put_u32(SSH_SIG_ALGORITHM_ECDSA_NISTP256.len() as u32);
-        buf.put_slice(SSH_SIG_ALGORITHM_ECDSA_NISTP256.as_bytes());
-        
-        // Curve name + r || s as a single string
-        let curve_name = b"nistp256";
-        buf.put_u32(curve_name.len() as u32);
-        buf.put_slice(curve_name);
-        buf.put_u32(rs.len() as u32);
-        buf.put_slice(&rs);
-        
-        Ok(SshSignature::new(SSH_SIG_ALGORITHM_ECDSA_NISTP256, buf.to_vec()))
+    /// Encode r and s as SSH mpint(r) || mpint(s) blob.
+    /// SSH ECDSA signature format (RFC 5656 Section 3.1.2):
+    ///   string(mpint(r) || mpint(s))
+    /// mpint: 4-byte length + big-endian bytes with 0x00 prefix if high bit set.
+    fn encode_rs_blob(r_bytes: &[u8], s_bytes: &[u8]) -> Vec<u8> {
+        let mut blob = BytesMut::new();
+
+        // r as mpint
+        if !r_bytes.is_empty() && (r_bytes[0] & 0x80) != 0 {
+            blob.put_u32((r_bytes.len() + 1) as u32);
+            blob.put_u8(0x00);
+            blob.put_slice(r_bytes);
+        } else {
+            blob.put_u32(r_bytes.len() as u32);
+            blob.put_slice(r_bytes);
+        }
+
+        // s as mpint
+        if !s_bytes.is_empty() && (s_bytes[0] & 0x80) != 0 {
+            blob.put_u32((s_bytes.len() + 1) as u32);
+            blob.put_u8(0x00);
+            blob.put_slice(s_bytes);
+        } else {
+            blob.put_u32(s_bytes.len() as u32);
+            blob.put_slice(s_bytes);
+        }
+
+        blob.to_vec()
     }
 
-    /// Encode ECDSA signature for NISTP384
+    /// Encode ECDSA signature for NISTP256.
+    /// Returns SshSignature with data = mpint(r) || mpint(s).
+    /// SshSignature::encode() then produces: string("ecdsa-sha2-nistp256") || string(data)
+    pub fn encode_nistp256(
+        private_key: &p256::ecdsa::SigningKey,
+        data: &[u8],
+    ) -> Result<SshSignature, SshError> {
+        use p256::ecdsa::Signature;
+        use signature::Signer;
+
+        let signature: Signature = private_key.sign(data);
+        let r_bytes = signature.r().to_bytes();
+        let s_bytes = signature.s().to_bytes();
+
+        let blob = Self::encode_rs_blob(&r_bytes, &s_bytes);
+        Ok(SshSignature::new(SSH_SIG_ALGORITHM_ECDSA_NISTP256, blob))
+    }
+
+    /// Encode ECDSA signature for NISTP384.
+    /// Returns SshSignature with data = mpint(r) || mpint(s).
     pub fn encode_nistp384(
         private_key: &p384::ecdsa::SigningKey,
         data: &[u8],
     ) -> Result<SshSignature, SshError> {
         use p384::ecdsa::Signature;
         use signature::Signer;
-        
+
         let signature: Signature = private_key.sign(data);
-        
         let r_bytes = signature.r().to_bytes();
         let s_bytes = signature.s().to_bytes();
-        
-        // P-384: 48 bytes each
-        let mut rs = Vec::with_capacity(96);
-        rs.extend_from_slice(&r_bytes[..48]);
-        rs.extend_from_slice(&s_bytes[..48]);
-        
-        let mut buf = BytesMut::new();
-        
-        // Algorithm name (4-byte length prefix)
-        buf.put_u32(SSH_SIG_ALGORITHM_ECDSA_NISTP384.len() as u32);
-        buf.put_slice(SSH_SIG_ALGORITHM_ECDSA_NISTP384.as_bytes());
-        
-        // Curve name + r || s as a single string
-        let curve_name = b"nistp384";
-        buf.put_u32(curve_name.len() as u32);
-        buf.put_slice(curve_name);
-        buf.put_u32(rs.len() as u32);
-        buf.put_slice(&rs);
-        
-        Ok(SshSignature::new(SSH_SIG_ALGORITHM_ECDSA_NISTP384, buf.to_vec()))
+
+        let blob = Self::encode_rs_blob(&r_bytes, &s_bytes);
+        Ok(SshSignature::new(SSH_SIG_ALGORITHM_ECDSA_NISTP384, blob))
     }
 
-    /// Encode ECDSA signature for NISTP521
+    /// Encode ECDSA signature for NISTP521.
+    /// Returns SshSignature with data = mpint(r) || mpint(s).
     pub fn encode_nistp521(
         private_key: &p521::ecdsa::SigningKey,
         data: &[u8],
     ) -> Result<SshSignature, SshError> {
         use p521::ecdsa::Signature;
         use signature::Signer;
-        
+
         let signature: Signature = private_key.sign(data);
-        
         let r_bytes = signature.r().to_bytes();
         let s_bytes = signature.s().to_bytes();
-        
-        // P-521: 66 bytes each
-        let mut rs = Vec::with_capacity(132);
-        rs.extend_from_slice(&r_bytes[..66]);
-        rs.extend_from_slice(&s_bytes[..66]);
-        
-        let mut buf = BytesMut::new();
-        
-        // Algorithm name (4-byte length prefix)
-        buf.put_u32(SSH_SIG_ALGORITHM_ECDSA_NISTP521.len() as u32);
-        buf.put_slice(SSH_SIG_ALGORITHM_ECDSA_NISTP521.as_bytes());
-        
-        // Curve name + r || s as a single string
-        let curve_name = b"nistp521";
-        buf.put_u32(curve_name.len() as u32);
-        buf.put_slice(curve_name);
-        buf.put_u32(rs.len() as u32);
-        buf.put_slice(&rs);
-        
-        Ok(SshSignature::new(SSH_SIG_ALGORITHM_ECDSA_NISTP521, buf.to_vec()))
+
+        let blob = Self::encode_rs_blob(&r_bytes, &s_bytes);
+        Ok(SshSignature::new(SSH_SIG_ALGORITHM_ECDSA_NISTP521, blob))
     }
 }
 
@@ -340,8 +318,8 @@ mod tests {
     
     #[test]
     fn test_ecdsa_signature_encoding() {
-        use k256::ecdsa::SigningKey;
-        
+        use p256::ecdsa::SigningKey;
+
         let mut rng = OsRng;
         let private_key = SigningKey::random(&mut rng);
         

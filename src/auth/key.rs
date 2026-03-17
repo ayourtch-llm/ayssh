@@ -213,7 +213,7 @@ impl PrivateKey {
         if der.len() == 32 {
             let mut bytes = [0u8; 32];
             bytes.copy_from_slice(der);
-            let key = k256::ecdsa::SigningKey::from_bytes(&bytes.into())
+            let key = p256::ecdsa::SigningKey::from_bytes(&bytes.into())
                 .map_err(|_| SshError::CryptoError("Invalid ECDSA P-256 key".into()))?;
             return Ok(PrivateKey::Ecdsa(
                 EcdsaCurve::Nistp256,
@@ -767,10 +767,10 @@ impl PrivateKey {
                 put_string(&mut buf, public_key.as_bytes());
             }
             PrivateKey::Ecdsa(curve, scalar) => {
-                use k256::elliptic_curve::sec1::ToEncodedPoint;
+                use p256::elliptic_curve::sec1::ToEncodedPoint;
                 let (algo, curve_name, pubkey_bytes) = match curve {
                     EcdsaCurve::Nistp256 => {
-                        let secret = k256::SecretKey::from_slice(scalar)
+                        let secret = p256::SecretKey::from_slice(scalar)
                             .map_err(|e| SshError::CryptoError(format!("P-256 key error: {}", e)))?;
                         let point = secret.public_key().to_encoded_point(false);
                         ("ecdsa-sha2-nistp256", "nistp256", point.as_bytes().to_vec())
@@ -807,9 +807,9 @@ impl PrivateKey {
             PrivateKey::Ed25519(key) => Ed25519SignatureEncoder::encode(key, data),
             PrivateKey::Ecdsa(curve, scalar) => match curve {
                 EcdsaCurve::Nistp256 => {
-                    let secret = k256::SecretKey::from_slice(scalar)
+                    let secret = p256::SecretKey::from_slice(scalar)
                         .map_err(|e| SshError::CryptoError(format!("P-256: {}", e)))?;
-                    let signing_key = k256::ecdsa::SigningKey::from(secret);
+                    let signing_key = p256::ecdsa::SigningKey::from(secret);
                     EcdsaSignatureEncoder::encode_nistp256(&signing_key, data)
                 }
                 EcdsaCurve::Nistp384 => {
@@ -1068,5 +1068,35 @@ mod tests {
 
         assert_eq!(our_blob, expected_blob,
             "RSA public key blob must match ssh-keygen output");
+    }
+
+    #[test]
+    fn test_ecdsa_p256_ssh_public_key_blob_matches_ssh_keygen() {
+        use base64::Engine;
+        let pub_content = std::fs::read_to_string("tests/keys/test_ecdsa_256.pub").unwrap();
+        let parts: Vec<&str> = pub_content.trim().splitn(3, ' ').collect();
+        let expected_blob = base64::engine::general_purpose::STANDARD.decode(parts[1]).unwrap();
+
+        let pem = std::fs::read_to_string("tests/keys/test_ecdsa_256").unwrap();
+        let key = PrivateKey::parse_pem(&pem).unwrap();
+        let our_blob = key.ssh_public_key_blob().unwrap();
+
+        assert_eq!(our_blob, expected_blob,
+            "ECDSA P-256 public key blob must match ssh-keygen output (uses p256 crate, not k256)");
+    }
+
+    #[test]
+    fn test_ecdsa_p384_ssh_public_key_blob_matches_ssh_keygen() {
+        use base64::Engine;
+        let pub_content = std::fs::read_to_string("tests/keys/test_ecdsa_384.pub").unwrap();
+        let parts: Vec<&str> = pub_content.trim().splitn(3, ' ').collect();
+        let expected_blob = base64::engine::general_purpose::STANDARD.decode(parts[1]).unwrap();
+
+        let pem = std::fs::read_to_string("tests/keys/test_ecdsa_384").unwrap();
+        let key = PrivateKey::parse_pem(&pem).unwrap();
+        let our_blob = key.ssh_public_key_blob().unwrap();
+
+        assert_eq!(our_blob, expected_blob,
+            "ECDSA P-384 public key blob must match ssh-keygen output");
     }
 }
