@@ -2,7 +2,7 @@
 
 ## Current State
 
-As of 2026-03-16, the test suite has 369 tests covering:
+As of 2026-03-17, the test suite has 379 tests covering:
 
 - **Crypto matrix (28 combos):** All KEX × cipher × MAC combinations exercised
   end-to-end via our test SSH server (`test_crypto_matrix`)
@@ -13,7 +13,7 @@ As of 2026-03-16, the test suite has 369 tests covering:
 
 ## Priority 1: Quick Wins
 
-### 1.1 RSA Host Key in Server Tests
+### 1.1 RSA Host Key in Server Tests ✅ DONE
 **Effort:** Small
 **Files:** `src/server/test_server.rs`
 
@@ -37,7 +37,7 @@ Why: Exercises RSA signature verification path (SHA-1 PKCS1v15) which
 differs from Ed25519. Ensures `host_key.sign()` and `host_key.public_key_blob()`
 work for RSA keys.
 
-### 1.2 P-256 ECDH Shared Secret Consistency
+### 1.2 P-256 ECDH Shared Secret Consistency ✅ DONE
 **Effort:** Small
 **Files:** `src/crypto/ecdh.rs`
 
@@ -59,21 +59,21 @@ Why: Prevents regression of the k256→p256 bug. The fix changed the curve
 used for P-256 operations; this test ensures both sides agree on the
 shared secret using the correct curve.
 
-### 1.3 P-384 and P-521 Shared Secret Consistency
+### 1.3 P-384 and P-521 Shared Secret Consistency ✅ DONE
 **Effort:** Small
 **Files:** `src/crypto/ecdh.rs`
 
 Same as 1.2 but for the other NIST curves.
 
 ### 1.4 Curve25519 Shared Secret Consistency
-**Effort:** Small
+**Status:** Already existed (`test_curve25519_shared_secret`)
 **Files:** `src/crypto/ecdh.rs`
 
-Same pattern for Curve25519.
+Was already covered by existing test.
 
 ## Priority 2: Auth Method Coverage
 
-### 2.1 RSA Public Key Authentication via Server
+### 2.1 RSA Public Key Authentication via Server ✅ DONE
 **Effort:** Medium
 **Files:** `src/server/test_server.rs`, `src/auth/mod.rs`
 
@@ -87,7 +87,7 @@ This would test: RSA key parsing → public key blob extraction → mpint encodi
 → signature creation (SHA-1 or rsa-sha2-256) → signature wire format → server
 verification.
 
-### 2.2 Keyboard-Interactive Authentication via Server
+### 2.2 Keyboard-Interactive Authentication via Server ✅ DONE
 **Effort:** Medium
 **Files:** `src/server/test_server.rs`, `src/auth/keyboard.rs`
 
@@ -102,6 +102,8 @@ response encoding, correct message type (60/61).
 ### 2.3 Auth Method Fallback
 **Effort:** Medium
 **Files:** `src/auth/mod.rs`
+**Status:** BLOCKED — Authenticator::authenticate() returns on first method failure
+instead of trying the next method. Needs code fix before test can be written.
 
 Test that the Authenticator correctly falls back from one method to another:
 - Server rejects publickey, offers password
@@ -110,7 +112,7 @@ Test that the Authenticator correctly falls back from one method to another:
 
 ## Priority 3: Error Cases and Robustness
 
-### 3.1 Wrong Password Rejection
+### 3.1 Wrong Password Rejection ✅ DONE
 **Effort:** Small
 **Files:** `src/server/test_server.rs`
 

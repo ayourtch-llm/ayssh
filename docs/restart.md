@@ -35,9 +35,12 @@ at a time, running `cargo test` after each change.
 - Deprecated function usage: `base64::decode`, `generate_session_hash`
 
 ## Current test state
-- 371 tests passing, 1 ignored (dead code placeholder in test_server.rs)
-- Coverage: 68.16% (4519/6630 lines)
+- 379 tests passing, 1 ignored (dead code placeholder in test_server.rs)
+- Coverage: 68.16% (4519/6630 lines) — likely improved with new tests
 - Crypto matrix: 28/28 combinations pass
+- Dead code cleanup: 0 compiler warnings (was 85)
+- New tests added: RSA host key (2), ECDH shared secret (3), RSA pubkey auth (1),
+  keyboard-interactive auth (1), wrong password rejection (1)
 
 ## Key architectural notes
 - The REAL encryption path is in `transport/mod.rs`:
