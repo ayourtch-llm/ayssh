@@ -4,7 +4,7 @@
 //! packet encryption, and session state management.
 
 use crate::channel::ChannelTransferManager;
-use crate::crypto::cipher::{aes_cbc_decrypt_raw, aes_cbc_encrypt_raw, CipherError};
+use crate::crypto::cipher::{aes_cbc_decrypt_raw, aes_cbc_encrypt_raw};
 use crate::crypto::hmac::{HmacSha1, HmacSha256, HmacSha512};
 use crate::protocol;
 use bytes::BufMut;
@@ -22,8 +22,8 @@ pub mod session_id;
 pub mod state;
 pub mod version;
 
-pub use cipher::*;
 pub use encrypted::*;
+#[allow(ambiguous_glob_reexports)]
 pub use handshake::*;
 pub use kex::*;
 pub use packet::*;
@@ -341,7 +341,6 @@ impl Transport {
         let algorithm = KexAlgorithm::from_str(&negotiated.kex).unwrap_or(KexAlgorithm::Curve25519Sha256);
         let mut kex_context = KexContext::new(algorithm);
         
-        use rand::RngCore;
         let mut rng = rand::rngs::OsRng;
         kex_context.generate_client_key(&mut rng)?;
         
@@ -411,7 +410,7 @@ impl Transport {
         
         // Extract server host key from KEXDH_REPLY
         // Format: byte SSH_MSG_KEXDH_REPLY, string K_S (host key), mpint f, string signature
-        let mut reply_data = &reply_payload[1..];
+        let reply_data = &reply_payload[1..];
         
         // Read server host key (string type = uint32 length + data)
         if reply_data.len() >= 4 {
@@ -813,16 +812,6 @@ impl Transport {
         Ok(payload)
     }
 
-    /// Encrypt a packet with AES-CBC and HMAC-SHA1
-    fn encrypt_packet(&self, payload: &[u8], state: &mut EncryptionState) -> Result<Vec<u8>, crate::error::SshError> {
-        encrypt_packet_cbc(payload, state)
-    }
-
-    /// Decrypt a packet with AES-CBC and verify HMAC-SHA1
-    fn decrypt_packet(&self, encrypted_with_mac: &[u8], state: &mut DecryptionState) -> Result<Vec<u8>, crate::error::SshError> {
-        decrypt_packet_cbc(encrypted_with_mac, state)
-    }
-
     /// Send SERVICE_REQUEST message
     pub async fn send_service_request(&mut self, service: &str) -> Result<(), crate::error::SshError> {
         let mut msg = bytes::BytesMut::new();
@@ -838,7 +827,7 @@ impl Transport {
     /// Receive SERVICE_ACCEPT message
     pub async fn recv_service_accept(&mut self) -> Result<String, crate::error::SshError> {
         debug!("Waiting for SERVICE_ACCEPT...");
-        let mut msg = self.recv_message().await?;
+        let msg = self.recv_message().await?;
         debug!("Received message: {:?}", &msg[..]);
         
         if msg.is_empty() {
@@ -868,7 +857,7 @@ impl Transport {
     /// Transition to encrypted state after key exchange
     pub fn transition_to_encrypted(
         &mut self,
-        session_id: &[u8],
+        _session_id: &[u8],
         negotiated: &protocol::NegotiatedAlgorithms,
     ) -> Result<(), crate::error::SshError> {
         // Update handshake state
@@ -1203,55 +1192,6 @@ pub(crate) fn encrypt_packet_cbc(payload: &[u8], state: &mut EncryptionState) ->
         result.extend_from_slice(&mac);
         Ok(result)
     }
-}
-
-pub(crate) fn decrypt_packet_cbc(encrypted_with_mac: &[u8], state: &mut DecryptionState) -> Result<Vec<u8>, crate::error::SshError> {
-    // The encrypted data includes: encrypted packet + MAC
-    // For HMAC-SHA1, MAC is 20 bytes
-    let mac_len = 20; // HMAC-SHA1
-    if encrypted_with_mac.len() < mac_len {
-        return Err(crate::error::SshError::ProtocolError(
-            "Packet too short for MAC".to_string()
-        ));
-    }
-
-    let (encrypted, received_mac) = encrypted_with_mac.split_at(encrypted_with_mac.len() - mac_len);
-
-    // Decrypt using AES-CBC (raw, no PKCS#7 removal - SSH uses its own padding)
-    let decrypted = match state.dec_algorithm.as_str() {
-        "aes128-cbc" | "aes192-cbc" | "aes256-cbc" => {
-            aes_cbc_decrypt_raw(&state.dec_key, &state.iv, encrypted)?
-        }
-        _ => {
-            return Err(crate::error::SshError::ProtocolError(
-                format!("Unsupported decryption algorithm: {}", state.dec_algorithm)
-            ));
-        }
-    };
-
-    // Update IV for next packet (last 16 bytes of ciphertext for AES)
-    // RFC 4253: "initialization vectors SHOULD be passed from the end of one packet to the beginning of the next packet"
-    if encrypted.len() >= 16 {
-        state.iv = encrypted[encrypted.len() - 16..].to_vec();
-    }
-
-    // Verify HMAC over sequence number + unencrypted packet (per RFC 4253 Section 6.4)
-    let mut mac_data = Vec::with_capacity(4 + decrypted.len());
-    mac_data.extend_from_slice(&state.sequence_number.to_be_bytes());
-    mac_data.extend_from_slice(&decrypted);
-
-    let expected_mac = compute_mac(&state.mac_algorithm, &state.mac_key, &mac_data);
-
-    if !expected_mac.iter().eq(received_mac.iter()) {
-        return Err(crate::error::SshError::ProtocolError(
-            "MAC verification failed".to_string()
-        ));
-    }
-
-    // Update sequence number
-    state.sequence_number = state.sequence_number.wrapping_add(1);
-
-    Ok(decrypted)
 }
 
 #[cfg(test)]

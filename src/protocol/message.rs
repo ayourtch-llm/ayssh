@@ -9,7 +9,6 @@
 use bytes::{Buf, BufMut, BytesMut};
 use crate::protocol::messages::MessageType;
 use crate::protocol::types::{SshBoolean, SshMpint, SshString, SshUint32, SshUint64};
-use crate::error::SshError;
 
 /// SSH Protocol Message
 ///

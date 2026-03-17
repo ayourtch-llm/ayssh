@@ -11,7 +11,7 @@ use crate::crypto::dh::{DhGroup, Mpint};
 use crate::crypto::ecdh::{CurveType, EcdhKeyPair};
 use crate::crypto::kdf;
 use crate::protocol;
-use bytes::{Buf, BufMut, BytesMut};
+use bytes::{BufMut, BytesMut};
 use rand::{Rng, RngCore};
 use sha1::Sha1;
 use sha2::{Digest, Sha256, Sha384};
@@ -604,18 +604,18 @@ pub fn decode_kex_message(data: &[u8]) -> anyhow::Result<Vec<u8>> {
 
 /// Perform key exchange with given algorithm
 pub async fn perform_kex(
-    algorithm: protocol::KexAlgorithm,
+    _algorithm: protocol::KexAlgorithm,
     context: &mut KexContext,
     client_kexinit: &[u8],
     server_kexinit: &[u8],
-    server_host_key: &[u8],
+    _server_host_key: &[u8],
 ) -> anyhow::Result<SessionKeys> {
     // Step 1: Generate client's ephemeral key
     let mut rng = rand::rngs::OsRng;
     context.generate_client_key(&mut rng)?;
     
     // Step 2: Send KEX_INIT to server (simulated - in real implementation, this would be sent over the network)
-    let client_kex_msg = encode_kex_init(client_kexinit);
+    let _client_kex_msg = encode_kex_init(client_kexinit);
     
     // Step 3: Receive server's KEX_INIT and server key
     let server_kex_msg = encode_kex_init(server_kexinit);
@@ -629,8 +629,8 @@ pub async fn perform_kex(
     
     // Step 5: Compute session hash (H)
     // The session_id is typically the server's host key hash or a negotiated value
-    let session_id = server_kexinit; // Use server KEXINIT as session identifier
-    let hash = context.generate_session_hash(session_id)?;
+    let _session_id = server_kexinit; // Use server KEXINIT as session identifier
+    let hash = context.compute_session_id()?;
     
     // Store session ID
     context.session_id = Some(hash.clone());

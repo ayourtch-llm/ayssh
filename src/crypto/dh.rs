@@ -28,7 +28,7 @@ pub const GROUP1_P: &str = "FFFFFFFF FFFFFFFF C90FDAA2 2168C234 C4C6628B 80DC1CD
 /// MODP Group 1 generator g = 2
 pub const GROUP1_G: u32 = 2;
 
-/// MODP Group 1 prime as BigUint
+// MODP Group 1 prime as BigUint
 lazy_static::lazy_static! {
     pub static ref GROUP1_P_BIGINT: BigUint = {
         let hex_str = GROUP1_P.replace(" ", "");
@@ -50,7 +50,7 @@ pub const GROUP14_P: &str = "FFFFFFFF FFFFFFFF C90FDAA2 2168C234 C4C6628B 80DC1C
 /// MODP Group 14 generator g = 2
 pub const GROUP14_G: u32 = 2;
 
-/// MODP Group 14 prime as BigUint
+// MODP Group 14 prime as BigUint
 lazy_static::lazy_static! {
     pub static ref GROUP14_P_BIGINT: BigUint = {
         let hex_str = GROUP14_P.replace(" ", "");
@@ -87,7 +87,7 @@ impl DhGroup {
     /// Generate client's private key x (random)
     /// Size should be at least 160 bits, recommended 256 bits
     pub fn generate_private_key(&self, rng: &mut impl RngCore, bits: usize) -> BigUint {
-        let mut bytes = (bits + 7) / 8;
+        let bytes = (bits + 7) / 8;
         let mut x_bytes = vec![0u8; bytes];
         
         // Generate random bytes

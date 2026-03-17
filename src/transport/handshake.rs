@@ -418,7 +418,7 @@ pub async fn recv_version<T: AsyncReadExt + Unpin>(stream: &mut T) -> Result<Str
 /// Perform the key exchange handshake
 pub async fn perform_handshake<T: AsyncReadExt + AsyncWriteExt + Unpin>(
     mut stream: T,
-    server_version: &str,
+    _server_version: &str,
 ) -> Result<(TransportSession<T>, protocol::NegotiatedAlgorithms), crate::error::SshError> {
     // 1. Send client version
     send_version(&mut stream).await?;

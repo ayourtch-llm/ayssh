@@ -457,7 +457,7 @@ impl ChannelClose {
     
     /// Parse channel close from message
     pub fn parse(msg: &Message) -> Result<Self, String> {
-        let mut offset = 1; // Skip message type
+        let offset = 1; // Skip message type
         
         let channel_id = ChannelId::new(msg.read_uint32(offset)
             .ok_or_else(|| "Failed to read channel id")?);
@@ -485,7 +485,7 @@ impl ChannelEof {
     
     /// Parse channel EOF from message
     pub fn parse(msg: &Message) -> Result<Self, String> {
-        let mut offset = 1; // Skip message type
+        let offset = 1; // Skip message type
         
         let channel_id = ChannelId::new(msg.read_uint32(offset)
             .ok_or_else(|| "Failed to read channel id")?);
@@ -652,7 +652,7 @@ impl ChannelRequest {
                 msg.write_string(value.as_bytes());
             }
             ChannelRequest::KeepAlive(_) => {}
-            ChannelRequest::Unknown { request, want_reply } => {
+            ChannelRequest::Unknown { request: _, want_reply } => {
                 msg.write_bool(*want_reply);
             }
         }

@@ -32,7 +32,6 @@ use crate::error::SshError;
 use crate::protocol::message::Message;
 use crate::protocol::messages::MessageType;
 use crate::transport::Transport;
-use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 
 // Constants for authentication methods

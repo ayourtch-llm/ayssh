@@ -6,21 +6,19 @@
 
 use crate::error::SshError;
 use crate::transport::{EncryptionState, DecryptionState, encrypt_packet_cbc,
-    is_aead_cipher, is_etm_mac, mac_length, gcm_nonce, encrypt_data, decrypt_data,
-    advance_ctr_iv, compute_mac};
-use crate::crypto::cipher::{aes_cbc_decrypt_raw, aes_cbc_encrypt_raw};
-use bytes::BufMut;
+    is_aead_cipher, is_etm_mac, mac_length, gcm_nonce, decrypt_data,
+    compute_mac};
+use crate::crypto::cipher::aes_cbc_decrypt_raw;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tracing::debug;
 
 /// Server-side encrypted I/O handler
 pub struct ServerEncryptedIO {
     pub stream: TcpStream,
     /// Encrypt state: server uses s2c keys for sending
-    pub encrypt_state: Option<EncryptionState>,
+    pub(crate) encrypt_state: Option<EncryptionState>,
     /// Decrypt state: server uses c2s keys for receiving
-    pub decrypt_state: Option<DecryptionState>,
+    pub(crate) decrypt_state: Option<DecryptionState>,
     /// Leftover bytes from TCP reads
     read_buffer: Vec<u8>,
 }
@@ -90,7 +88,7 @@ impl ServerEncryptedIO {
             self.stream.write_all(&encrypted).await?;
         } else {
             // Send as unencrypted SSH packet
-            let mut packet = build_unencrypted_packet(payload);
+            let packet = build_unencrypted_packet(payload);
             self.stream.write_all(&packet).await?;
         }
         Ok(())

@@ -3,7 +3,7 @@
 //! Implements the service request/accept handshake for establishing
 //! the ssh-connection protocol after authentication.
 
-use crate::protocol::{MessageType, SshString};
+use crate::protocol::MessageType;
 use bytes::{BufMut, BytesMut};
 
 /// Service request message

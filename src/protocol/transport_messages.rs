@@ -6,7 +6,7 @@
 //! - SSH_MSG_UNIMPLEMENTED (3)
 //! - SSH_MSG_DEBUG (4)
 
-use bytes::{Buf, BufMut, BytesMut};
+use bytes::{Buf, BytesMut};
 use crate::protocol::types::{SshString, SshUint32, SshBoolean};
 
 /// SSH Disconnect Reason Codes (RFC 4253 Section 11.1)

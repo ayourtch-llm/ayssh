@@ -2,7 +2,7 @@
 //!
 //! Implements packet encryption, decryption, and formatting as defined in RFC 4253 Section 6.
 
-use crate::crypto::cipher::{aes_ctr_decrypt, aes_ctr_encrypt, aes_gcm_decrypt, aes_gcm_encrypt, aes_128_cbc_decrypt, aes_128_cbc_encrypt, aes_256_cbc_decrypt, aes_256_cbc_encrypt};
+use crate::crypto::cipher::{aes_ctr_decrypt, aes_ctr_encrypt, aes_gcm_decrypt, aes_gcm_encrypt, aes_128_cbc_encrypt, aes_256_cbc_encrypt};
 use crate::crypto::chacha20_poly1305::{ChaCha20Poly1305, Key as ChaChaKey, Nonce as ChaChaNonce};
 use crate::crypto::hmac::{HmacSha1, HmacSha256, HmacSha512};
 use crate::crypto::packet as crypto_packet;

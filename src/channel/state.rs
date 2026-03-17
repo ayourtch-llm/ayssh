@@ -60,7 +60,7 @@ impl ChannelManager {
     
     /// Allocate a new local channel ID
     pub fn allocate_local_id(&self) -> ChannelId {
-        let mut guard = self.channels.lock().unwrap();
+        let guard = self.channels.lock().unwrap();
         let id = guard.keys().map(|k| k.to_u32()).max().unwrap_or(0) + 1;
         ChannelId::new(id)
     }
@@ -310,7 +310,7 @@ impl ChannelManager {
         
         // Handle specific requests
         match &request {
-            ChannelRequest::ExitStatus { exit_status } => {
+            ChannelRequest::ExitStatus { exit_status: _ } => {
                 // Shell session exit
                 channel.state = ChannelState::Closed;
             }

@@ -23,7 +23,6 @@
 
 use crate::error::SshError;
 use rand::Rng;
-use std::mem;
 
 /// Minimum padding length
 const MIN_PADDING: usize = 4;

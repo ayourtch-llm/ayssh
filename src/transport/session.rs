@@ -4,10 +4,9 @@
 //! providing a unified interface for encrypted communication.
 
 use crate::error::SshError;
-use crate::protocol::{self, Message, MessageType};
+use crate::protocol;
 use crate::transport::cipher::CipherState;
 use crate::transport::{KexContext, SessionKeys};
-use bytes::{BufMut, BytesMut};
 
 /// Transport session state
 #[derive(Debug, Clone, PartialEq)]
@@ -60,8 +59,6 @@ impl<S> TransportSession<S> {
 
     /// Initialize KEX with client's ephemeral key
     pub fn init_kex(&mut self) -> Result<(), SshError> {
-        use rand::RngCore;
-        
         let mut rng = rand::rngs::OsRng;
         self.kex_context.generate_client_key(&mut rng)?;
         self.state = SessionState::KexInProgress;

@@ -5,10 +5,10 @@
 
 use crate::crypto::{
     chacha20_poly1305::{ChaCha20Poly1305, Key, Nonce},
-    cipher::{aes_gcm_decrypt, aes_gcm_encrypt, CipherError},
+    cipher::{aes_gcm_encrypt, CipherError},
 };
 use crate::error::SshError;
-use crate::transport::packet::{Packet, PACKET_HEADER_LEN, MAX_PACKET_SIZE};
+use crate::transport::packet::{Packet, MAX_PACKET_SIZE};
 use std::io::{Read, Write};
 
 // Implement From<CipherError> for SshError
@@ -102,7 +102,7 @@ impl CipherState {
             }
             EncryptionAlgorithm::ChaCha20Poly1305 => {
                 // Generate nonce before borrowing cipher mutably
-                let nonce = self.generate_chacha_nonce();
+                let _nonce = self.generate_chacha_nonce();
                 
                 if let Some(ref mut cipher) = self.chacha_cipher {
                     // Encrypt the data using ChaCha20-Poly1305

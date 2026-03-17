@@ -7,8 +7,6 @@ use crate::error::SshError;
 use crate::protocol::message::Message;
 use crate::protocol::messages::MessageType;
 use crate::transport::Transport;
-use bytes::BufMut;
-use bytes::BytesMut;
 
 /// Represents a single challenge in the keyboard-interactive flow
 #[derive(Debug, Clone)]

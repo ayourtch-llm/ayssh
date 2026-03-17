@@ -349,12 +349,12 @@ impl Session {
     pub fn new(channel: Channel) -> Self {
         // Create channels for shell I/O
         // stdin: client writes to shell
-        let (stdin_write, _) = tokio::sync::mpsc::channel::<Vec<u8>>(100);
+        let (_stdin_write, _) = tokio::sync::mpsc::channel::<Vec<u8>>(100);
         // stdout: shell writes to client
-        let (stdout_tx, stdout_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(100);
+        let (stdout_tx, _stdout_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(100);
         // stderr: shell writes to client
-        let (stderr_tx, stderr_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(100);
-        let closed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (stderr_tx, _stderr_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(100);
+        let _closed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
 
         Self {
             channel_id: channel.local_id.to_u32(),
@@ -725,7 +725,7 @@ impl Session {
     pub fn handle_channel_data(&mut self, data: &[u8]) -> Option<Vec<u8>> {
         // For now, just return the data to be displayed
         // In a full implementation, this would send to stdout
-        if let Some(ref mut shell) = self.interactive_shell {
+        if let Some(ref mut _shell) = self.interactive_shell {
             // This would need access to stdout_rx, which requires refactoring
             // For now, return data for display
             Some(data.to_vec())
@@ -738,7 +738,7 @@ impl Session {
     pub fn handle_extended_data(&mut self, data: &[u8]) -> Option<Vec<u8>> {
         // For now, just return the data to be displayed
         // In a full implementation, this would send to stderr
-        if let Some(ref mut shell) = self.interactive_shell {
+        if let Some(ref mut _shell) = self.interactive_shell {
             // This would need access to stderr_rx, which requires refactoring
             // For now, return data for display
             Some(data.to_vec())
@@ -805,7 +805,7 @@ impl SessionManager {
     }
 
     /// Create a new session channel
-    pub fn create_session(&mut self, originator_address: &str, originator_port: u16) -> u32 {
+    pub fn create_session(&mut self, _originator_address: &str, _originator_port: u16) -> u32 {
         let channel_id = self.channel_manager.allocate_local_id();
         let channel = Channel::new_session(channel_id, ChannelId::new(0));
         let session = Session::new(channel);

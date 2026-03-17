@@ -6,13 +6,12 @@
 //! 2. Signature request from server, then signature response
 
 use crate::auth::key::PrivateKey;
-use crate::auth::signature::{create_signature_data, Ed25519SignatureEncoder, EcdsaSignatureEncoder, RsaSignatureEncoder, SSH_SIG_ALGORITHM_ED25519, SSH_SIG_ALGORITHM_ECDSA_NISTP256, SSH_SIG_ALGORITHM_ECDSA_NISTP384, SSH_SIG_ALGORITHM_ECDSA_NISTP521, SSH_SIG_ALGORITHM_RSA};
+use crate::auth::signature::{create_signature_data, Ed25519SignatureEncoder, EcdsaSignatureEncoder, RsaSignatureEncoder};
 use crate::error::SshError;
 use crate::protocol::message::Message;
 use crate::protocol::messages::MessageType;
 use crate::transport::Transport;
 use bytes::{BufMut, BytesMut};
-use sha2::{Digest, Sha256};
 
 /// Public key authenticator for SSH authentication
 pub struct PublicKeyAuthenticator {
@@ -20,8 +19,6 @@ pub struct PublicKeyAuthenticator {
     transport: Transport,
     /// Username
     username: String,
-    /// Private key (OpenSSH format)
-    private_key_pem: Vec<u8>,
     /// Private key (parsed)
     private_key: PrivateKey,
     /// Algorithm (e.g., "ssh-rsa", "ecdsa-sha2-nistp256", "ssh-ed25519")
@@ -45,7 +42,6 @@ impl PublicKeyAuthenticator {
         Ok(Self {
             transport,
             username,
-            private_key_pem,
             private_key,
             algorithm,
             session_id,
@@ -171,7 +167,6 @@ impl PublicKeyAuthenticator {
         let (curve_name, public_key_bytes) = match curve {
             crate::auth::key::EcdsaCurve::Nistp256 => {
                 use k256::SecretKey;
-                use k256::elliptic_curve::sec1::ToEncodedPoint;
                 use k256::ecdsa::SigningKey;
                 
                 let secret_key = SecretKey::from_slice(scalar)
@@ -183,7 +178,6 @@ impl PublicKeyAuthenticator {
             }
             crate::auth::key::EcdsaCurve::Nistp384 => {
                 use p384::SecretKey;
-                use p384::elliptic_curve::sec1::ToEncodedPoint;
                 use p384::ecdsa::SigningKey;
                 
                 let secret_key = SecretKey::from_slice(scalar)
@@ -194,7 +188,6 @@ impl PublicKeyAuthenticator {
                 (b"nistp384", encoded_point.as_bytes().to_vec())
             }
             crate::auth::key::EcdsaCurve::Nistp521 => {
-                use p521::elliptic_curve::sec1::ToEncodedPoint;
                 use p521::ecdsa::SigningKey;
                 
                 // For P-521, the scalar is 66 bytes

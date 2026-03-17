@@ -182,8 +182,8 @@ impl SshClient {
     }
 
     /// Create an authenticator for manual authentication flow
-    pub fn create_authenticator(&self) -> Result<Authenticator, SshError> {
-        let username = match &self.username {
+    pub fn create_authenticator(&self) -> Result<Authenticator<'_>, SshError> {
+        let _username = match &self.username {
             Some(u) => u.clone(),
             None => return Err(SshError::AuthenticationFailed("No username provided".into())),
         };

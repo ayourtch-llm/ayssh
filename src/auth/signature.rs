@@ -5,8 +5,6 @@
 
 use crate::error::SshError;
 use bytes::{Buf, BufMut, BytesMut};
-use sha2::{Digest, Sha256};
-use signature::SignatureEncoding;
 
 /// SSH signature algorithm identifiers
 pub const SSH_SIG_ALGORITHM_RSA: &str = "ssh-rsa";
@@ -86,8 +84,6 @@ impl RsaSignatureEncoder {
         private_key: &rsa::RsaPrivateKey,
         data: &[u8],
     ) -> Result<SshSignature, SshError> {
-        use signature::Signer;
-
         // ssh-rsa uses RSASSA-PKCS1-v1_5 with SHA-1 (RFC 4253 Section 6.6)
         // Hash the data with SHA-1 first, then sign the hash
         use sha1::Digest;
@@ -119,19 +115,6 @@ impl RsaSignatureEncoder {
         Ok(SshSignature::new("rsa-sha2-256", signature))
     }
 
-    /// Convert signature to positive mpint (big-endian, no sign bit)
-    /// SSH mpint must be positive, so if high bit is set, prepend 0x00
-    fn to_positive_mpint(signature: &[u8]) -> Vec<u8> {
-        let mut result = Vec::with_capacity(signature.len() + 1);
-        
-        // If high bit is set, prepend 0x00 to make it positive
-        if signature[0] & 0x80 != 0 {
-            result.push(0x00);
-        }
-        
-        result.extend_from_slice(signature);
-        result
-    }
 }
 
 /// ECDSA signature encoding (RFC 5656, RFC 8332)

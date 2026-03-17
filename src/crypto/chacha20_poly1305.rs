@@ -4,7 +4,6 @@
 //! Supports the SSH extension chacha20-poly1305@openssh.com.
 
 use ring::aead::{LessSafeKey, UnboundKey};
-use ring::rand::SystemRandom;
 
 use crate::error::SshError;
 

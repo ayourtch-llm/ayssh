@@ -3,7 +3,7 @@
 //! Implements channel open request and confirmation messages
 //! as defined in RFC 4254 Section 5.1.
 
-use bytes::{Buf, BufMut, BytesMut};
+use bytes::{BufMut, BytesMut};
 use crate::protocol::MessageType;
 
 /// Channel open message types

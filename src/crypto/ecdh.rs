@@ -6,8 +6,6 @@
 //! - NIST P-384 (RFC 5656)
 //! - NIST P-521 (RFC 5656)
 
-use bytes::BufMut;
-use bytes::BytesMut;
 
 /// Elliptic curve types supported for ECDH
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,7 +106,7 @@ impl EcdhKeyPair {
     }
 
     /// Generate NIST P-384 key pair
-    fn generate_nistp384(rng: &mut impl rand::RngCore) -> Self {
+    fn generate_nistp384(_rng: &mut impl rand::RngCore) -> Self {
         use p384::SecretKey;
         use p384::elliptic_curve::sec1::ToEncodedPoint;
         
@@ -128,7 +126,7 @@ impl EcdhKeyPair {
     }
 
     /// Generate NIST P-521 key pair
-    fn generate_nistp521(rng: &mut impl rand::RngCore) -> Self {
+    fn generate_nistp521(_rng: &mut impl rand::RngCore) -> Self {
         use p521::SecretKey;
         use p521::elliptic_curve::sec1::ToEncodedPoint;
         

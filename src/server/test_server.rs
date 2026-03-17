@@ -4,16 +4,13 @@
 //! crypto paths: version exchange, KEXINIT, key exchange, NEWKEYS,
 //! service request, authentication, channel open, and data exchange.
 
-use crate::crypto::dh::{DhGroup, Mpint};
-use crate::crypto::ecdh::{CurveType, EcdhKeyPair};
-use crate::crypto::kdf;
 use crate::error::SshError;
-use crate::protocol::{self, KexAlgorithm};
+use crate::protocol::KexAlgorithm;
 use crate::transport::handshake::{
     generate_client_kexinit_with_prefs, negotiate_algorithms, parse_server_kexinit,
     recv_version, send_version_custom, SSH_SERVER_VERSION_STRING,
 };
-use crate::transport::kex::{KexContext, SessionKeys};
+use crate::transport::kex::KexContext;
 use crate::transport::{EncryptionState, DecryptionState};
 
 use super::encrypted_io::{build_unencrypted_packet, ServerEncryptedIO};
@@ -22,7 +19,7 @@ use super::host_key::HostKeyPair;
 use bytes::{BufMut, BytesMut};
 use std::str::FromStr;
 use tokio::net::{TcpListener, TcpStream};
-use tracing::{debug, info, error};
+use tracing::{debug, info};
 
 /// Algorithm filter for controlling which algorithms the server offers
 #[derive(Debug, Clone, Default)]
@@ -235,8 +232,8 @@ pub async fn server_handshake(
     // server_ephemeral = what process_server_kex_init stored = client's e (length-prefixed)
     // But build_hash_input uses client_ephemeral as e and server_ephemeral as f
     // So we need to SWAP them for the server side:
-    let server_f = kex_context.client_ephemeral.take();
-    let client_e_lp = kex_context.server_ephemeral.take();
+    let _server_f = kex_context.client_ephemeral.take();
+    let _client_e_lp = kex_context.server_ephemeral.take();
     kex_context.client_ephemeral = Some(client_e.to_vec()); // e = client's raw key
     kex_context.server_ephemeral = Some({
         // f needs to be length-prefixed for the hash

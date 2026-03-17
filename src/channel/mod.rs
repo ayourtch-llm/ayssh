@@ -25,10 +25,6 @@ mod channel_transfer {
         channels: HashMap<ChannelId, Channel>,
         /// Next channel ID to assign
         next_channel_id: u32,
-        /// Default window size
-        default_window_size: u32,
-        /// Default max packet size
-        default_max_packet_size: u32,
     }
 
     impl ChannelTransferManager {
@@ -37,13 +33,11 @@ mod channel_transfer {
             Self {
                 channels: HashMap::new(),
                 next_channel_id: 0,
-                default_window_size: 32768,
-                default_max_packet_size: 32768,
             }
         }
 
         /// Create a new session channel
-        pub fn create_session_channel(&mut self, originator_address: &str, originator_port: u16) -> ChannelId {
+        pub fn create_session_channel(&mut self, _originator_address: &str, _originator_port: u16) -> ChannelId {
             let local_id = ChannelId::new(self.next_channel_id);
             let remote_id = ChannelId::new(self.next_channel_id + 1);
             self.next_channel_id += 2;

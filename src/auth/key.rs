@@ -6,8 +6,8 @@
 //! - ECDSA private keys (PEM PKCS#8)
 //! - Public keys (SSH format)
 
+use base64::Engine as _;
 use crate::error::SshError;
-use pem::Pem;
 use rsa::pkcs8::DecodePrivateKey;
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -267,7 +267,7 @@ impl PrivateKey {
                 data
             });
         
-        let der = base64::decode(&der_encoded)
+        let der = base64::engine::general_purpose::STANDARD.decode(&der_encoded)
             .map_err(|e| SshError::CryptoError(format!("Invalid base64 encoding: {}", e)))?;
 
         Self::parse_openssh_der(&der)
@@ -649,25 +649,6 @@ impl PrivateKey {
         .map_err(|e| SshError::CryptoError(format!("Invalid RSA key: {}", e)))?;
 
         Ok(key)
-    }
-
-    /// Strip leading 0x00 byte from mpint encoding
-    /// 
-    /// OpenSSH uses mpint format for integers, which adds a leading 0x00 byte
-    /// to prevent the MSB from being interpreted as a sign bit. We need to
-    /// strip this byte when converting to BigUint.
-    fn strip_mpint_leading_zero(bytes: &[u8]) -> Vec<u8> {
-        if bytes.len() > 1 && bytes[0] == 0x00 {
-            // Check if the second byte has MSB set (would be interpreted as negative)
-            if bytes[1] & 0x80 != 0 {
-                // Strip the leading zero
-                bytes[1..].to_vec()
-            } else {
-                bytes.to_vec()
-            }
-        } else {
-            bytes.to_vec()
-        }
     }
 
     /// Get key type

@@ -177,38 +177,6 @@ impl AlgorithmProposal {
         })
     }
 
-    /// Find the first algorithm from our list that appears in the other list
-    /// Uses our preference order (first match wins)
-    fn select_first_matching(&self, other_list: &[String]) -> Option<String> {
-        for algo in &self.kex_algorithms {
-            if other_list.contains(algo) {
-                return Some(algo.clone());
-            }
-        }
-        None
-    }
-
-    /// Find the first algorithm from a specific category's list that appears in the other list
-    fn select_first_matching_in_category(&self, category: &str, other_list: &[String]) -> Option<String> {
-        let my_list = match category {
-            "kex" => &self.kex_algorithms,
-            "host_key" => &self.server_host_key_algorithms,
-            "enc_c2s" => &self.encryption_algorithms_c2s,
-            "enc_s2c" => &self.encryption_algorithms_s2c,
-            "mac_c2s" => &self.mac_algorithms_c2s,
-            "mac_s2c" => &self.mac_algorithms_s2c,
-            "compression" => &self.compression_algorithms,
-            _ => return None,
-        };
-
-        for algo in my_list {
-            if other_list.contains(algo) {
-                return Some(algo.clone());
-            }
-        }
-        None
-    }
-
     /// Find the first algorithm from the client's list (self) that appears in the server's list
     /// Per RFC 4253 Section 7.1: "The first algorithm on the client's name-list
     /// that is also on the server's name-list MUST be chosen"
@@ -538,20 +506,6 @@ mod tests {
         } else {
             panic!("Expected AlgorithmNegotiationFailed error");
         }
-    }
-
-    #[test]
-    fn test_select_first_matching() {
-        let client = AlgorithmProposal::client_proposal();
-        let server = AlgorithmProposal::server_proposal();
-        
-        // Server's first algorithm should be selected (server preference)
-        let selected_kex = client.select_first_matching(&server.kex_algorithms).unwrap();
-        assert_eq!(selected_kex, server.kex_algorithms[0]);
-        
-        // Verify that the selected algorithm is in both lists
-        assert!(client.kex_algorithms.contains(&selected_kex));
-        assert!(server.kex_algorithms.contains(&selected_kex));
     }
 
     #[test]
