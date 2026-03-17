@@ -287,13 +287,177 @@ mod tests {
     fn test_encrypted_transport_chacha20() {
         let session_id = vec![0x00; 20];
         let enc_key = vec![0x00; 32];
-        
+
         // Just test that we can create the cipher state
         let mut cipher = CipherState::new_chacha20_poly1305(&session_id, &enc_key).unwrap();
-        
+
         let packet = Packet::new(0x01, vec![1, 2, 3, 4]);
         let encrypted = cipher.encrypt(&packet).unwrap();
-        
+
         assert!(encrypted.len() > 0);
+    }
+
+    // --- Key validation errors ---
+
+    #[test]
+    fn test_aes256_gcm_wrong_key_size() {
+        let result = CipherState::new_aes256_gcm(&[0; 20], &[0; 16]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("32 bytes"));
+    }
+
+    #[test]
+    fn test_chacha20_wrong_key_size() {
+        let result = CipherState::new_chacha20_poly1305(&[0; 20], &[0; 16]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("32 bytes"));
+    }
+
+    // --- Sequence number increments ---
+
+    #[test]
+    fn test_aes_nonce_increments_sequence() {
+        let mut cipher = CipherState::new_aes256_gcm(&[0; 20], &[0; 32]).unwrap();
+        assert_eq!(cipher.sequence_number, 0);
+
+        let pkt = Packet::new(1, vec![1]);
+        cipher.encrypt(&pkt).unwrap();
+        assert_eq!(cipher.sequence_number, 1);
+
+        cipher.encrypt(&pkt).unwrap();
+        assert_eq!(cipher.sequence_number, 2);
+    }
+
+    #[test]
+    fn test_chacha_nonce_increments_sequence() {
+        let mut cipher = CipherState::new_chacha20_poly1305(&[0; 20], &[0; 32]).unwrap();
+        assert_eq!(cipher.sequence_number, 0);
+
+        let pkt = Packet::new(1, vec![1]);
+        cipher.encrypt(&pkt).unwrap();
+        // ChaCha encrypt increments sequence for nonce generation
+        assert!(cipher.sequence_number > 0);
+    }
+
+    // --- decrypt ---
+
+    #[test]
+    fn test_decrypt_valid_packet() {
+        let cipher = CipherState::new_aes256_gcm(&[0; 20], &[0; 32]).unwrap();
+        // Build a valid serialized packet
+        let original = Packet::new(42, vec![10, 20, 30]);
+        let serialized = original.serialize();
+        let decrypted = cipher.decrypt(&serialized).unwrap();
+        assert_eq!(decrypted.msg_type, 42);
+        assert_eq!(decrypted.payload, vec![10, 20, 30]);
+    }
+
+    #[test]
+    fn test_decrypt_invalid_data() {
+        let cipher = CipherState::new_aes256_gcm(&[0; 20], &[0; 32]).unwrap();
+        let result = cipher.decrypt(&[0, 0]); // too short
+        assert!(result.is_err());
+    }
+
+    // --- EncryptionAlgorithm ---
+
+    #[test]
+    fn test_encryption_algorithm_equality() {
+        assert_eq!(EncryptionAlgorithm::Aes256Gcm, EncryptionAlgorithm::Aes256Gcm);
+        assert_ne!(EncryptionAlgorithm::Aes256Gcm, EncryptionAlgorithm::ChaCha20Poly1305);
+    }
+
+    #[test]
+    fn test_encryption_algorithm_clone() {
+        let algo = EncryptionAlgorithm::ChaCha20Poly1305;
+        let cloned = algo.clone();
+        assert_eq!(algo, cloned);
+    }
+
+    #[test]
+    fn test_encryption_algorithm_debug() {
+        let debug = format!("{:?}", EncryptionAlgorithm::Aes256Gcm);
+        assert!(debug.contains("Aes256Gcm"));
+    }
+
+    // --- From<CipherError> for SshError ---
+
+    #[test]
+    fn test_cipher_error_to_ssh_error() {
+        let cipher_err = CipherError::CryptoError("bad cipher".to_string());
+        let ssh_err: SshError = cipher_err.into();
+        assert!(matches!(ssh_err, SshError::CryptoError(_)));
+        assert!(ssh_err.to_string().contains("bad cipher"));
+    }
+
+    // --- EncryptedTransport ---
+
+    #[test]
+    fn test_encrypted_transport_creation_aes() {
+        let read = std::io::Cursor::new(vec![]);
+        let write = Vec::new();
+        let transport = EncryptedTransport::new_aes256_gcm(read, write, &[0; 20], &[0; 32]).unwrap();
+        assert_eq!(transport.bytes_encrypted(), 0);
+    }
+
+    #[test]
+    fn test_encrypted_transport_creation_chacha() {
+        let read = std::io::Cursor::new(vec![]);
+        let write = Vec::new();
+        let transport = EncryptedTransport::new_chacha20_poly1305(read, write, &[0; 20], &[0; 32]).unwrap();
+        assert_eq!(transport.bytes_encrypted(), 0);
+    }
+
+    #[test]
+    fn test_encrypted_transport_creation_bad_key() {
+        let read = std::io::Cursor::new(vec![]);
+        let write = Vec::new();
+        let result = EncryptedTransport::new_aes256_gcm(read, write, &[0; 20], &[0; 16]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_encrypted_transport_write_packet() {
+        let read = std::io::Cursor::new(vec![]);
+        let write = Vec::new();
+        let mut transport = EncryptedTransport::new_aes256_gcm(read, write, &[0; 20], &[0; 32]).unwrap();
+
+        let packet = Packet::new(1, vec![1, 2, 3]);
+        transport.write_packet(&packet).unwrap();
+        assert!(transport.bytes_encrypted() > 0);
+    }
+
+    #[test]
+    fn test_encrypted_transport_cipher_state_accessor() {
+        let read = std::io::Cursor::new(vec![]);
+        let write = Vec::new();
+        let transport = EncryptedTransport::new_aes256_gcm(read, write, &[0; 20], &[0; 32]).unwrap();
+        let cs = transport.cipher_state();
+        assert_eq!(cs.sequence_number, 0);
+    }
+
+    #[test]
+    fn test_encrypted_transport_read_empty_stream() {
+        let read = std::io::Cursor::new(vec![]);
+        let write = Vec::new();
+        let mut transport = EncryptedTransport::new_aes256_gcm(read, write, &[0; 20], &[0; 32]).unwrap();
+        let result = transport.read_packet();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Connection closed"));
+    }
+
+    #[test]
+    fn test_encrypted_transport_read_valid_packet() {
+        // Build a valid serialized (unencrypted) packet and feed it as "ciphertext"
+        // (decrypt just calls Packet::deserialize, so this works)
+        let packet = Packet::new(42, vec![10, 20]);
+        let serialized = packet.serialize();
+
+        let read = std::io::Cursor::new(serialized);
+        let write = Vec::new();
+        let mut transport = EncryptedTransport::new_aes256_gcm(read, write, &[0; 20], &[0; 32]).unwrap();
+        let decrypted = transport.read_packet().unwrap();
+        assert_eq!(decrypted.msg_type, 42);
+        assert_eq!(decrypted.payload, vec![10, 20]);
     }
 }
