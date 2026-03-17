@@ -246,9 +246,181 @@ mod tests {
         // Test that padding aligns to block size
         let packet = Packet::new(1, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
         let serialized = packet.serialize();
-        
+
         let total_len = serialized.len();
         // Total length should be aligned to 8 bytes (minimum block size)
         assert_eq!(total_len % 8, 0);
+    }
+
+    // --- total_size ---
+
+    #[test]
+    fn test_total_size() {
+        let pkt = Packet::new(1, vec![10, 20]);
+        // PACKET_HEADER_LEN(5) + length + padding_length
+        assert_eq!(pkt.total_size(), PACKET_HEADER_LEN + pkt.length as usize + pkt.padding_length as usize);
+    }
+
+    #[test]
+    fn test_total_size_matches_serialize_len() {
+        let pkt = Packet::new(21, vec![1, 2, 3, 4, 5]);
+        assert_eq!(pkt.total_size(), pkt.serialize().len());
+    }
+
+    // --- serialize_for_encryption ---
+
+    #[test]
+    fn test_serialize_for_encryption_same_structure() {
+        let pkt = Packet::new(5, vec![0xAA, 0xBB]);
+        let enc = pkt.serialize_for_encryption();
+        // Same structure as serialize: length(4) + padlen(1) + msgtype(1) + payload + padding
+        let length = u32::from_be_bytes([enc[0], enc[1], enc[2], enc[3]]);
+        assert_eq!(length, pkt.length);
+        assert_eq!(enc[4], pkt.padding_length);
+        assert_eq!(enc[5], pkt.msg_type);
+        assert_eq!(&enc[6..6 + pkt.payload.len()], &pkt.payload);
+        assert_eq!(enc.len(), pkt.total_size());
+    }
+
+    // --- deserialize error paths ---
+
+    #[test]
+    fn test_deserialize_too_short() {
+        let data = vec![0, 0, 0]; // Only 3 bytes, need at least 5
+        let result = Packet::deserialize(&data);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("too short"));
+    }
+
+    #[test]
+    fn test_deserialize_padding_too_short() {
+        // length=1, padding_length=2 (less than MIN_PADDING=4)
+        let mut data = vec![];
+        data.extend_from_slice(&1u32.to_be_bytes()); // length
+        data.push(2); // padding_length = 2, below minimum of 4
+        data.extend_from_slice(&[0x42]); // payload (1 byte)
+        data.extend_from_slice(&[0; 2]); // padding (2 bytes)
+        let result = Packet::deserialize(&data);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Padding too short"));
+    }
+
+    #[test]
+    fn test_deserialize_packet_too_large() {
+        // Craft a packet claiming to be larger than MAX_PACKET_SIZE
+        let mut data = vec![];
+        data.extend_from_slice(&(MAX_PACKET_SIZE as u32).to_be_bytes()); // huge length
+        data.push(4); // padding_length
+        // Don't need to provide the full data — size check happens before reading payload
+        data.extend_from_slice(&[0; 100]);
+        let result = Packet::deserialize(&data);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("too large"));
+    }
+
+    #[test]
+    fn test_deserialize_data_incomplete() {
+        // Valid header but data too short for claimed length
+        let mut data = vec![];
+        data.extend_from_slice(&10u32.to_be_bytes()); // length = 10
+        data.push(4); // padding_length = 4
+        data.extend_from_slice(&[0; 5]); // Only 5 bytes, need 10+4=14
+        let result = Packet::deserialize(&data);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("incomplete"));
+    }
+
+    #[test]
+    fn test_deserialize_minimum_valid() {
+        // Smallest valid packet: length=1, padding=4, 1 byte msg_type
+        let pkt = Packet::new(21, vec![]);
+        let serialized = pkt.serialize();
+        let deserialized = Packet::deserialize(&serialized).unwrap();
+        assert_eq!(deserialized.msg_type, 21);
+        assert!(deserialized.payload.is_empty());
+    }
+
+    // --- Roundtrip ---
+
+    #[test]
+    fn test_serialize_deserialize_roundtrip() {
+        let original = Packet::new(94, vec![1, 2, 3, 4, 5]);
+        let serialized = original.serialize();
+        let deserialized = Packet::deserialize(&serialized).unwrap();
+        assert_eq!(deserialized.msg_type, original.msg_type);
+        assert_eq!(deserialized.payload, original.payload);
+        assert_eq!(deserialized.length, original.length);
+        assert_eq!(deserialized.padding_length, original.padding_length);
+    }
+
+    #[test]
+    fn test_serialize_deserialize_roundtrip_empty_payload() {
+        let original = Packet::new(5, vec![]);
+        let serialized = original.serialize();
+        let deserialized = Packet::deserialize(&serialized).unwrap();
+        assert_eq!(deserialized.msg_type, 5);
+        assert!(deserialized.payload.is_empty());
+    }
+
+    #[test]
+    fn test_serialize_deserialize_roundtrip_large_payload() {
+        let payload = vec![0xAB; 1000];
+        let original = Packet::new(94, payload.clone());
+        let serialized = original.serialize();
+        let deserialized = Packet::deserialize(&serialized).unwrap();
+        assert_eq!(deserialized.payload, payload);
+    }
+
+    #[test]
+    fn test_serialize_8byte_alignment() {
+        // Verify all packet sizes are 8-byte aligned
+        for payload_len in 0..50 {
+            let payload = vec![0u8; payload_len];
+            let pkt = Packet::new(1, payload);
+            let serialized = pkt.serialize();
+            assert_eq!(serialized.len() % 8, 0,
+                "payload_len={}: serialized len {} not 8-byte aligned",
+                payload_len, serialized.len());
+        }
+    }
+
+    // --- calculate_padding_length ---
+
+    #[test]
+    fn test_calculate_padding_length_block8() {
+        let padding = calculate_padding_length(8, 4);
+        assert!(padding >= 4);
+    }
+
+    #[test]
+    fn test_calculate_padding_length_block16() {
+        let padding = calculate_padding_length(16, 4);
+        assert!(padding >= 4);
+    }
+
+    #[test]
+    fn test_calculate_padding_length_exact_alignment() {
+        // When (8 + min_padding) % block_size == 0, returns min_padding
+        // 8 + 8 = 16, 16 % 16 = 0
+        let padding = calculate_padding_length(16, 8);
+        assert_eq!(padding, 8);
+    }
+
+    // --- Clone / Debug ---
+
+    #[test]
+    fn test_packet_clone() {
+        let pkt = Packet::new(42, vec![1, 2, 3]);
+        let cloned = pkt.clone();
+        assert_eq!(pkt.msg_type, cloned.msg_type);
+        assert_eq!(pkt.payload, cloned.payload);
+        assert_eq!(pkt.length, cloned.length);
+    }
+
+    #[test]
+    fn test_packet_debug() {
+        let pkt = Packet::new(21, vec![]);
+        let debug = format!("{:?}", pkt);
+        assert!(debug.contains("Packet"));
     }
 }
