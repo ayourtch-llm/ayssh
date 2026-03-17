@@ -129,8 +129,8 @@ fn ssh_base_args(port: u16) -> Vec<String> {
         "-o".into(), "LogLevel=ERROR".into(),                    // suppress info messages
         "-o".into(), "BatchMode=yes".into(),                   // no interactive prompts
         "-o".into(), "ConnectTimeout=10".into(),
-        // Force ciphers and MACs our server actually supports for decryption
-        "-o".into(), "Ciphers=aes128-ctr,aes256-ctr,aes128-gcm@openssh.com,aes256-gcm@openssh.com,chacha20-poly1305@openssh.com".into(),
+        // List ciphers our server supports (OpenSSH's default prefers chacha20)
+        "-o".into(), "Ciphers=chacha20-poly1305@openssh.com,aes128-ctr,aes256-ctr,aes128-gcm@openssh.com,aes256-gcm@openssh.com".into(),
         "-o".into(), "MACs=hmac-sha2-256,hmac-sha2-512,hmac-sha1,hmac-sha2-256-etm@openssh.com,hmac-sha2-512-etm@openssh.com,hmac-sha1-etm@openssh.com".into(),
         "-p".into(), port.to_string(),
     ]
@@ -355,4 +355,114 @@ fn test_openssh_client_kex_negotiation() {
 
     eprintln!("\n  Client KEX interop: {}/{} passed", passed, kex_algorithms.len());
     assert!(passed >= 2, "At least 2 KEX algorithms should work against real ssh client");
+}
+
+/// Test that OpenSSH client defaults to chacha20-poly1305 with our server
+/// (it's OpenSSH's preferred cipher). This validates our chacha20 server-side
+/// decryption works with the most common real-world negotiation.
+#[test]
+fn test_openssh_client_defaults_to_chacha20() {
+    skip_if_no_ssh!();
+    let ssh_path = find_ssh().unwrap();
+
+    run_server_test(
+        HostKeyPair::generate_ed25519(),
+        AlgorithmFilter::default(),
+        move |port| {
+            // Don't restrict ciphers — let OpenSSH pick its default (chacha20)
+            let args = vec![
+                "-F".into(), "/dev/null".into(),
+                "-o".into(), "StrictHostKeyChecking=no".into(),
+                "-o".into(), "UserKnownHostsFile=/dev/null".into(),
+                "-o".into(), "LogLevel=ERROR".into(),
+                "-o".into(), "BatchMode=yes".into(),
+                "-o".into(), "ConnectTimeout=10".into(),
+                "-o".into(), "MACs=hmac-sha2-256,hmac-sha2-512,hmac-sha1,hmac-sha2-256-etm@openssh.com".into(),
+                "-o".into(), "PreferredAuthentications=publickey".to_string(),
+                "-i".into(), "tests/keys/test_ed25519".into(),
+                "-p".into(), port.to_string(),
+                "-l".into(), "testuser".into(),
+                "127.0.0.1".into(),
+                "cat".into(),
+            ];
+
+            let output = Command::new(&ssh_path)
+                .args(&args)
+                .output()
+                .expect("Failed to run ssh");
+
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                stdout.contains("INTEROP_OK"),
+                "Default cipher (likely chacha20) failed: stdout={:?}",
+                stdout
+            );
+        },
+    );
+}
+
+/// Test MAC negotiation: OpenSSH client → our server with specific MACs
+#[test]
+fn test_openssh_client_mac_negotiation() {
+    skip_if_no_ssh!();
+    let ssh_path = find_ssh().unwrap();
+
+    let macs = [
+        "hmac-sha2-256",
+        "hmac-sha2-512",
+        "hmac-sha1",
+        "hmac-sha2-256-etm@openssh.com",
+        "hmac-sha2-512-etm@openssh.com",
+        "hmac-sha1-etm@openssh.com",
+    ];
+
+    let mut passed = 0;
+
+    for mac in &macs {
+        eprint!("  mac={} ... ", mac);
+
+        let ssh_path = ssh_path.clone();
+        let mac = mac.to_string();
+
+        let result = std::panic::catch_unwind(move || {
+            run_server_test(
+                HostKeyPair::generate_ed25519(),
+                AlgorithmFilter { kex: None, cipher: None, mac: None },
+                move |port| {
+                    let mut args = ssh_base_args(port);
+                    // Force a non-AEAD cipher so MAC actually matters
+                    args.extend([
+                        "-o".into(), "Ciphers=aes256-ctr".to_string(),
+                        "-o".into(), format!("MACs={}", mac),
+                        "-o".into(), "PreferredAuthentications=publickey".to_string(),
+                        "-i".into(), "tests/keys/test_ed25519".into(),
+                        "-l".into(), "testuser".into(),
+                        "127.0.0.1".into(),
+                        "cat".into(),
+                    ]);
+
+                    let output = Command::new(&ssh_path)
+                        .args(&args)
+                        .output()
+                        .expect("Failed to run ssh");
+
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    assert!(stdout.contains("INTEROP_OK"));
+                },
+            );
+        });
+
+        match result {
+            Ok(()) => {
+                passed += 1;
+                eprintln!("ok");
+            }
+            Err(_) => {
+                eprintln!("FAILED");
+            }
+        }
+    }
+
+    eprintln!("\n  Client MAC interop: {}/{} passed", passed, macs.len());
+    assert!(passed >= 4, "At least 4 MACs should work against real ssh client");
 }

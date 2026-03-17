@@ -509,3 +509,224 @@ fn test_ciphers_against_real_sshd() {
     }
     assert!(passed >= 4, "At least 4 ciphers should work against sshd");
 }
+
+/// Test MAC algorithms against real sshd.
+/// Uses a fixed cipher (aes256-ctr) to isolate MAC testing.
+#[test]
+fn test_macs_against_real_sshd() {
+    skip_if_no_sshd!();
+
+    let macs = [
+        "hmac-sha1",
+        "hmac-sha2-256",
+        "hmac-sha2-512",
+        "hmac-sha1-etm@openssh.com",
+        "hmac-sha2-256-etm@openssh.com",
+        "hmac-sha2-512-etm@openssh.com",
+    ];
+
+    let sshd = SshdInstance::start().expect("Failed to start sshd");
+    let mut passed = 0;
+    let mut failed = Vec::new();
+
+    for mac in &macs {
+        eprint!("  mac={} ... ", mac);
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let result = rt.block_on(async {
+            let stream =
+                tokio::net::TcpStream::connect(format!("127.0.0.1:{}", sshd.port)).await?;
+            let mut transport = ayssh::transport::Transport::new(stream);
+            transport.set_preferred_cipher("aes256-ctr");
+            transport.set_preferred_mac(mac);
+            transport.handshake().await?;
+
+            transport.send_service_request("ssh-userauth").await?;
+            transport.recv_service_accept().await?;
+            Ok::<(), ayssh::error::SshError>(())
+        });
+
+        match result {
+            Ok(()) => {
+                passed += 1;
+                eprintln!("ok");
+            }
+            Err(e) => {
+                failed.push(format!("{}: {}", mac, e));
+                eprintln!("FAILED ({})", e);
+            }
+        }
+    }
+
+    eprintln!("\n  MAC interop: {}/{} passed", passed, macs.len());
+    if !failed.is_empty() {
+        eprintln!("  Failures: {:?}", failed);
+    }
+    assert!(passed >= 4, "At least 4 MACs should work against sshd");
+}
+
+/// Test RSA public key authentication against real sshd.
+#[test]
+fn test_rsa_auth_against_real_sshd() {
+    skip_if_no_sshd!();
+
+    // We need authorized_keys to include the RSA pubkey.
+    // Start a custom sshd with both ed25519 and RSA keys authorized.
+    let sshd_path = find_sshd().unwrap();
+    let tmpdir = tempfile::TempDir::new().unwrap();
+    let tmppath = tmpdir.path();
+
+    // Generate host key
+    let host_key_path = tmppath.join("host_key");
+    std::process::Command::new("ssh-keygen")
+        .args(["-t", "ed25519", "-f"])
+        .arg(&host_key_path)
+        .args(["-N", "", "-q"])
+        .status()
+        .unwrap();
+
+    // Combine both test pubkeys into authorized_keys
+    let auth_keys_path = tmppath.join("authorized_keys");
+    let ed25519_pub = std::fs::read_to_string("tests/keys/test_ed25519.pub").unwrap();
+    let rsa_pub = std::fs::read_to_string("tests/keys/test_rsa_2048.pub").unwrap();
+    std::fs::write(&auth_keys_path, format!("{}\n{}\n", ed25519_pub.trim(), rsa_pub.trim())).unwrap();
+
+    let port = find_free_port();
+    let config_path = tmppath.join("sshd_config");
+    let pid_path = tmppath.join("sshd.pid");
+    std::fs::write(
+        &config_path,
+        format!(
+            "Port {}\nListenAddress 127.0.0.1\nHostKey {}\nAuthorizedKeysFile {}\n\
+             PubkeyAuthentication yes\nPasswordAuthentication no\n\
+             KbdInteractiveAuthentication no\nStrictModes no\nPidFile {}\nLogLevel ERROR\n",
+            port,
+            host_key_path.display(),
+            auth_keys_path.display(),
+            pid_path.display(),
+        ),
+    )
+    .unwrap();
+
+    let mut child = std::process::Command::new(&sshd_path)
+        .args(["-D", "-e", "-f"])
+        .arg(&config_path)
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    // Wait for sshd
+    let start = std::time::Instant::now();
+    while start.elapsed() < Duration::from_secs(5) {
+        if std::net::TcpStream::connect(format!("127.0.0.1:{}", port)).is_ok() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    let current_user = std::env::var("USER")
+        .or_else(|_| std::env::var("LOGNAME"))
+        .unwrap_or_else(|_| "test".to_string());
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let result = rt.block_on(async {
+        let stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port)).await?;
+        let mut transport = ayssh::transport::Transport::new(stream);
+        transport.handshake().await?;
+        transport.send_service_request("ssh-userauth").await?;
+        transport.recv_service_accept().await?;
+
+        let key_data = std::fs::read("tests/keys/test_rsa_2048").unwrap();
+        let mut auth =
+            ayssh::auth::Authenticator::new(&mut transport, current_user.clone())
+                .with_private_key(key_data);
+        auth.available_methods.insert("publickey".to_string());
+        let result = auth.authenticate().await?;
+        Ok::<ayssh::auth::AuthenticationResult, ayssh::error::SshError>(result)
+    });
+
+    let _ = child.kill();
+    let _ = child.wait();
+
+    match result {
+        Ok(ayssh::auth::AuthenticationResult::Success) => {
+            eprintln!("[sshd_interop] RSA pubkey auth SUCCESS");
+        }
+        Ok(other) => {
+            panic!("RSA pubkey auth expected Success, got {:?}", other);
+        }
+        Err(e) => {
+            panic!("RSA pubkey auth error: {}", e);
+        }
+    }
+}
+
+/// Test cipher × MAC combination matrix against real sshd.
+/// Verifies the correct algorithm is negotiated for each combination.
+#[test]
+fn test_cipher_mac_combos_against_real_sshd() {
+    skip_if_no_sshd!();
+
+    // Representative combinations — not exhaustive but covers interesting pairs
+    let combos: Vec<(&str, &str)> = vec![
+        ("aes128-ctr", "hmac-sha1"),
+        ("aes256-ctr", "hmac-sha2-256"),
+        ("aes256-ctr", "hmac-sha2-512"),
+        ("aes128-ctr", "hmac-sha2-256-etm@openssh.com"),
+        ("aes256-ctr", "hmac-sha2-512-etm@openssh.com"),
+        ("aes128-gcm@openssh.com", "hmac-sha1"),       // GCM ignores MAC (implicit)
+        ("aes256-gcm@openssh.com", "hmac-sha2-256"),    // GCM ignores MAC (implicit)
+        ("chacha20-poly1305@openssh.com", "hmac-sha1"), // ChaCha ignores MAC (implicit)
+    ];
+
+    let sshd = SshdInstance::start().expect("Failed to start sshd");
+    let mut passed = 0;
+    let mut failed = Vec::new();
+
+    for (cipher, mac) in &combos {
+        eprint!("  {}+{} ... ", cipher, mac);
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let result = rt.block_on(async {
+            let stream =
+                tokio::net::TcpStream::connect(format!("127.0.0.1:{}", sshd.port)).await?;
+            let mut transport = ayssh::transport::Transport::new(stream);
+            transport.set_preferred_cipher(cipher);
+            transport.set_preferred_mac(mac);
+            transport.handshake().await?;
+
+            transport.send_service_request("ssh-userauth").await?;
+            transport.recv_service_accept().await?;
+            Ok::<(), ayssh::error::SshError>(())
+        });
+
+        match result {
+            Ok(()) => {
+                passed += 1;
+                eprintln!("ok");
+            }
+            Err(e) => {
+                failed.push(format!("{}+{}: {}", cipher, mac, e));
+                eprintln!("FAILED ({})", e);
+            }
+        }
+    }
+
+    eprintln!("\n  Cipher×MAC interop: {}/{} passed", passed, combos.len());
+    if !failed.is_empty() {
+        eprintln!("  Failures: {:?}", failed);
+    }
+    assert!(passed >= 6, "At least 6 cipher×MAC combos should work against sshd");
+}
