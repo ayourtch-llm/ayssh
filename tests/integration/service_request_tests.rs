@@ -2,7 +2,7 @@
 
 use ayssh::protocol::messages::MessageType;
 use ayssh::transport::state::{State, TransportStateMachine};
-use std::io::{Cursor, Read, Write};
+use std::io::{Cursor, Read};
 
 #[test]
 fn test_service_request_message_encoding() {

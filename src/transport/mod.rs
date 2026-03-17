@@ -1197,7 +1197,6 @@ pub(crate) fn encrypt_packet_cbc(payload: &[u8], state: &mut EncryptionState) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Cursor;
 
     #[tokio::test]
     async fn test_transport_send_recv() {

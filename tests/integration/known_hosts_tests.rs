@@ -1,7 +1,6 @@
 //! Known Hosts Tests
 
 use ayssh::known_hosts::{KnownHosts, HostKey, HostKeyType, MatchPattern};
-use std::io::Cursor;
 
 #[test]
 fn test_known_hosts_create() {

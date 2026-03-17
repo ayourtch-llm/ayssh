@@ -215,7 +215,6 @@ impl SessionIdContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sha2::Sha256;
 
     #[test]
     fn test_session_id_computation() {

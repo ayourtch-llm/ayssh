@@ -4,6 +4,7 @@
 //! the complete SSH handshake, key exchange, and authentication flow.
 
 use super::helpers::{KeyType, TestServer, TestServerBuilder};
+use base64::Engine;
 use std::fs;
 use std::io::Write;
 use std::time::Duration;
@@ -59,7 +60,7 @@ async fn test_e2e_ed25519_connection() -> Result<(), Box<dyn std::error::Error>>
         .find(|line| line.starts_with("ssh-ed25519"))
         .ok_or("No Ed25519 public key found")?;
     
-    let public_key_bytes = base64::decode(public_key_line.split_whitespace().nth(1).unwrap())?;
+    let public_key_bytes = base64::engine::general_purpose::STANDARD.decode(public_key_line.split_whitespace().nth(1).unwrap())?;
     
     // Create test user with this public key
     create_test_user(&server, "testuser", &public_key_bytes)?;
@@ -92,7 +93,7 @@ async fn test_e2e_rsa_connection() -> Result<(), Box<dyn std::error::Error>> {
         .find(|line| line.starts_with("ssh-rsa"))
         .ok_or("No RSA public key found")?;
     
-    let public_key_bytes = base64::decode(public_key_line.split_whitespace().nth(1).unwrap())?;
+    let public_key_bytes = base64::engine::general_purpose::STANDARD.decode(public_key_line.split_whitespace().nth(1).unwrap())?;
     
     create_test_user(&server, "testuser", &public_key_bytes)?;
 
@@ -119,7 +120,7 @@ async fn test_e2e_ecdsa_p256_connection() -> Result<(), Box<dyn std::error::Erro
         .find(|line| line.starts_with("ecdsa-sha2-nistp256"))
         .ok_or("No ECDSA P-256 public key found")?;
     
-    let public_key_bytes = base64::decode(public_key_line.split_whitespace().nth(1).unwrap())?;
+    let public_key_bytes = base64::engine::general_purpose::STANDARD.decode(public_key_line.split_whitespace().nth(1).unwrap())?;
     
     create_test_user(&server, "testuser", &public_key_bytes)?;
 

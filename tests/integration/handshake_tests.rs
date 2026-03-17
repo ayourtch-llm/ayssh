@@ -137,7 +137,7 @@ fn test_handshake_state_integration() {
 
 #[test]
 fn test_state_machine_invalid_transitions() {
-    let mut state_machine = TransportStateMachine::new();
+    let state_machine = TransportStateMachine::new();
     
     // Cannot go directly from Handshake to Established
     // (must go through KeyExchange)

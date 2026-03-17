@@ -1,4 +1,4 @@
-use bytes::{BufMut, BytesMut};
+use bytes::BytesMut;
 use ayssh::protocol::{SshString, SshUint32};
 
 #[test]

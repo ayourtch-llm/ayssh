@@ -1,23 +1,18 @@
 //! Authentication tests using real SSH keys
 
 use ed25519_dalek::SigningKey as Ed25519SigningKey;
-use rsa::RsaPrivateKey;
-use sha2::{Digest, Sha256};
 use ayssh::auth::{
-    create_signature_data, EcdsaSignatureEncoder, Ed25519SignatureEncoder, PrivateKey,
-    PublicKeyAuthenticator, RsaSignatureEncoder, SSH_SIG_ALGORITHM_ED25519, SSH_SIG_ALGORITHM_RSA,
+    create_signature_data, Ed25519SignatureEncoder, PrivateKey,
+    RsaSignatureEncoder, SSH_SIG_ALGORITHM_ED25519, SSH_SIG_ALGORITHM_RSA,
 };
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bytes::BytesMut;
     use ayssh::auth::key::KeyType;
     use ayssh::auth::key::PublicKey;
     use ayssh::protocol::message::Message;
     use ayssh::protocol::messages::MessageType;
-    use ayssh::transport::Transport;
-    use std::io::Cursor;
 
     #[test]
     fn test_ed25519_key_parsing() {
@@ -266,8 +261,6 @@ n9p8mt+gFq/ph2hiSlTQAAAADnRlc3RAbG9jYWxob3N0AQIDBAUGBw==
         let private_key = PrivateKey::parse_pem(pem_content).unwrap();
 
         if let PrivateKey::Rsa(key) = private_key {
-            use rsa::traits::PublicKeyParts;
-
             let public_key = PublicKey {
                 key_type: KeyType::Rsa,
                 blob: vec![0x02; 100], // Placeholder for actual public key blob

@@ -307,7 +307,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn test_chacha20_continuous_keystream() {
         // Verify consuming full block 0 then continuing gives same result as continuous
         let key = [0u8; 32];

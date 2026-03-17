@@ -4,8 +4,6 @@
 //! They are marked as ignored by default (run with `cargo test -- --ignored`).
 
 use super::helpers::{KeyType, TestServer, TestServerBuilder};
-use std::time::Duration;
-use tokio::time::timeout;
 
 /// Test basic server creation with Ed25519 key
 #[tokio::test]
@@ -59,7 +57,7 @@ async fn test_real_server_debug_output() -> Result<(), Box<dyn std::error::Error
 /// Test that server port is properly released after drop
 #[tokio::test]
 async fn test_real_server_port_release() -> Result<(), Box<dyn std::error::Error>> {
-    let mut server = TestServerBuilder::new()
+    let server = TestServerBuilder::new()
         .with_keys(vec![KeyType::Ed25519])
         .build()?;
 
@@ -120,7 +118,7 @@ async fn test_real_server_verbose_debug() -> Result<(), Box<dyn std::error::Erro
 /// Test known_hosts file creation
 #[tokio::test]
 async fn test_real_server_known_hosts() -> Result<(), Box<dyn std::error::Error>> {
-    let server = TestServerBuilder::new()
+    let _server = TestServerBuilder::new()
         .with_keys(vec![KeyType::Ed25519])
         .build()?;
 

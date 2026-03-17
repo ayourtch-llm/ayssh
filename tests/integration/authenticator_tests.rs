@@ -1,7 +1,6 @@
 //! Integration tests for Authenticator module
 
-use ayssh::auth::{Authenticator, AuthenticationResult, AuthState, AuthMethodManager};
-use ayssh::error::SshError;
+use ayssh::auth::{AuthenticationResult, AuthState, AuthMethodManager};
 use ayssh::protocol::AuthMethod as ProtocolAuthMethod;
 
 /// Test 1: Verify Authenticator::new() creates authenticator with default state
@@ -278,9 +277,6 @@ fn test_auth_status_partial_eq() {
 /// Test 29: Test PasswordAuthenticator structure
 #[test]
 fn test_password_authenticator_new() {
-    use ayssh::auth::PasswordAuthenticator;
-    use ayssh::transport::Transport;
-    
     // Note: We can't create a real Transport without a server, so we verify the struct exists
     assert!(true); // Placeholder - real test requires Transport mock
 }
@@ -288,9 +284,6 @@ fn test_password_authenticator_new() {
 /// Test 30: Test PublicKeyAuthenticator structure
 #[test]
 fn test_publickey_authenticator_new() {
-    use ayssh::auth::PublicKeyAuthenticator;
-    use ayssh::transport::Transport;
-    
     // Note: We can't create a real Transport without a server, so we verify the struct exists
     assert!(true); // Placeholder - real test requires Transport mock
 }
@@ -298,7 +291,7 @@ fn test_publickey_authenticator_new() {
 /// Test 31: Test AuthMethodManager new
 #[test]
 fn test_auth_method_manager_new() {
-    let mut manager = AuthMethodManager::new();
+    let manager = AuthMethodManager::new();
     assert!(manager.supported_methods.is_empty());
     assert!(manager.allowed_methods.is_empty());
 }

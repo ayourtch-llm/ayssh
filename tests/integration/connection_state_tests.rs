@@ -1,7 +1,6 @@
 //! Integration tests for Connection state management
 
 use ayssh::connection::state::{ConnectionState, ConnectionStateMachine};
-use ayssh::error::SshError;
 
 /// Test 1: Verify ConnectionState enum has all variants
 #[test]
@@ -128,8 +127,6 @@ fn test_connection_state_invalid_connect() {
 /// Test 12: Test connection state display implementation
 #[test]
 fn test_connection_state_display() {
-    use std::fmt::Display;
-    
     let disconnected = ConnectionState::Disconnected;
     let connected = ConnectionState::Connected;
     let established = ConnectionState::Established;

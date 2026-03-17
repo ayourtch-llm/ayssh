@@ -2,7 +2,7 @@
 
 use ayssh::channel::{ChannelTransferManager, ChannelId};
 use ayssh::protocol::messages::MessageType;
-use std::io::{Cursor, Read, Write};
+use std::io::{Cursor, Read};
 
 #[test]
 fn test_channel_transfer_manager_create_session() {

@@ -450,7 +450,7 @@ mod tests {
         offset += 4;
         // Check service data
         assert_eq!(&sig_data[offset..offset+14], b"ssh-connection");
-        offset += 14;
+        let _offset = offset + 14;
 
         // Check boolean FALSE at the expected position
         // The boolean is at position: 24 + 1 + 12 + 18 = 55
@@ -476,8 +476,6 @@ mod tests {
         assert_eq!(signature.algorithm, "ssh-rsa");
 
         // Verify we can verify the signature with SHA-1
-        use rsa::pkcs1v15::VerifyingKey;
-        use rsa::signature::Verifier;
         use sha1::Digest;
         let public_key = private_key.to_public_key();
         let hash = sha1::Sha1::digest(data);

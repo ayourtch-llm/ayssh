@@ -1,3 +1,5 @@
+use base64::Engine;
+
 #[test]
 fn debug_key_parse() {
     let pem_content = include_str!("test_rsa_key");
@@ -28,7 +30,7 @@ fn debug_key_parse() {
     println!("Base64 starts with: {}", &der_encoded[..20]);
     
     // Try to decode
-    match base64::decode(&der_encoded) {
+    match base64::engine::general_purpose::STANDARD.decode(&der_encoded) {
         Ok(der) => {
             println!();
             println!("=== DER decoded successfully ===");

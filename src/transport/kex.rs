@@ -746,8 +746,7 @@ mod tests {
         context.compute_shared_secret().unwrap();
         
         // Generate session hash
-        let _session_id = b"test-session-id-12345";
-        let hash = context.generate_session_hash(_session_id).unwrap();
+        let hash = context.compute_session_id().unwrap();
         
         assert_eq!(hash.len(), 32); // SHA256 output
     }
@@ -777,8 +776,8 @@ mod tests {
         context1.compute_shared_secret().unwrap();
         context2.compute_shared_secret().unwrap();
         
-        let hash1 = context1.generate_session_hash(b"session-id").unwrap();
-        let hash2 = context2.generate_session_hash(b"session-id").unwrap();
+        let hash1 = context1.compute_session_id().unwrap();
+        let hash2 = context2.compute_session_id().unwrap();
         
         assert_eq!(hash1, hash2);
     }
@@ -804,8 +803,7 @@ mod tests {
         context.compute_shared_secret().unwrap();
         
         // Generate session hash
-        let session_id = b"test-session-id";
-        let hash = context.generate_session_hash(session_id).unwrap();
+        let hash = context.compute_session_id().unwrap();
         
         // Derive session keys
         let keys = context.derive_session_keys(&hash).unwrap();

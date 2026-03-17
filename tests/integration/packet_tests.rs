@@ -1,4 +1,4 @@
-use ayssh::crypto::packet::{calculate_padding, Packet, PacketReader, PacketWriter};
+use ayssh::crypto::packet::{calculate_padding, Packet, PacketWriter};
 
 #[test]
 fn test_packet_construction() {
@@ -51,7 +51,8 @@ fn test_packet_struct_size() {
     let packet = Packet::new(vec![1, 2, 3]);
 
     assert_eq!(packet.length, 3);
-    assert!(packet.padlen <= 255);
+    #[allow(unused_comparisons)]
+    { assert!(packet.padlen <= 255); }
     assert!(packet.padding.len() <= 255);
 }
 

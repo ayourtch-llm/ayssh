@@ -242,7 +242,6 @@ impl<R: Read, W: Write> EncryptedTransport<R, W> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Cursor;
 
     #[test]
     fn test_cipher_state_aes256_gcm() {

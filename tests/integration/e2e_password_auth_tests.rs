@@ -1,10 +1,9 @@
 //! End-to-End tests for password authentication
 
 use super::helpers::{KeyType, TestServer, TestServerBuilder};
+use base64::Engine;
 use std::fs;
 use std::io::Write;
-use std::time::Duration;
-use tokio::time::timeout;
 
 /// Helper to create a test user with known public key and password
 fn create_test_user_with_password(
@@ -65,7 +64,7 @@ mod tests {
             .find(|line| line.starts_with("ssh-ed25519"))
             .ok_or("No Ed25519 public key found")?;
         
-        let public_key_bytes = base64::decode(public_key_line.split_whitespace().nth(1).unwrap())?;
+        let public_key_bytes = base64::engine::general_purpose::STANDARD.decode(public_key_line.split_whitespace().nth(1).unwrap())?;
         
         // Create test user with this public key and password
         create_test_user_with_password(&server, "testuser", "test123", &public_key_bytes)?;
@@ -109,7 +108,7 @@ mod tests {
             .find(|line| line.starts_with("ssh-ed25519"))
             .ok_or("No Ed25519 public key found")?;
         
-        let public_key_bytes = base64::decode(public_key_line.split_whitespace().nth(1).unwrap())?;
+        let public_key_bytes = base64::engine::general_purpose::STANDARD.decode(public_key_line.split_whitespace().nth(1).unwrap())?;
         
         // Create user with correct password
         create_test_user_with_password(&server, "testuser", "correct123", &public_key_bytes)?;
@@ -123,7 +122,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_password_auth_missing_credentials() -> Result<(), Box<dyn std::error::Error>> {
-        let server = TestServerBuilder::new()
+        let _server = TestServerBuilder::new()
             .with_keys(vec![KeyType::Ed25519])
             .build()?;
 
@@ -147,7 +146,7 @@ mod tests {
             .find(|line| line.starts_with("ssh-ed25519"))
             .ok_or("No Ed25519 public key found")?;
         
-        let public_key_bytes = base64::decode(public_key_line.split_whitespace().nth(1).unwrap())?;
+        let public_key_bytes = base64::engine::general_purpose::STANDARD.decode(public_key_line.split_whitespace().nth(1).unwrap())?;
         
         create_test_user_with_password(&server, "testuser", "test123", &public_key_bytes)?;
 

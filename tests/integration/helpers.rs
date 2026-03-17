@@ -1,13 +1,11 @@
 //! Test server utilities for integration tests.
 
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::Arc;
 use std::time::Duration;
 use tempfile::TempDir;
-use tokio::time::timeout;
 
 /// Supported key types for test server
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,6 +25,7 @@ pub enum EcdsaCurve {
 
 impl KeyType {
     /// Get the default key type (Ed25519)
+    #[allow(dead_code)]
     pub fn default() -> Self {
         KeyType::Ed25519
     }
@@ -45,6 +44,7 @@ impl KeyType {
     }
 
     /// Get the key size/bits for display
+    #[allow(dead_code)]
     pub fn size(&self) -> String {
         match self {
             KeyType::Ed25519 => "ed25519".to_string(),
@@ -77,6 +77,7 @@ impl KeyType {
 ///
 /// // Use server.port(), server.private_key_paths(), etc.
 /// ```
+#[allow(dead_code)]
 pub struct TestServer {
     /// Temporary directory for test files
     temp_dir: TempDir,
@@ -274,7 +275,7 @@ Subsystem sftp /usr/libexec/sftp-server
             cmd.arg("-d"); // Extra debug level
         }
 
-        let mut child = cmd
+        let child = cmd
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()?;
@@ -328,6 +329,7 @@ Subsystem sftp /usr/libexec/sftp-server
     }
 
     /// Creates a temporary known_hosts file with the server's host key.
+    #[allow(dead_code)]
     pub fn create_known_hosts(&self) -> Result<(), Box<dyn std::error::Error>> {
         let host_key_path = self.temp_dir.path().join("host_key");
         let output = Command::new("ssh-keygen")
@@ -359,6 +361,7 @@ Subsystem sftp /usr/libexec/sftp-server
     }
 
     /// Returns the path to the known_hosts file.
+    #[allow(dead_code)]
     pub fn known_hosts_path(&self) -> &PathBuf {
         &self.known_hosts_path
     }
@@ -374,6 +377,7 @@ Subsystem sftp /usr/libexec/sftp-server
     }
 
     /// Returns the captured debug output.
+    #[allow(dead_code)]
     pub fn debug_output(&self) -> &str {
         &self.debug_output
     }
@@ -450,10 +454,10 @@ mod tests {
 
     #[test]
     fn test_server_cleanup() {
-        let mut server = TestServer::new().expect("Failed to create test server");
+        let server = TestServer::new().expect("Failed to create test server");
         let port = server.port();
-        
-        drop(&mut server);
+
+        drop(server);
         
         // After drop, the port should no longer be in use (sshd stopped)
         // Give it a moment to release

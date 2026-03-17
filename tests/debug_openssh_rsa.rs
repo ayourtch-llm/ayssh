@@ -1,5 +1,6 @@
 #[test]
 fn debug_openssh_rsa_parsing() {
+    use base64::Engine;
     use rsa::traits::PublicKeyParts;
     
     let pem_content = include_str!("test_rsa_key");
@@ -13,7 +14,7 @@ fn debug_openssh_rsa_parsing() {
             data
         });
     
-    let der = base64::decode(&der_encoded).expect("Base64 decode failed");
+    let der = base64::engine::general_purpose::STANDARD.decode(&der_encoded).expect("Base64 decode failed");
     
     // Parse manually
     use std::io::Cursor;
@@ -130,7 +131,7 @@ fn debug_openssh_rsa_parsing() {
     let d_big = rsa::BigUint::from_bytes_be(&d);
     let p_big = rsa::BigUint::from_bytes_be(p_stripped);
     let q_big = rsa::BigUint::from_bytes_be(q_stripped);
-    let coef_big = rsa::BigUint::from_bytes_be(coef_stripped);
+    let _coef_big = rsa::BigUint::from_bytes_be(coef_stripped);
     
     println!("\nn bits: {}, e bits: {}, d bits: {}, p bits: {}, q bits: {}", 
              n_big.bits(), e_big.bits(), d_big.bits(), p_big.bits(), q_big.bits());

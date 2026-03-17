@@ -42,7 +42,7 @@ IZOdthyU9ISB5NAvqQAAAA50ZXN0QGxvY2FsaG9zdAECAw==
     println!("Base64 clean length: {}", der_encoded.len());
     println!("Base64 lean:'{}'", &der_encoded);
     
-    let der = base64::decode(&der_encoded).expect("failed to decode base64 content");
+    let der = base64::engine::general_purpose::STANDARD.decode(&der_encoded).expect("failed to decode base64 content");
     println!("DER length: {}", der.len());
     
     if der.len() >= 15 {

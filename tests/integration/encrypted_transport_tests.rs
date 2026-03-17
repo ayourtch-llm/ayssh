@@ -1,4 +1,4 @@
-use ayssh::transport::encrypted::{CipherState, EncryptedTransport};
+use ayssh::transport::encrypted::CipherState;
 use ayssh::transport::packet::Packet;
 
 #[test]

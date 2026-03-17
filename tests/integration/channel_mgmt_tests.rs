@@ -5,7 +5,7 @@ use ayssh::channel::state::ChannelManager;
 use ayssh::channel::types::{
     ChannelId, ChannelOpenRequest, ChannelRequest, ChannelType, ReasonCode,
 };
-use ayssh::channel::state::{ChannelInfo, ChannelState};
+use ayssh::channel::state::ChannelState;
 
 /// Helper to create a basic channel open request
 fn create_session_request() -> ChannelOpenRequest {
@@ -621,9 +621,9 @@ mod channel_list_and_exists {
     fn test_list_channels_multiple() {
         // Test listing multiple channels
         let manager = ChannelManager::new();
-        
-        let id1 = manager.open_channel(&create_session_request()).unwrap();
-        let id2 = manager.open_channel(&create_session_request()).unwrap();
+
+        let _id1 = manager.open_channel(&create_session_request()).unwrap();
+        let _id2 = manager.open_channel(&create_session_request()).unwrap();
         
         let channels = manager.list_channels();
         assert_eq!(channels.len(), 2);

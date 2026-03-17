@@ -370,8 +370,6 @@ impl<'a> Authenticator<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     /// Verify extract_public_key_blob adds 0x00 prefix for mpint sign handling.
     /// RSA modulus n typically has the high bit set, requiring a 0x00 prefix
     /// to be encoded as a positive SSH mpint.

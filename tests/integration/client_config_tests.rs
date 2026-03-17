@@ -1,7 +1,6 @@
 //! Integration tests for Client configuration
 
 use ayssh::client::SshClient;
-use ayssh::protocol::AuthMethod;
 
 /// Test 1: Client with default configuration (port 22, localhost)
 #[test]

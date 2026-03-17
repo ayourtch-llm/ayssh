@@ -1,7 +1,6 @@
 //! Password Authentication Tests (TDD)
 
 use bytes::BytesMut;
-use ayssh::auth::password::PasswordAuthenticator;
 use ayssh::protocol::message::Message;
 use ayssh::protocol::messages::MessageType;
 
@@ -65,8 +64,8 @@ fn test_password_auth_multiple_attempts() {
 #[test]
 fn test_password_auth_response_success() {
     // Test parsing SSH_MSG_USERAUTH_SUCCESS
-    let mut msg = Message::with_type(MessageType::UserauthSuccess);
-    
+    let msg = Message::with_type(MessageType::UserauthSuccess);
+
     // SUCCESS message has no additional data
     assert_eq!(msg.len(), 1); // Just the message type byte
     

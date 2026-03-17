@@ -492,8 +492,6 @@ fn test_session_request_encode_all() {
     );
 
     let session = Session::new(channel.clone());
-    let dims = WindowDimensions::new(80, 24);
-    let modes = TerminalModes::default();
 
     // Test all request types encode correctly
     let dims = WindowDimensions::new(80, 24);

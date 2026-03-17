@@ -7,7 +7,6 @@ mod tests {
     use super::*;
     use rand::rngs::OsRng;
     use rsa::RsaPrivateKey;
-    use sha2::{Digest, Sha256};
 
     #[test]
     fn test_rsa_signature_in_auth_flow() {

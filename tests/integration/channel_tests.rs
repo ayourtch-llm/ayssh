@@ -5,7 +5,6 @@ use ayssh::channel::types::{
     ChannelOpenFailure, ChannelOpenRequest, ChannelRequest, ChannelSuccessOrFailure, ChannelType,
     ReasonCode,
 };
-use ayssh::protocol::message::Message;
 use ayssh::protocol::messages::MessageType;
 
 #[test]
@@ -395,7 +394,7 @@ fn test_channel_request_unknown() {
     assert_eq!(msg.msg_type(), Some(MessageType::ChannelRequest));
 
     // Verify message can be parsed back
-    let (parsed, want_reply) = ChannelRequest::parse(&msg).unwrap();
+    let (parsed, _want_reply) = ChannelRequest::parse(&msg).unwrap();
     if let ChannelRequest::Unknown { ref request, want_reply: wr } = parsed {
         assert_eq!(request, "unknown-request");
         assert!(!wr);
