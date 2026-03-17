@@ -385,6 +385,7 @@ fn test_ciphers_against_real_sshd() {
         "aes256-cbc",
         "aes128-gcm@openssh.com",
         "aes256-gcm@openssh.com",
+        "chacha20-poly1305@openssh.com",
     ];
 
     let sshd = SshdInstance::start().expect("Failed to start sshd");

@@ -130,7 +130,7 @@ fn ssh_base_args(port: u16) -> Vec<String> {
         "-o".into(), "BatchMode=yes".into(),                   // no interactive prompts
         "-o".into(), "ConnectTimeout=10".into(),
         // Force ciphers and MACs our server actually supports for decryption
-        "-o".into(), "Ciphers=aes128-ctr,aes256-ctr,aes128-gcm@openssh.com,aes256-gcm@openssh.com".into(),
+        "-o".into(), "Ciphers=aes128-ctr,aes256-ctr,aes128-gcm@openssh.com,aes256-gcm@openssh.com,chacha20-poly1305@openssh.com".into(),
         "-o".into(), "MACs=hmac-sha2-256,hmac-sha2-512,hmac-sha1,hmac-sha2-256-etm@openssh.com,hmac-sha2-512-etm@openssh.com,hmac-sha1-etm@openssh.com".into(),
         "-p".into(), port.to_string(),
     ]
@@ -231,6 +231,7 @@ fn test_openssh_client_cipher_negotiation() {
     let ciphers = [
         "aes128-ctr",
         "aes256-ctr",
+        "chacha20-poly1305@openssh.com",
         "aes128-gcm@openssh.com",
         "aes256-gcm@openssh.com",
     ];

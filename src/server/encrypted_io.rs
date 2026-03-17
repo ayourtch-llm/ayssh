@@ -117,8 +117,46 @@ impl ServerEncryptedIO {
         let etm = !aead && is_etm_mac(&mac_algo);
         let mac_len = if aead { 16 } else { mac_length(&mac_algo) };
 
-        let decrypted = if aead {
-            // AES-GCM AEAD path
+        let decrypted = if dec_algo == "chacha20-poly1305@openssh.com" {
+            // ChaCha20-Poly1305: length IS encrypted (unlike AES-GCM)
+            let encrypted_length_bytes = self.read_exact_buffered(4).await?;
+            let enc_len_arr: [u8; 4] = encrypted_length_bytes.try_into()
+                .map_err(|_| SshError::ProtocolError("Short read for length".to_string()))?;
+
+            // Extract key and seq before the next mutable borrow of self
+            let (dec_key, seq_num) = {
+                let ds = self.decrypt_state.as_ref().unwrap();
+                (ds.dec_key.clone(), ds.sequence_number as u64)
+            };
+
+            let packet_length = crate::crypto::ssh_chacha20::decrypt_length(
+                &dec_key, seq_num, &enc_len_arr,
+            ).map_err(|e| SshError::ProtocolError(format!("ChaCha20 length decrypt: {}", e)))? as usize;
+
+            if packet_length < 1 || packet_length > 35000 {
+                return Err(SshError::ProtocolError(format!("Invalid packet length: {}", packet_length)));
+            }
+
+            // Read encrypted payload + 16-byte Poly1305 tag
+            let ct_with_tag = self.read_exact_buffered(packet_length + 16).await?;
+            let encrypted_payload = &ct_with_tag[..packet_length];
+            let tag: [u8; 16] = ct_with_tag[packet_length..].try_into()
+                .map_err(|_| SshError::ProtocolError("Short read for tag".to_string()))?;
+
+            let plaintext = crate::crypto::ssh_chacha20::decrypt(
+                &dec_key, seq_num, &enc_len_arr, encrypted_payload, &tag,
+            ).map_err(|e| SshError::ProtocolError(format!("ChaCha20 decrypt: {}", e)))?;
+
+            self.decrypt_state.as_mut().unwrap().sequence_number =
+                self.decrypt_state.as_ref().unwrap().sequence_number.wrapping_add(1);
+
+            // Reconstruct full packet: length(4) + decrypted(padlen + payload + padding)
+            let mut full = Vec::with_capacity(4 + plaintext.len());
+            full.extend_from_slice(&(packet_length as u32).to_be_bytes());
+            full.extend_from_slice(&plaintext);
+            full
+        } else if aead {
+            // AES-GCM AEAD path (length is cleartext)
             let length_bytes = self.read_exact_buffered(4).await?;
             let packet_length = u32::from_be_bytes([
                 length_bytes[0], length_bytes[1], length_bytes[2], length_bytes[3],
