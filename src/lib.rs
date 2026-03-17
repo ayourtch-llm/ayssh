@@ -41,8 +41,6 @@ pub use auth::AuthMethodManager;
 pub use auth::Authenticator;
 pub use auth::AuthenticationResult;
 pub use auth::AuthState;
-pub use auth::PasswordAuthenticator;
-pub use auth::PublicKeyAuthenticator;
 pub use channel::Channel;
 pub use channel::ChannelId;
 pub use channel::ChannelType;

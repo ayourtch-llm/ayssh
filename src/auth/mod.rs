@@ -8,8 +8,6 @@
 pub mod key;
 pub mod keyboard;
 pub mod methods;
-pub mod password;
-pub mod publickey;
 pub mod signature;
 pub mod state;
 
@@ -18,8 +16,6 @@ use tracing::debug;
 pub use key::PrivateKey;
 pub use keyboard::KeyboardInteractiveAuthenticator;
 pub use methods::{AuthMethod, AuthMethodManager};
-pub use password::PasswordAuthenticator;
-pub use publickey::PublicKeyAuthenticator;
 pub use signature::{
     create_signature_data, Ed25519SignatureEncoder, EcdsaSignatureEncoder,
     RsaSignatureEncoder, SshSignature, SSH_SIG_ALGORITHM_ED25519,

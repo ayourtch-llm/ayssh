@@ -1,20 +1,11 @@
-//! PublicKeyAuthenticator tests
+//! Public key authentication message format tests
 
-use ayssh::auth::publickey::PublicKeyAuthenticator;
 use ayssh::protocol::message::Message;
 use ayssh::protocol::messages::MessageType;
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_public_key_authenticator_api_exists() {
-        // Test that the PublicKeyAuthenticator API exists and compiles
-        // This is a compilation test - if it compiles, the API exists
-        let _ = std::any::type_name::<PublicKeyAuthenticator>();
-        assert!(true);
-    }
 
     #[test]
     fn test_public_key_different_algorithms() {
