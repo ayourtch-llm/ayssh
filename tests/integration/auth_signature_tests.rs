@@ -73,20 +73,18 @@ IZOdthyU9ISB5NAvqQAAAA50ZXN0QGxvY2FsaG9zdAECAw==
             let signature = Ed25519SignatureEncoder::encode(&key, data).unwrap();
 
             assert_eq!(signature.algorithm, SSH_SIG_ALGORITHM_ED25519);
-            assert!(!signature.data.is_empty());
 
-            // Verify signature
-            let public_key = key.verifying_key();
-            // Signature format: [4-byte len][11-byte "ssh-ed25519"][4-byte len][64-byte sig]
-            // Total header = 4 + 11 + 4 = 19 bytes
-            let sig_bytes = &signature.data[19..]; // Skip algorithm string header
+            // signature.data is the raw 64-byte Ed25519 signature
             assert_eq!(
-                sig_bytes.len(),
+                signature.data.len(),
                 64,
-                "Expected 64-byte signature, got {}",
-                sig_bytes.len()
+                "Expected 64-byte raw signature, got {}",
+                signature.data.len()
             );
-            let sig_array = sig_bytes.try_into().unwrap();
+
+            // Verify the signature is valid
+            let public_key = key.verifying_key();
+            let sig_array: [u8; 64] = signature.data.try_into().unwrap();
             let sig = ed25519_dalek::Signature::from_bytes(&sig_array);
             use ed25519_dalek::Verifier;
             public_key.verify(data, &sig).unwrap();
