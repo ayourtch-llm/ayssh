@@ -122,6 +122,9 @@ pub enum AuthBehavior {
     RejectPassword { available_methods: String },
     /// Handle keyboard-interactive auth (RFC 4256)
     KeyboardInteractive { expected_password: String },
+    /// Reject first attempt with USERAUTH_FAILURE listing available_methods,
+    /// then accept the second attempt. Used to test auth method fallback.
+    RejectFirstThenAccept { available_methods: String },
     /// Accept public key authentication (send PK_OK then SUCCESS)
     AcceptPublicKey,
 }
@@ -434,6 +437,29 @@ pub async fn server_handshake_with_auth(
                 debug!("Sent USERAUTH_FAILURE (wrong password)");
                 return Ok((io, 0));
             }
+        }
+        AuthBehavior::RejectFirstThenAccept { available_methods } => {
+            // First attempt: send USERAUTH_FAILURE with available methods
+            let mut fail_msg = BytesMut::new();
+            fail_msg.put_u8(51); // SSH_MSG_USERAUTH_FAILURE
+            let methods = available_methods.as_bytes();
+            fail_msg.put_u32(methods.len() as u32);
+            fail_msg.put_slice(methods);
+            fail_msg.put_u8(0); // partial_success = false
+            io.send_message(&fail_msg).await?;
+            debug!("Sent USERAUTH_FAILURE (reject first attempt), available: {}", available_methods);
+
+            // Wait for second auth attempt
+            let auth_req2 = io.recv_message().await?;
+            if auth_req2.is_empty() || auth_req2[0] != 50 {
+                return Err(SshError::ProtocolError(format!(
+                    "Expected second USERAUTH_REQUEST (50), got {}", auth_req2.get(0).unwrap_or(&0))));
+            }
+            debug!("Received second USERAUTH_REQUEST, accepting");
+
+            // Accept second attempt
+            io.send_message(&[52]).await?; // USERAUTH_SUCCESS
+            debug!("Sent USERAUTH_SUCCESS on second attempt");
         }
         AuthBehavior::AcceptPublicKey => {
             // Parse the auth request to extract algorithm and public key blob
@@ -1467,5 +1493,138 @@ mod tests {
 
         client.join().expect("Client panicked");
         server.join().expect("Server thread panicked (should have handled disconnect gracefully)");
+    }
+
+    /// Test auth method fallback: server rejects publickey, client falls back to password.
+    #[test]
+    fn test_auth_method_fallback() {
+        use std::sync::mpsc;
+        let (port_tx, port_rx) = mpsc::channel::<u16>();
+
+        let server = std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all().build().unwrap();
+            rt.block_on(async {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                port_tx.send(listener.local_addr().unwrap().port()).unwrap();
+                let host_key = HostKeyPair::generate_ed25519();
+                let filter = AlgorithmFilter::default();
+                let auth_behavior = AuthBehavior::RejectFirstThenAccept {
+                    available_methods: "password".to_string(),
+                };
+                let (stream, _) = listener.accept().await.unwrap();
+                let (mut io, ch) = server_handshake_with_auth(stream, &host_key, &filter, &auth_behavior).await
+                    .expect("Server handshake failed");
+
+                // Send test data
+                let mut msg = BytesMut::new();
+                msg.put_u8(94); msg.put_u32(ch);
+                let data = b"FALLBACK_OK\n";
+                msg.put_u32(data.len() as u32); msg.put_slice(data);
+                io.send_message(&msg).await.unwrap();
+                let mut eof = BytesMut::new();
+                eof.put_u8(96); eof.put_u32(ch);
+                let _ = io.send_message(&eof).await;
+                let mut close = BytesMut::new();
+                close.put_u8(97); close.put_u32(ch);
+                let _ = io.send_message(&close).await;
+            });
+        });
+
+        let client = std::thread::spawn(move || {
+            let port = port_rx.recv_timeout(std::time::Duration::from_secs(30)).unwrap();
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all().build().unwrap();
+            rt.block_on(async {
+                let mut transport = crate::transport::Transport::new(
+                    TcpStream::connect(format!("127.0.0.1:{}", port)).await.unwrap()
+                );
+                transport.handshake().await.unwrap();
+                transport.send_service_request("ssh-userauth").await.unwrap();
+                transport.recv_service_accept().await.unwrap();
+
+                // Configure auth with publickey (will be rejected) and password (will succeed)
+                let key_data = std::fs::read("tests/keys/test_ed25519").unwrap();
+                let mut auth = crate::auth::Authenticator::new(&mut transport, "test".to_string())
+                    .with_private_key(key_data)
+                    .with_password("test".to_string())
+                    .with_method_order(vec!["publickey".to_string(), "password".to_string()]);
+
+                let r = auth.authenticate().await.unwrap();
+                assert!(matches!(r, crate::auth::AuthenticationResult::Success),
+                    "Expected Success after fallback, got {:?}", r);
+
+                // Verify we can use the connection
+                let session = crate::session::Session::open(&mut transport).await.unwrap();
+                let ch = session.remote_channel_id();
+                transport.send_channel_request(ch, "shell", true).await.unwrap();
+                let _ = transport.recv_message().await.unwrap();
+
+                let data = transport.recv_message().await.unwrap();
+                assert!(!data.is_empty() && data[0] == 94, "Expected CHANNEL_DATA");
+                let len = u32::from_be_bytes([data[5], data[6], data[7], data[8]]) as usize;
+                let text = std::str::from_utf8(&data[9..9+len]).unwrap_or("");
+                assert!(text.contains("FALLBACK_OK"), "Got {:?}", text);
+
+                drain_channel_close(&mut transport).await;
+            });
+        });
+
+        server.join().expect("Server panicked");
+        client.join().expect("Client panicked");
+    }
+
+    /// Test auth fallback with handler that aborts.
+    #[test]
+    fn test_auth_fallback_handler_abort() {
+        use std::sync::mpsc;
+        let (port_tx, port_rx) = mpsc::channel::<u16>();
+
+        let server = std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all().build().unwrap();
+            rt.block_on(async {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                port_tx.send(listener.local_addr().unwrap().port()).unwrap();
+                let host_key = HostKeyPair::generate_ed25519();
+                let filter = AlgorithmFilter::default();
+                let auth_behavior = AuthBehavior::RejectPassword {
+                    available_methods: "password".to_string(),
+                };
+                let (stream, _) = listener.accept().await.unwrap();
+                // This will return early since client aborts
+                let _ = server_handshake_with_auth(stream, &host_key, &filter, &auth_behavior).await;
+            });
+        });
+
+        let client = std::thread::spawn(move || {
+            let port = port_rx.recv_timeout(std::time::Duration::from_secs(30)).unwrap();
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all().build().unwrap();
+            rt.block_on(async {
+                let mut transport = crate::transport::Transport::new(
+                    TcpStream::connect(format!("127.0.0.1:{}", port)).await.unwrap()
+                );
+                transport.handshake().await.unwrap();
+                transport.send_service_request("ssh-userauth").await.unwrap();
+                transport.recv_service_accept().await.unwrap();
+
+                let mut auth = crate::auth::Authenticator::new(&mut transport, "test".to_string())
+                    .with_password("test".to_string())
+                    .with_method_order(vec!["password".to_string()])
+                    .with_fallback_handler(|_ctx| {
+                        // Always abort — don't try anything else
+                        crate::auth::AuthFallbackVerdict::Abort
+                    });
+                auth.available_methods.insert("password".to_string());
+
+                let r = auth.authenticate().await.unwrap();
+                assert!(matches!(r, crate::auth::AuthenticationResult::Failure { .. }),
+                    "Expected Failure after abort, got {:?}", r);
+            });
+        });
+
+        server.join().expect("Server panicked");
+        client.join().expect("Client panicked");
     }
 }

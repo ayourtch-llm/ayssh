@@ -60,6 +60,39 @@ pub enum AuthenticationResult {
     },
 }
 
+/// Info about an authentication attempt that just failed
+#[derive(Debug, Clone)]
+pub struct AuthAttemptInfo {
+    /// The method that was tried (e.g., "publickey", "password")
+    pub method: String,
+    /// The specific algorithm used, if applicable (e.g., "rsa-sha2-256")
+    pub algorithm: Option<String>,
+    /// Human-readable reason for failure
+    pub error: Option<String>,
+}
+
+/// Context passed to the fallback handler between auth attempts
+#[derive(Debug, Clone)]
+pub struct AuthFallbackContext {
+    /// Details about the attempt that just failed
+    pub failed_attempt: AuthAttemptInfo,
+    /// Methods we can still try (in order), filtered by what the server accepts
+    pub remaining_methods: Vec<String>,
+    /// Methods the server listed in its USERAUTH_FAILURE response
+    pub server_methods: Vec<String>,
+}
+
+/// The fallback handler's verdict
+#[derive(Debug, Clone, PartialEq)]
+pub enum AuthFallbackVerdict {
+    /// Continue with the default fallback (try next method in order)
+    Continue,
+    /// Skip to a specific method (must be in remaining_methods)
+    TryMethod(String),
+    /// Abort authentication entirely, return Failure
+    Abort,
+}
+
 /// SSH authentication handler
 pub struct Authenticator<'a> {
     /// Transport layer for sending messages
@@ -72,10 +105,16 @@ pub struct Authenticator<'a> {
     password: Option<String>,
     /// Private key (for public key auth)
     private_key: Option<Vec<u8>>,
-    /// List of available authentication methods
+    /// Ordered list of methods to try (tried in this order)
+    /// Also accessible as `available_methods` for backward compatibility
     pub available_methods: HashSet<String>,
+    /// Ordered list of methods to try
+    method_order: Vec<String>,
     /// Keyboard-interactive responses handler
     keyboard_interactive_handler: Option<Box<dyn Fn(&keyboard::Challenge) -> Result<Vec<String>, SshError> + Send>>,
+    /// Optional callback invoked between auth attempts on failure.
+    /// Receives context about what failed and what's next, returns a verdict.
+    fallback_handler: Option<Box<dyn Fn(&AuthFallbackContext) -> AuthFallbackVerdict + Send>>,
 }
 
 impl<'a> Authenticator<'a> {
@@ -88,7 +127,9 @@ impl<'a> Authenticator<'a> {
             password: None,
             private_key: None,
             available_methods: HashSet::new(),
+            method_order: Vec::new(),
             keyboard_interactive_handler: None,
+            fallback_handler: None,
         }
     }
 
@@ -104,9 +145,21 @@ impl<'a> Authenticator<'a> {
         self
     }
 
-    /// Sets available authentication methods
+    /// Sets available authentication methods (unordered, for backward compatibility).
+    /// If method_order is not set, methods are tried in an arbitrary order.
     pub fn with_available_methods(mut self, methods: Vec<String>) -> Self {
         self.available_methods = methods.into_iter().collect();
+        self
+    }
+
+    /// Sets the ordered list of methods to try.
+    /// Methods are tried in this exact order, skipping any that the server
+    /// doesn't accept or that we don't have credentials for.
+    pub fn with_method_order(mut self, methods: Vec<String>) -> Self {
+        for m in &methods {
+            self.available_methods.insert(m.clone());
+        }
+        self.method_order = methods;
         self
     }
 
@@ -119,48 +172,170 @@ impl<'a> Authenticator<'a> {
         self
     }
 
-    /// Starts authentication process
+    /// Sets the fallback handler called between auth method attempts.
+    /// The handler receives context about the failed attempt and remaining methods,
+    /// and returns a verdict (Continue, TryMethod, or Abort).
+    pub fn with_fallback_handler<F>(mut self, handler: F) -> Self
+    where
+        F: Fn(&AuthFallbackContext) -> AuthFallbackVerdict + Send + 'static,
+    {
+        self.fallback_handler = Some(Box::new(handler));
+        self
+    }
+
+    /// Get the ordered list of methods to try.
+    /// Uses method_order if set, otherwise falls back to available_methods in default order.
+    fn methods_to_try(&self) -> Vec<String> {
+        if !self.method_order.is_empty() {
+            return self.method_order.clone();
+        }
+        // Default order: publickey first, then password, then keyboard-interactive
+        let default_order = [SSH_AUTH_METHOD_PUBLICKEY, SSH_AUTH_METHOD_PASSWORD, SSH_AUTH_METHOD_KEYBOARD_INTERACTIVE];
+        let mut result = Vec::new();
+        for method in &default_order {
+            if self.available_methods.contains(*method) {
+                result.push(method.to_string());
+            }
+        }
+        // Add any remaining methods not in default order
+        for method in &self.available_methods {
+            if !result.contains(method) {
+                result.push(method.clone());
+            }
+        }
+        result
+    }
+
+    /// Check if we have credentials for a given method
+    fn has_credentials_for(&self, method: &str) -> bool {
+        match method {
+            SSH_AUTH_METHOD_PASSWORD => self.password.is_some(),
+            SSH_AUTH_METHOD_PUBLICKEY => self.private_key.is_some(),
+            SSH_AUTH_METHOD_KEYBOARD_INTERACTIVE => self.keyboard_interactive_handler.is_some(),
+            _ => false,
+        }
+    }
+
+    /// Starts authentication process.
+    /// Tries methods in order, falling back on failure if multiple methods are configured.
     pub async fn authenticate(&mut self) -> Result<AuthenticationResult, SshError> {
         self.state.start_auth()?;
-        
-        // Try available methods
-        for method in self.available_methods.iter() {
-            match method.as_str() {
+
+        let methods = self.methods_to_try();
+        let mut server_accepted_methods: Option<Vec<String>> = None;
+        let mut last_failure: Option<AuthenticationResult> = None;
+
+        let mut i = 0;
+        while i < methods.len() {
+            let method = &methods[i];
+
+            // Skip methods we don't have credentials for
+            if !self.has_credentials_for(method) {
+                i += 1;
+                continue;
+            }
+
+            // Skip methods the server doesn't accept (if we know from a previous failure)
+            if let Some(ref server_methods) = server_accepted_methods {
+                if !server_methods.contains(method) {
+                    debug!("Skipping method '{}' — server doesn't accept it", method);
+                    i += 1;
+                    continue;
+                }
+            }
+
+            debug!("Trying auth method: {}", method);
+
+            let result = match method.as_str() {
                 SSH_AUTH_METHOD_PASSWORD => {
-                    if let Some(ref pwd) = self.password.clone() {
-                        return self.try_password_auth(pwd).await;
-                    }
+                    let pwd = self.password.clone().unwrap();
+                    self.try_password_auth(&pwd).await?
                 }
                 SSH_AUTH_METHOD_PUBLICKEY => {
-                    if let Some(ref key) = self.private_key.clone() {
-                        return self.try_publickey_auth(key).await;
-                    }
+                    let key = self.private_key.clone().unwrap();
+                    self.try_publickey_auth(&key).await?
                 }
                 SSH_AUTH_METHOD_KEYBOARD_INTERACTIVE => {
-                    if let Some(ref handler) = self.keyboard_interactive_handler {
-                        let mut ki_auth = keyboard::KeyboardInteractiveAuthenticator::new(
-                            self.transport,
-                            self.username.clone(),
-                        );
-                        
-                        match ki_auth.authenticate(handler).await {
-                            Ok(()) => return Ok(AuthenticationResult::Success),
-                            Err(e) => {
-                                // Continue to next method on failure
-                                eprintln!("Keyboard-interactive authentication failed: {:?}", e);
-                                continue;
+                    // keyboard-interactive has its own internal loop
+                    let handler = self.keyboard_interactive_handler.as_ref().unwrap();
+                    let mut ki_auth = keyboard::KeyboardInteractiveAuthenticator::new(
+                        self.transport,
+                        self.username.clone(),
+                    );
+                    match ki_auth.authenticate(handler).await {
+                        Ok(()) => AuthenticationResult::Success,
+                        Err(e) => AuthenticationResult::Failure {
+                            partial_success: Vec::new(),
+                            available_methods: vec![],
+                        },
+                    }
+                }
+                _ => {
+                    i += 1;
+                    continue;
+                }
+            };
+
+            match result {
+                AuthenticationResult::Success => return Ok(AuthenticationResult::Success),
+                AuthenticationResult::Failure { ref partial_success, ref available_methods } => {
+                    // Update server's accepted methods for filtering
+                    if !available_methods.is_empty() {
+                        server_accepted_methods = Some(available_methods.clone());
+                    }
+
+                    let remaining: Vec<String> = methods[i+1..].iter()
+                        .filter(|m| self.has_credentials_for(m))
+                        .cloned()
+                        .collect();
+
+                    // Call fallback handler if set
+                    if let Some(ref handler) = self.fallback_handler {
+                        let ctx = AuthFallbackContext {
+                            failed_attempt: AuthAttemptInfo {
+                                method: method.clone(),
+                                algorithm: None,
+                                error: Some(format!("Server returned USERAUTH_FAILURE")),
+                            },
+                            remaining_methods: remaining.clone(),
+                            server_methods: available_methods.clone(),
+                        };
+
+                        match handler(&ctx) {
+                            AuthFallbackVerdict::Continue => {
+                                // Default: try next method
+                            }
+                            AuthFallbackVerdict::TryMethod(target) => {
+                                // Jump to specific method
+                                if let Some(pos) = methods.iter().position(|m| m == &target) {
+                                    i = pos;
+                                    continue;
+                                }
+                                // Method not found — fall through to abort
+                                return Ok(result);
+                            }
+                            AuthFallbackVerdict::Abort => {
+                                return Ok(result);
                             }
                         }
                     }
+
+                    // If no more methods, return failure
+                    if remaining.is_empty() {
+                        return Ok(result);
+                    }
+
+                    last_failure = Some(result);
+                    i += 1;
                 }
-                _ => {}
             }
         }
 
-        Ok(AuthenticationResult::Failure {
+        // All methods exhausted
+        Ok(last_failure.unwrap_or(AuthenticationResult::Failure {
             partial_success: Vec::new(),
             available_methods: self.available_methods.iter().cloned().collect(),
-        })
+        }))
     }
 
     /// Tries password authentication
