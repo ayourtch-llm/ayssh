@@ -791,6 +791,118 @@ fn test_ecdsa_p256_auth_against_real_sshd() {
     }
 }
 
+/// Helper: test pubkey auth with a specific key against a custom sshd
+/// that has the key's pubkey in authorized_keys.
+fn run_pubkey_auth_test(private_key_path: &str, public_key_path: &str, label: &str) {
+    let sshd_path = find_sshd().unwrap();
+    let tmpdir = tempfile::TempDir::new().unwrap();
+    let tmppath = tmpdir.path();
+
+    let host_key_path = tmppath.join("host_key");
+    std::process::Command::new("ssh-keygen")
+        .args(["-t", "ed25519", "-f"])
+        .arg(&host_key_path)
+        .args(["-N", "", "-q"])
+        .status()
+        .unwrap();
+
+    let auth_keys_path = tmppath.join("authorized_keys");
+    let pubkey = std::fs::read_to_string(public_key_path).unwrap();
+    std::fs::write(&auth_keys_path, pubkey.trim()).unwrap();
+
+    let port = find_free_port();
+    let config_path = tmppath.join("sshd_config");
+    let pid_path = tmppath.join("sshd.pid");
+    std::fs::write(
+        &config_path,
+        format!(
+            "Port {}\nListenAddress 127.0.0.1\nHostKey {}\nAuthorizedKeysFile {}\n\
+             PubkeyAuthentication yes\nPasswordAuthentication no\n\
+             KbdInteractiveAuthentication no\nStrictModes no\nPidFile {}\nLogLevel ERROR\n",
+            port, host_key_path.display(), auth_keys_path.display(), pid_path.display(),
+        ),
+    ).unwrap();
+
+    let mut child = std::process::Command::new(&sshd_path)
+        .args(["-D", "-e", "-f"])
+        .arg(&config_path)
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    let start = std::time::Instant::now();
+    while start.elapsed() < Duration::from_secs(5) {
+        if std::net::TcpStream::connect(format!("127.0.0.1:{}", port)).is_ok() { break; }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    let current_user = std::env::var("USER")
+        .or_else(|_| std::env::var("LOGNAME"))
+        .unwrap_or_else(|_| "test".to_string());
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all().build().unwrap();
+
+    let result = rt.block_on(async {
+        let stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port)).await?;
+        let mut transport = ayssh::transport::Transport::new(stream);
+        transport.handshake().await?;
+        transport.send_service_request("ssh-userauth").await?;
+        transport.recv_service_accept().await?;
+
+        let key_data = std::fs::read(private_key_path).unwrap();
+        let mut auth = ayssh::auth::Authenticator::new(&mut transport, current_user)
+            .with_private_key(key_data);
+        auth.available_methods.insert("publickey".to_string());
+        auth.authenticate().await
+    });
+
+    let _ = child.kill();
+    let _ = child.wait();
+
+    match result {
+        Ok(ayssh::auth::AuthenticationResult::Success) => {
+            eprintln!("[sshd_interop] {} auth SUCCESS", label);
+        }
+        other => {
+            panic!("{} auth failed: {:?}", label, other);
+        }
+    }
+}
+
+/// Test ECDSA P-384 public key authentication against real sshd.
+#[test]
+fn test_ecdsa_p384_auth_against_real_sshd() {
+    skip_if_no_sshd!();
+    let _lock = TEST_MUTEX.lock().unwrap();
+    run_pubkey_auth_test(
+        "tests/keys/test_ecdsa_384", "tests/keys/test_ecdsa_384.pub",
+        "ECDSA P-384",
+    );
+}
+
+/// Test ECDSA P-521 public key authentication against real sshd.
+#[test]
+fn test_ecdsa_p521_auth_against_real_sshd() {
+    skip_if_no_sshd!();
+    let _lock = TEST_MUTEX.lock().unwrap();
+    run_pubkey_auth_test(
+        "tests/keys/test_ecdsa_521", "tests/keys/test_ecdsa_521.pub",
+        "ECDSA P-521",
+    );
+}
+
+/// Test RSA-4096 public key authentication against real sshd.
+#[test]
+fn test_rsa_4096_auth_against_real_sshd() {
+    skip_if_no_sshd!();
+    let _lock = TEST_MUTEX.lock().unwrap();
+    run_pubkey_auth_test(
+        "tests/keys/test_rsa_4096", "tests/keys/test_rsa_4096.pub",
+        "RSA-4096",
+    );
+}
+
 /// Test cipher × MAC combination matrix against real sshd.
 /// Verifies the correct algorithm is negotiated for each combination.
 #[test]
