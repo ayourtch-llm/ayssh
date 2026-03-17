@@ -18,7 +18,12 @@ use bytes::{BufMut, BytesMut};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Mutex;
 use std::time::Duration;
+
+/// Global mutex to serialize tests — ssh subprocess spawning is unreliable
+/// when multiple tests run in parallel (port races, fd inheritance, etc.)
+static TEST_MUTEX: Mutex<()> = Mutex::new(());
 
 /// Find the ssh client binary
 fn find_ssh() -> Option<PathBuf> {
@@ -145,6 +150,7 @@ fn ssh_base_args(port: u16) -> Vec<String> {
 #[test]
 fn test_openssh_client_connects_to_our_server() {
     skip_if_no_ssh!();
+    let _lock = TEST_MUTEX.lock().unwrap();
     let ssh_path = find_ssh().unwrap();
 
     run_server_test(
@@ -184,6 +190,7 @@ fn test_openssh_client_connects_to_our_server() {
 #[test]
 fn test_openssh_client_with_rsa_host_key() {
     skip_if_no_ssh!();
+    let _lock = TEST_MUTEX.lock().unwrap();
     let ssh_path = find_ssh().unwrap();
 
     let host_key = HostKeyPair::load_openssh_rsa(Path::new("tests/keys/test_rsa_2048"))
@@ -226,6 +233,7 @@ fn test_openssh_client_with_rsa_host_key() {
 #[test]
 fn test_openssh_client_cipher_negotiation() {
     skip_if_no_ssh!();
+    let _lock = TEST_MUTEX.lock().unwrap();
     let ssh_path = find_ssh().unwrap();
 
     let ciphers = [
@@ -300,6 +308,7 @@ fn test_openssh_client_cipher_negotiation() {
 #[test]
 fn test_openssh_client_kex_negotiation() {
     skip_if_no_ssh!();
+    let _lock = TEST_MUTEX.lock().unwrap();
     let ssh_path = find_ssh().unwrap();
 
     let kex_algorithms = [
@@ -363,6 +372,7 @@ fn test_openssh_client_kex_negotiation() {
 #[test]
 fn test_openssh_client_defaults_to_chacha20() {
     skip_if_no_ssh!();
+    let _lock = TEST_MUTEX.lock().unwrap();
     let ssh_path = find_ssh().unwrap();
 
     run_server_test(
@@ -405,6 +415,7 @@ fn test_openssh_client_defaults_to_chacha20() {
 #[test]
 fn test_openssh_client_mac_negotiation() {
     skip_if_no_ssh!();
+    let _lock = TEST_MUTEX.lock().unwrap();
     let ssh_path = find_ssh().unwrap();
 
     let macs = [
