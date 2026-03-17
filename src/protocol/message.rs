@@ -309,11 +309,248 @@ mod tests {
         let mut msg = Message::with_type(MessageType::UserauthFailure);
         msg.write_string(b"password");
         msg.write_string(b"password,publickey");
-        
+
         let result = msg.parse_userauth_failure();
         assert_eq!(result, Some((
             vec!["password".to_string()],
             vec!["password".to_string(), "publickey".to_string()]
         )));
+    }
+
+    // --- Construction ---
+
+    #[test]
+    fn test_message_default() {
+        let msg: Message = Default::default();
+        assert!(msg.is_empty());
+        assert_eq!(msg.len(), 0);
+    }
+
+    #[test]
+    fn test_message_from_vec() {
+        let msg = Message::from(vec![50, 0, 0, 0, 4]);
+        assert_eq!(msg.msg_type(), Some(MessageType::UserauthRequest));
+        assert_eq!(msg.len(), 5);
+    }
+
+    #[test]
+    fn test_message_from_slice() {
+        let data: &[u8] = &[52]; // USERAUTH_SUCCESS
+        let msg = Message::from(data);
+        assert_eq!(msg.msg_type(), Some(MessageType::UserauthSuccess));
+    }
+
+    #[test]
+    fn test_message_from_bytes_mut() {
+        let data = BytesMut::from(&[21u8][..]); // NEWKEYS
+        let msg = Message::from(data);
+        assert_eq!(msg.msg_type(), Some(MessageType::Newkeys));
+    }
+
+    #[test]
+    fn test_message_from_bytes() {
+        let msg = Message::from_bytes(vec![6]); // SERVICE_ACCEPT
+        assert_eq!(msg.msg_type(), Some(MessageType::ServiceAccept));
+    }
+
+    // --- set_message_type ---
+
+    #[test]
+    fn test_set_message_type_on_existing() {
+        let mut msg = Message::with_type(MessageType::KexInit);
+        msg.set_message_type(MessageType::Newkeys);
+        assert_eq!(msg.msg_type(), Some(MessageType::Newkeys));
+    }
+
+    #[test]
+    fn test_set_message_type_on_empty() {
+        let mut msg = Message::new();
+        msg.set_message_type(MessageType::Disconnect);
+        assert_eq!(msg.msg_type(), Some(MessageType::Disconnect));
+        assert_eq!(msg.len(), 1);
+    }
+
+    // --- Write methods ---
+
+    #[test]
+    fn test_write_byte() {
+        let mut msg = Message::new();
+        msg.write_byte(0xAB);
+        assert_eq!(msg.as_bytes(), &[0xAB]);
+    }
+
+    #[test]
+    fn test_write_string_slice() {
+        let mut msg = Message::new();
+        msg.write_string_slice("hello");
+        let result = msg.read_string(0).unwrap();
+        assert_eq!(result, b"hello");
+    }
+
+    #[test]
+    fn test_write_uint64() {
+        let mut msg = Message::new();
+        msg.write_uint64(0x0102030405060708);
+        assert_eq!(msg.read_uint64(0), Some(0x0102030405060708));
+    }
+
+    #[test]
+    fn test_write_mpint() {
+        let mut msg = Message::new();
+        msg.write_mpint(42);
+        // mpint is length-prefixed
+        assert!(msg.len() > 0);
+    }
+
+    #[test]
+    fn test_write_bytes() {
+        let mut msg = Message::new();
+        msg.write_bytes(&[1, 2, 3]);
+        assert_eq!(msg.as_bytes(), &[1, 2, 3]);
+    }
+
+    #[test]
+    fn test_encode() {
+        let mut msg = Message::new();
+        msg.write_byte(42);
+        msg.write_byte(99);
+        let encoded = msg.encode();
+        assert_eq!(encoded, vec![42, 99]);
+    }
+
+    // --- Read methods edge cases ---
+
+    #[test]
+    fn test_read_byte_valid() {
+        let msg = Message::from(vec![0xAA, 0xBB]);
+        assert_eq!(msg.read_byte(0), Some(0xAA));
+        assert_eq!(msg.read_byte(1), Some(0xBB));
+    }
+
+    #[test]
+    fn test_read_byte_out_of_bounds() {
+        let msg = Message::from(vec![0xAA]);
+        assert_eq!(msg.read_byte(1), None);
+        assert_eq!(msg.read_byte(100), None);
+    }
+
+    #[test]
+    fn test_read_string_too_short_for_length() {
+        let msg = Message::from(vec![0, 0]); // only 2 bytes, need 4 for length
+        assert_eq!(msg.read_string(0), None);
+    }
+
+    #[test]
+    fn test_read_string_too_short_for_value() {
+        // Length says 10 but only 2 bytes follow
+        let msg = Message::from(vec![0, 0, 0, 10, 0xAA, 0xBB]);
+        assert_eq!(msg.read_string(0), None);
+    }
+
+    #[test]
+    fn test_read_string_empty_string() {
+        let mut msg = Message::new();
+        msg.write_string(b"");
+        assert_eq!(msg.read_string(0), Some(vec![]));
+    }
+
+    #[test]
+    fn test_read_string_slice_valid() {
+        let mut msg = Message::new();
+        msg.write_string(b"world");
+        assert_eq!(msg.read_string_slice(0), Some("world".to_string()));
+    }
+
+    #[test]
+    fn test_read_string_slice_invalid_utf8() {
+        let mut msg = Message::new();
+        msg.write_string(&[0xFF, 0xFE]);
+        assert_eq!(msg.read_string_slice(0), None);
+    }
+
+    #[test]
+    fn test_read_bool_out_of_bounds() {
+        let msg = Message::new();
+        assert_eq!(msg.read_bool(0), None);
+    }
+
+    #[test]
+    fn test_read_bool_nonzero_is_true() {
+        // RFC 4251: All non-zero values MUST be interpreted as TRUE
+        let msg = Message::from(vec![0x42]);
+        assert_eq!(msg.read_bool(0), Some(true));
+    }
+
+    #[test]
+    fn test_read_uint32_out_of_bounds() {
+        let msg = Message::from(vec![0, 0]); // only 2 bytes
+        assert_eq!(msg.read_uint32(0), None);
+    }
+
+    #[test]
+    fn test_read_uint64_valid() {
+        let mut msg = Message::new();
+        msg.write_uint64(u64::MAX);
+        assert_eq!(msg.read_uint64(0), Some(u64::MAX));
+    }
+
+    #[test]
+    fn test_read_uint64_out_of_bounds() {
+        let msg = Message::from(vec![0; 5]); // only 5 bytes, need 8
+        assert_eq!(msg.read_uint64(0), None);
+    }
+
+    // --- as_bytes / len / is_empty ---
+
+    #[test]
+    fn test_as_bytes() {
+        let mut msg = Message::new();
+        msg.write_byte(1);
+        msg.write_byte(2);
+        assert_eq!(msg.as_bytes(), &[1, 2]);
+    }
+
+    #[test]
+    fn test_len_and_is_empty() {
+        let mut msg = Message::new();
+        assert!(msg.is_empty());
+        assert_eq!(msg.len(), 0);
+        msg.write_byte(42);
+        assert!(!msg.is_empty());
+        assert_eq!(msg.len(), 1);
+    }
+
+    // --- Clone / PartialEq ---
+
+    #[test]
+    fn test_message_clone() {
+        let mut msg = Message::with_type(MessageType::KexInit);
+        msg.write_uint32(42);
+        let cloned = msg.clone();
+        assert_eq!(msg, cloned);
+    }
+
+    #[test]
+    fn test_message_equality() {
+        let msg1 = Message::from(vec![1, 2, 3]);
+        let msg2 = Message::from(vec![1, 2, 3]);
+        let msg3 = Message::from(vec![1, 2, 4]);
+        assert_eq!(msg1, msg2);
+        assert_ne!(msg1, msg3);
+    }
+
+    // --- parse edge cases ---
+
+    #[test]
+    fn test_parse_userauth_request_truncated() {
+        // Only message type, no fields
+        let msg = Message::from(vec![50]);
+        assert_eq!(msg.parse_userauth_request(), None);
+    }
+
+    #[test]
+    fn test_parse_userauth_failure_truncated() {
+        let msg = Message::from(vec![51]);
+        assert_eq!(msg.parse_userauth_failure(), None);
     }
 }
