@@ -669,6 +669,15 @@ mod tests {
                 // Second receive should return chunk2
                 let data2 = conn.receive(Duration::from_secs(10)).await.unwrap();
                 assert_eq!(data2, b"chunk2");
+
+                // Drain EOF + CLOSE so server doesn't hit broken pipe
+                for _ in 0..5 {
+                    match conn.transport.recv_message().await {
+                        Ok(msg) if !msg.is_empty() && msg[0] == 97 => break,
+                        Ok(_) => continue,
+                        Err(_) => break,
+                    }
+                }
             });
         });
 
