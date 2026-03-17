@@ -419,4 +419,168 @@ mod tests {
         let group = DhGroup::group14();
         assert_eq!(group.g, BigUint::from(2u32), "Group 14 generator must be 2");
     }
+
+    // --- Mpint edge cases ---
+
+    #[test]
+    fn test_mpint_decode_empty_fails() {
+        let result = Mpint::decode(&[]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Empty MPINT"));
+    }
+
+    #[test]
+    fn test_mpint_encode_zero() {
+        let n = BigUint::zero();
+        let encoded = Mpint::encode(&n);
+        // BigUint::to_bytes_be() for zero returns empty vec
+        // No high bit issue, so no 0x00 prefix
+        assert!(encoded.is_empty() || encoded == vec![0]);
+    }
+
+    #[test]
+    fn test_mpint_encode_one() {
+        let n = BigUint::from(1u32);
+        let encoded = Mpint::encode(&n);
+        assert_eq!(encoded, vec![0x01]);
+    }
+
+    #[test]
+    fn test_mpint_encode_no_high_bit() {
+        let n = BigUint::from(0x7Fu32);
+        let encoded = Mpint::encode(&n);
+        assert_eq!(encoded[0], 0x7F);
+        assert_eq!(encoded.len(), 1);
+    }
+
+    // --- decode_length_prefixed error paths ---
+
+    #[test]
+    fn test_decode_length_prefixed_too_short_for_header() {
+        let data = vec![0, 0]; // only 2 bytes, need 4
+        let result = Mpint::decode_length_prefixed(&data);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("length prefix"));
+    }
+
+    #[test]
+    fn test_decode_length_prefixed_too_short_for_value() {
+        let mut data = vec![];
+        data.extend_from_slice(&10u32.to_be_bytes()); // claims 10 bytes
+        data.extend_from_slice(&[0; 5]); // only 5 bytes
+        let result = Mpint::decode_length_prefixed(&data);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("too short"));
+    }
+
+    #[test]
+    fn test_decode_length_prefixed_with_remaining() {
+        let n = BigUint::from(255u32);
+        let mut data = Mpint::encode_length_prefixed(&n);
+        data.extend_from_slice(&[0xDE, 0xAD]); // trailing data
+        let (decoded, remaining) = Mpint::decode_length_prefixed(&data).unwrap();
+        assert_eq!(decoded, n);
+        assert_eq!(remaining, &[0xDE, 0xAD]);
+    }
+
+    // --- DH Group 1 shared secret ---
+
+    #[test]
+    fn test_dh_group1_shared_secret() {
+        let group = DhGroup::group1();
+        let mut rng = OsRng;
+        let x = group.generate_private_key(&mut rng, 160);
+        let x_pub = group.compute_public_key(&x);
+        let y = group.generate_private_key(&mut rng, 160);
+        let y_pub = group.compute_public_key(&y);
+        let client_k = group.compute_shared_secret(&y_pub, &x);
+        let server_k = group.compute_shared_secret(&x_pub, &y);
+        assert_eq!(client_k, server_k);
+        assert!(!client_k.is_zero());
+    }
+
+    // --- compute_dh_hash with all algorithms ---
+
+    #[test]
+    fn test_dh_hash_sha1() {
+        let k = BigUint::from(42u32);
+        let h = b"session";
+        let hash = compute_dh_hash(&k, h, protocol::HashAlgorithm::Sha1);
+        assert_eq!(hash.len(), 20); // SHA-1 = 20 bytes
+    }
+
+    #[test]
+    fn test_dh_hash_sha384() {
+        let k = BigUint::from(42u32);
+        let h = b"session";
+        let hash = compute_dh_hash(&k, h, protocol::HashAlgorithm::Sha384);
+        assert_eq!(hash.len(), 48); // SHA-384 = 48 bytes
+    }
+
+    #[test]
+    fn test_dh_hash_sha512() {
+        let k = BigUint::from(42u32);
+        let h = b"session";
+        let hash = compute_dh_hash(&k, h, protocol::HashAlgorithm::Sha512);
+        assert_eq!(hash.len(), 64); // SHA-512 = 64 bytes
+    }
+
+    #[test]
+    fn test_dh_hash_deterministic() {
+        let k = BigUint::from(12345u32);
+        let h = b"test_hash";
+        let hash1 = compute_dh_hash(&k, h, protocol::HashAlgorithm::Sha256);
+        let hash2 = compute_dh_hash(&k, h, protocol::HashAlgorithm::Sha256);
+        assert_eq!(hash1, hash2);
+    }
+
+    // --- derive_keys ---
+
+    #[test]
+    fn test_derive_keys() {
+        let k = BigUint::from(999u32);
+        let h = b"session_id_data";
+        let (enc, mac, iv) = derive_keys(&k, h, 32, 32, 16, protocol::HashAlgorithm::Sha256).unwrap();
+        assert_eq!(enc.len(), 32);
+        assert_eq!(mac.len(), 32);
+        assert_eq!(iv.len(), 16);
+    }
+
+    #[test]
+    fn test_derive_keys_sha1() {
+        let k = BigUint::from(42u32);
+        let h = b"hash";
+        let (enc, mac, iv) = derive_keys(&k, h, 16, 20, 16, protocol::HashAlgorithm::Sha1).unwrap();
+        assert_eq!(enc.len(), 16);
+        assert_eq!(mac.len(), 20);
+        assert_eq!(iv.len(), 16);
+    }
+
+    #[test]
+    fn test_derive_keys_deterministic() {
+        let k = BigUint::from(42u32);
+        let h = b"deterministic_test";
+        let (enc1, mac1, iv1) = derive_keys(&k, h, 32, 32, 16, protocol::HashAlgorithm::Sha256).unwrap();
+        let (enc2, mac2, iv2) = derive_keys(&k, h, 32, 32, 16, protocol::HashAlgorithm::Sha256).unwrap();
+        assert_eq!(enc1, enc2);
+        assert_eq!(mac1, mac2);
+        assert_eq!(iv1, iv2);
+    }
+
+    // --- DhGroup clone/debug ---
+
+    #[test]
+    fn test_dh_group_clone() {
+        let g1 = DhGroup::group14();
+        let g2 = g1.clone();
+        assert_eq!(g1.p, g2.p);
+        assert_eq!(g1.g, g2.g);
+    }
+
+    #[test]
+    fn test_dh_group_debug() {
+        let group = DhGroup::group1();
+        let debug = format!("{:?}", group);
+        assert!(debug.contains("DhGroup"));
+    }
 }
