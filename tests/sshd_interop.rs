@@ -300,29 +300,15 @@ fn test_ed25519_auth_against_real_sshd() {
                 .with_private_key(key_data);
         auth.available_methods.insert("publickey".to_string());
 
-        let result = auth.authenticate().await;
+        let result = auth.authenticate().await
+            .expect("Ed25519 auth should not error");
 
-        // Note: Ed25519 pubkey auth may not be implemented in Authenticator
-        // (it currently only handles RSA keys in try_publickey_auth).
-        // If it fails, log and don't panic — this documents the gap.
-        match result {
-            Ok(ayssh::auth::AuthenticationResult::Success) => {
-                eprintln!("[sshd_interop] Ed25519 pubkey auth SUCCESS");
-            }
-            Ok(ayssh::auth::AuthenticationResult::Failure { .. }) => {
-                eprintln!(
-                    "[sshd_interop] Ed25519 pubkey auth returned Failure \
-                     (expected — Authenticator only supports RSA pubkey currently)"
-                );
-            }
-            Err(e) => {
-                eprintln!(
-                    "[sshd_interop] Ed25519 pubkey auth error: {} \
-                     (expected — Authenticator only supports RSA pubkey currently)",
-                    e
-                );
-            }
-        }
+        assert!(
+            matches!(result, ayssh::auth::AuthenticationResult::Success),
+            "Ed25519 pubkey auth should succeed, got {:?}",
+            result
+        );
+        eprintln!("[sshd_interop] Ed25519 pubkey auth SUCCESS");
     });
 }
 

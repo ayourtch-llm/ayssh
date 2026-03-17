@@ -185,23 +185,26 @@ impl<'a> Authenticator<'a> {
     }
 
     /// Tries public key authentication.
-    /// Attempts rsa-sha2-256 first (modern OpenSSH), falls back to ssh-rsa (legacy Cisco).
+    /// Supports RSA (rsa-sha2-256, ssh-rsa), Ed25519, and ECDSA keys.
     async fn try_publickey_auth(&mut self, private_key_pem: &[u8]) -> Result<AuthenticationResult, SshError> {
-        let private_key = self.parse_private_key(private_key_pem)?;
-        let public_key_blob = self.extract_public_key_blob(&private_key)?;
+        use crate::auth::key::PrivateKey;
 
-        // Try rsa-sha2-256 first (required by OpenSSH 8.8+), then ssh-rsa fallback
-        for algorithm in &["rsa-sha2-256", "ssh-rsa"] {
+        let pem_content = String::from_utf8_lossy(private_key_pem);
+        let private_key = PrivateKey::parse_pem(&pem_content)
+            .map_err(|e| SshError::CryptoError(format!("Failed to parse private key: {}", e)))?;
+
+        let public_key_blob = private_key.ssh_public_key_blob()?;
+        let algorithms = private_key.ssh_algorithm_names();
+
+        for algorithm in &algorithms {
             debug!("Trying publickey auth with algorithm: {}", algorithm);
 
-            // The public key blob always uses "ssh-rsa" as the key type inside,
-            // but the algorithm in the auth request can be "rsa-sha2-256"
             let mut msg = Message::new();
             msg.write_byte(MessageType::UserauthRequest.value());
             msg.write_string(self.username.as_bytes());
             msg.write_string(b"ssh-connection");
             msg.write_string(b"publickey");
-            msg.write_bool(false); // no signature yet
+            msg.write_bool(false); // no signature yet (probe)
             msg.write_string(algorithm.as_bytes());
             msg.write_string(&public_key_blob);
 
@@ -215,7 +218,7 @@ impl<'a> Authenticator<'a> {
                 Some(MessageType::UserauthInfoRequest) => {
                     // Message 60 = SSH_MSG_USERAUTH_PK_OK
                     debug!("Server accepted public key with {}, sending signature", algorithm);
-                    return self.send_signature_with_algo(private_key, &public_key_blob, algorithm).await;
+                    return self.send_signed_auth(&private_key, &public_key_blob, algorithm).await;
                 }
                 Some(MessageType::UserauthFailure) => {
                     debug!("Server rejected {} algorithm, trying next", algorithm);
@@ -234,74 +237,11 @@ impl<'a> Authenticator<'a> {
         })
     }
 
-    /// Parses OpenSSH private key to extract RSA private key
-    fn parse_private_key(&self, private_key_pem: &[u8]) -> Result<rsa::RsaPrivateKey, SshError> {
-        use crate::auth::key::PrivateKey;
-        
-        // Convert private key bytes to string for parsing
-        let pem_content = String::from_utf8_lossy(private_key_pem);
-        
-        // Try to parse as OpenSSH format
-        match PrivateKey::parse_pem(&pem_content.to_string()) {
-            Ok(key) => {
-                // Extract RSA private key from the parsed key
-                if let PrivateKey::Rsa(rsa_key) = key {
-                    Ok(rsa_key)
-                } else {
-                    Err(SshError::CryptoError(
-                        "Parsed key is not an RSA key".to_string()
-                    ))
-                }
-            }
-            Err(e) => {
-                eprintln!("Failed to parse OpenSSH private key: {:?}", e);
-                Err(SshError::CryptoError(
-                    format!("Failed to parse private key: {:?}", e)
-                ))
-            }
-        }
-    }
-
-    /// Extracts public key blob from RSA private key.
-    /// Encodes as SSH wire format: string("ssh-rsa") || mpint(e) || mpint(n)
-    fn extract_public_key_blob(&self, private_key: &rsa::RsaPrivateKey) -> Result<Vec<u8>, SshError> {
-        use rsa::traits::PublicKeyParts;
-        use bytes::{BufMut, BytesMut};
-
-        // Helper: encode a BigUint as SSH mpint (with 0x00 prefix if high bit set)
-        fn put_mpint(buf: &mut BytesMut, value: &[u8]) {
-            if !value.is_empty() && (value[0] & 0x80) != 0 {
-                buf.put_u32((value.len() + 1) as u32);
-                buf.put_u8(0x00);
-                buf.put_slice(value);
-            } else {
-                buf.put_u32(value.len() as u32);
-                buf.put_slice(value);
-            }
-        }
-
-        let mut buf = BytesMut::new();
-
-        // Public key algorithm string
-        buf.put_u32(b"ssh-rsa".len() as u32);
-        buf.put_slice(b"ssh-rsa");
-
-        // Public exponent e (as mpint)
-        let e = private_key.e().to_bytes_be();
-        put_mpint(&mut buf, &e);
-
-        // Modulus n (as mpint)
-        let n = private_key.n().to_bytes_be();
-        put_mpint(&mut buf, &n);
-
-        Ok(buf.to_vec())
-    }
-
-    /// Sends signature for public key authentication using the specified algorithm.
-    /// "ssh-rsa" uses SHA-1, "rsa-sha2-256" uses SHA-256.
-    async fn send_signature_with_algo(
+    /// Send the signed USERAUTH_REQUEST after receiving PK_OK.
+    /// Works for all key types (RSA, Ed25519, ECDSA).
+    async fn send_signed_auth(
         &mut self,
-        private_key: rsa::RsaPrivateKey,
+        private_key: &key::PrivateKey,
         public_key_blob: &[u8],
         algorithm: &str,
     ) -> Result<AuthenticationResult, SshError> {
@@ -320,14 +260,9 @@ impl<'a> Authenticator<'a> {
             public_key_blob,
         );
 
-        debug!("Creating RSA signature ({}) over {} bytes of data", algorithm, signature_data.len());
+        debug!("Creating {} signature over {} bytes of data", algorithm, signature_data.len());
 
-        // Sign with the appropriate hash algorithm
-        let signature = match algorithm {
-            "rsa-sha2-256" => RsaSignatureEncoder::encode_sha256(&private_key, &signature_data)?,
-            _ => RsaSignatureEncoder::encode(&private_key, &signature_data)?,
-        };
-
+        let signature = private_key.sign_with_algorithm(&signature_data, algorithm)?;
         debug!("Signature encoded successfully ({} bytes)", signature.data.len());
 
         let mut msg = Message::new();

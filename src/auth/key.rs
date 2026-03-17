@@ -390,23 +390,54 @@ impl PrivateKey {
                 Ok(PrivateKey::Rsa(rsa_key))
             }
             "ssh-ed25519" => {
-                // Ed25519 format in private key blob:
-                // See ssh-ed25519.c:ssh_ed25519_deserialize_private
-                // Format: [32-byte public key][64-byte private key (seed + pubkey)]
-                if priv_key_blob.len() >= 96 {
-                    // Skip first 32 bytes (public key), take next 64 bytes (seed + pubkey)
-                    let private_data = &priv_key_blob[32..96];
-                    // First 32 bytes is the seed
-                    let mut seed = [0u8; 32];
-                    seed.copy_from_slice(&private_data[0..32]);
-                    let signing_key = ed25519_dalek::SigningKey::from_bytes(&seed);
-                    Ok(PrivateKey::Ed25519(signing_key))
-                } else {
-                    Err(SshError::CryptoError(format!(
-                        "Invalid Ed25519 key length: expected >= 96 bytes, got {}",
-                        priv_key_blob.len()
-                    )))
+                // OpenSSH Ed25519 private key blob format:
+                // uint32 checkint1, uint32 checkint2,
+                // string key_type ("ssh-ed25519"),
+                // string pubkey (32 bytes),
+                // string privkey (64 bytes: seed || pubkey),
+                // string comment, padding
+                let mut cursor = Cursor::new(&priv_key_blob);
+
+                // Skip checkints (8 bytes)
+                let mut skip = [0u8; 8];
+                cursor.read_exact(&mut skip)
+                    .map_err(|_| SshError::CryptoError("Ed25519: cannot read checkints".into()))?;
+
+                // Skip key_type string
+                let mut len_buf = [0u8; 4];
+                cursor.read_exact(&mut len_buf)
+                    .map_err(|_| SshError::CryptoError("Ed25519: cannot read key_type length".into()))?;
+                let kt_len = u32::from_be_bytes(len_buf) as usize;
+                let mut kt_data = vec![0u8; kt_len];
+                cursor.read_exact(&mut kt_data)
+                    .map_err(|_| SshError::CryptoError("Ed25519: cannot read key_type".into()))?;
+
+                // Skip pubkey string (32 bytes)
+                cursor.read_exact(&mut len_buf)
+                    .map_err(|_| SshError::CryptoError("Ed25519: cannot read pubkey length".into()))?;
+                let pk_len = u32::from_be_bytes(len_buf) as usize;
+                let mut pk_data = vec![0u8; pk_len];
+                cursor.read_exact(&mut pk_data)
+                    .map_err(|_| SshError::CryptoError("Ed25519: cannot read pubkey".into()))?;
+
+                // Read privkey string (64 bytes: seed || pubkey)
+                cursor.read_exact(&mut len_buf)
+                    .map_err(|_| SshError::CryptoError("Ed25519: cannot read privkey length".into()))?;
+                let priv_len = u32::from_be_bytes(len_buf) as usize;
+                if priv_len < 32 {
+                    return Err(SshError::CryptoError(format!(
+                        "Ed25519: privkey too short: {} bytes", priv_len
+                    )));
                 }
+                let mut priv_data = vec![0u8; priv_len];
+                cursor.read_exact(&mut priv_data)
+                    .map_err(|_| SshError::CryptoError("Ed25519: cannot read privkey".into()))?;
+
+                // First 32 bytes of privkey is the seed
+                let mut seed = [0u8; 32];
+                seed.copy_from_slice(&priv_data[0..32]);
+                let signing_key = ed25519_dalek::SigningKey::from_bytes(&seed);
+                Ok(PrivateKey::Ed25519(signing_key))
             }
             "ecdsa-sha2-nistp256" | "ecdsa-sha2-nistp384" | "ecdsa-sha2-nistp521" => {
                 // ECDSA private key blob format (OpenSSH):
@@ -684,7 +715,133 @@ impl PrivateKey {
         }
     }
 
+    /// Get the SSH algorithm names to try for this key type.
+    /// Returns a list in preference order (first is preferred).
+    pub fn ssh_algorithm_names(&self) -> Vec<&'static str> {
+        match self {
+            PrivateKey::Rsa(_) => vec!["rsa-sha2-256", "ssh-rsa"],
+            PrivateKey::Ed25519(_) => vec!["ssh-ed25519"],
+            PrivateKey::Ecdsa(curve, _) => vec![match curve {
+                EcdsaCurve::Nistp256 => "ecdsa-sha2-nistp256",
+                EcdsaCurve::Nistp384 => "ecdsa-sha2-nistp384",
+                EcdsaCurve::Nistp521 => "ecdsa-sha2-nistp521",
+            }],
+        }
+    }
+
+    /// Encode the public key as an SSH wire-format blob (4-byte length-prefixed strings).
+    /// This is the blob sent in USERAUTH_REQUEST per RFC 4252 Section 7.
+    pub fn ssh_public_key_blob(&self) -> Result<Vec<u8>, SshError> {
+        use bytes::{BufMut, BytesMut};
+
+        fn put_string(buf: &mut BytesMut, data: &[u8]) {
+            buf.put_u32(data.len() as u32);
+            buf.put_slice(data);
+        }
+
+        fn put_mpint(buf: &mut BytesMut, value: &[u8]) {
+            if !value.is_empty() && (value[0] & 0x80) != 0 {
+                buf.put_u32((value.len() + 1) as u32);
+                buf.put_u8(0x00);
+                buf.put_slice(value);
+            } else {
+                buf.put_u32(value.len() as u32);
+                buf.put_slice(value);
+            }
+        }
+
+        let mut buf = BytesMut::new();
+
+        match self {
+            PrivateKey::Rsa(key) => {
+                use rsa::traits::PublicKeyParts;
+                put_string(&mut buf, b"ssh-rsa");
+                let e = key.e().to_bytes_be();
+                put_mpint(&mut buf, &e);
+                let n = key.n().to_bytes_be();
+                put_mpint(&mut buf, &n);
+            }
+            PrivateKey::Ed25519(key) => {
+                put_string(&mut buf, b"ssh-ed25519");
+                let public_key = key.verifying_key();
+                put_string(&mut buf, public_key.as_bytes());
+            }
+            PrivateKey::Ecdsa(curve, scalar) => {
+                use k256::elliptic_curve::sec1::ToEncodedPoint;
+                let (algo, curve_name, pubkey_bytes) = match curve {
+                    EcdsaCurve::Nistp256 => {
+                        let secret = k256::SecretKey::from_slice(scalar)
+                            .map_err(|e| SshError::CryptoError(format!("P-256 key error: {}", e)))?;
+                        let point = secret.public_key().to_encoded_point(false);
+                        ("ecdsa-sha2-nistp256", "nistp256", point.as_bytes().to_vec())
+                    }
+                    EcdsaCurve::Nistp384 => {
+                        use p384::elliptic_curve::sec1::ToEncodedPoint as _;
+                        let secret = p384::SecretKey::from_slice(scalar)
+                            .map_err(|e| SshError::CryptoError(format!("P-384 key error: {}", e)))?;
+                        let point = secret.public_key().to_encoded_point(false);
+                        ("ecdsa-sha2-nistp384", "nistp384", point.as_bytes().to_vec())
+                    }
+                    EcdsaCurve::Nistp521 => {
+                        use p521::elliptic_curve::sec1::ToEncodedPoint as _;
+                        let secret = p521::SecretKey::from_slice(scalar)
+                            .map_err(|e| SshError::CryptoError(format!("P-521 key error: {}", e)))?;
+                        let point = secret.public_key().to_encoded_point(false);
+                        ("ecdsa-sha2-nistp521", "nistp521", point.as_bytes().to_vec())
+                    }
+                };
+                put_string(&mut buf, algo.as_bytes());
+                put_string(&mut buf, curve_name.as_bytes());
+                put_string(&mut buf, &pubkey_bytes);
+            }
+        }
+
+        Ok(buf.to_vec())
+    }
+
+    /// Sign data with this private key, returning an SshSignature.
+    pub fn sign(&self, data: &[u8]) -> Result<crate::auth::signature::SshSignature, SshError> {
+        use crate::auth::signature::*;
+        match self {
+            PrivateKey::Rsa(key) => RsaSignatureEncoder::encode_sha256(key, data),
+            PrivateKey::Ed25519(key) => Ed25519SignatureEncoder::encode(key, data),
+            PrivateKey::Ecdsa(curve, scalar) => match curve {
+                EcdsaCurve::Nistp256 => {
+                    let secret = k256::SecretKey::from_slice(scalar)
+                        .map_err(|e| SshError::CryptoError(format!("P-256: {}", e)))?;
+                    let signing_key = k256::ecdsa::SigningKey::from(secret);
+                    EcdsaSignatureEncoder::encode_nistp256(&signing_key, data)
+                }
+                EcdsaCurve::Nistp384 => {
+                    let secret = p384::SecretKey::from_slice(scalar)
+                        .map_err(|e| SshError::CryptoError(format!("P-384: {}", e)))?;
+                    let signing_key = p384::ecdsa::SigningKey::from(secret);
+                    EcdsaSignatureEncoder::encode_nistp384(&signing_key, data)
+                }
+                EcdsaCurve::Nistp521 => {
+                    let signing_key = p521::ecdsa::SigningKey::from_slice(scalar)
+                        .map_err(|e| SshError::CryptoError(format!("P-521: {}", e)))?;
+                    EcdsaSignatureEncoder::encode_nistp521(&signing_key, data)
+                }
+            },
+        }
+    }
+
+    /// Sign data using a specific SSH algorithm name (e.g., "rsa-sha2-256" vs "ssh-rsa").
+    /// For non-RSA keys, the algorithm parameter is ignored.
+    pub fn sign_with_algorithm(&self, data: &[u8], algorithm: &str) -> Result<crate::auth::signature::SshSignature, SshError> {
+        use crate::auth::signature::*;
+        match self {
+            PrivateKey::Rsa(key) => match algorithm {
+                "rsa-sha2-256" => RsaSignatureEncoder::encode_sha256(key, data),
+                _ => RsaSignatureEncoder::encode(key, data),
+            },
+            _ => self.sign(data),
+        }
+    }
+
     /// Get public key blob (SSH format)
+    /// NOTE: Uses 1-byte length encoding (legacy). Prefer ssh_public_key_blob() for wire format.
     pub fn to_public_key(&self) -> Result<PublicKey, SshError> {
         match self {
             PrivateKey::Rsa(key) => {
@@ -881,5 +1038,35 @@ mod tests {
     fn test_invalid_pem_returns_error() {
         let result = PrivateKey::parse_pem("not a valid key");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_ed25519_ssh_public_key_blob_matches_ssh_keygen() {
+        use base64::Engine;
+        let pub_content = std::fs::read_to_string("tests/keys/test_ed25519.pub").unwrap();
+        let parts: Vec<&str> = pub_content.trim().splitn(3, ' ').collect();
+        let expected_blob = base64::engine::general_purpose::STANDARD.decode(parts[1]).unwrap();
+
+        let pem = std::fs::read_to_string("tests/keys/test_ed25519").unwrap();
+        let key = PrivateKey::parse_pem(&pem).unwrap();
+        let our_blob = key.ssh_public_key_blob().unwrap();
+
+        assert_eq!(our_blob, expected_blob,
+            "Ed25519 public key blob must match ssh-keygen output");
+    }
+
+    #[test]
+    fn test_rsa_ssh_public_key_blob_matches_ssh_keygen() {
+        use base64::Engine;
+        let pub_content = std::fs::read_to_string("tests/keys/test_rsa_2048.pub").unwrap();
+        let parts: Vec<&str> = pub_content.trim().splitn(3, ' ').collect();
+        let expected_blob = base64::engine::general_purpose::STANDARD.decode(parts[1]).unwrap();
+
+        let pem = std::fs::read_to_string("tests/keys/test_rsa_2048").unwrap();
+        let key = PrivateKey::parse_pem(&pem).unwrap();
+        let our_blob = key.ssh_public_key_blob().unwrap();
+
+        assert_eq!(our_blob, expected_blob,
+            "RSA public key blob must match ssh-keygen output");
     }
 }

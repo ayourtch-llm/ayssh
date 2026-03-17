@@ -232,28 +232,20 @@ impl EcdsaSignatureEncoder {
 pub struct Ed25519SignatureEncoder;
 
 impl Ed25519SignatureEncoder {
-    /// Encode Ed25519 signature
+    /// Encode Ed25519 signature.
+    /// Returns SshSignature with algorithm="ssh-ed25519" and data=raw 64-byte signature.
+    /// The caller uses SshSignature::encode() to produce the wire format:
+    /// string("ssh-ed25519") || string(64-byte-sig)
     pub fn encode(
         private_key: &ed25519_dalek::SigningKey,
         data: &[u8],
     ) -> Result<SshSignature, SshError> {
         use ed25519_dalek::Signer;
-        
-        // Sign the data
+
         let signature = private_key.sign(data);
-        
-        let mut buf = BytesMut::new();
-        
-        // Algorithm name (4-byte length prefix)
-        buf.put_u32(SSH_SIG_ALGORITHM_ED25519.len() as u32);
-        buf.put_slice(SSH_SIG_ALGORITHM_ED25519.as_bytes());
-        
-        // Signature (64 bytes) as a string
         let sig_bytes = signature.to_bytes();
-        buf.put_u32(sig_bytes.len() as u32);
-        buf.put_slice(&sig_bytes);
-        
-        Ok(SshSignature::new(SSH_SIG_ALGORITHM_ED25519, buf.to_vec()))
+
+        Ok(SshSignature::new(SSH_SIG_ALGORITHM_ED25519, sig_bytes.to_vec()))
     }
 }
 
