@@ -1,4 +1,4 @@
-use ayssh::crypto::packet::{calculate_padding, Packet, PacketWriter};
+use ayssh::crypto::packet::{calculate_padding, Packet};
 
 #[test]
 fn test_packet_construction() {
@@ -59,21 +59,15 @@ fn test_packet_struct_size() {
 #[test]
 fn test_packet_with_message_type() {
     // SSH messages start with a message type byte
-    let message_type = vec![0x01]; // SSH_MSG_DISCONNECT
-    let mut writer = PacketWriter::new();
-    writer.write_payload(&message_type);
-
-    let packet = writer.build();
-    assert_eq!(packet.length, 1);
+    let packet = Packet::with_message_type(0x01, vec![]); // SSH_MSG_DISCONNECT
     assert_eq!(packet.payload[0], 0x01);
+    assert_eq!(packet.length, 1);
 }
 
 #[test]
 fn test_packet_padding_bounds() {
     for _ in 0..100 {
-        let mut writer = PacketWriter::new();
-        writer.write_payload(&[1, 2, 3, 4]);
-        let packet = writer.build();
+        let packet = Packet::new(vec![1, 2, 3, 4]);
 
         assert!(packet.padding.len() >= 4, "Padding too small");
         assert!(packet.padding.len() <= 255, "Padding too large");
