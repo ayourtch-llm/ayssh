@@ -681,7 +681,7 @@ impl ChannelRequest {
             "exec" => {
                 let command = msg.read_string_slice(offset)
                     .ok_or_else(|| "Failed to read command")?;
-                offset += 4 + command.len();
+                let _offset = offset + 4 + command.len();
                 ChannelRequest::Exec { command: command.to_string() }
             }
             "pty-req" => {
