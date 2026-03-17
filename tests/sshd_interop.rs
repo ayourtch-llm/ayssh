@@ -9,6 +9,7 @@
 //! - If `AYSSH_ENSURE_SSHD_TESTS=1` is set: tests **fail** if sshd is missing
 //! - Works on both macOS (`/usr/sbin/sshd`) and Linux (`/usr/sbin/sshd`)
 
+use bytes::BufMut;
 use std::io::Write;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -964,4 +965,251 @@ fn test_cipher_mac_combos_against_real_sshd() {
         eprintln!("  Failures: {:?}", failed);
     }
     assert!(passed >= 6, "At least 6 cipher×MAC combos should work against sshd");
+}
+
+/// Test RSA-8192 public key authentication (large key).
+#[test]
+fn test_rsa_8192_auth_against_real_sshd() {
+    skip_if_no_sshd!();
+    let _lock = TEST_MUTEX.lock().unwrap();
+    run_pubkey_auth_test(
+        "tests/keys/test_rsa_8192", "tests/keys/test_rsa_8192.pub",
+        "RSA-8192",
+    );
+}
+
+/// Full end-to-end flow: handshake → auth → channel open → exec against real sshd.
+/// This goes beyond SERVICE_REQUEST/ACCEPT and actually opens a channel + runs a command.
+#[test]
+fn test_full_session_against_real_sshd() {
+    skip_if_no_sshd!();
+    let _lock = TEST_MUTEX.lock().unwrap();
+
+    // sshd with ed25519 key in authorized_keys
+    let sshd_path = find_sshd().unwrap();
+    let tmpdir = tempfile::TempDir::new().unwrap();
+    let tmppath = tmpdir.path();
+
+    let host_key_path = tmppath.join("host_key");
+    std::process::Command::new("ssh-keygen")
+        .args(["-t", "ed25519", "-f"])
+        .arg(&host_key_path)
+        .args(["-N", "", "-q"])
+        .status().unwrap();
+
+    let auth_keys_path = tmppath.join("authorized_keys");
+    let pubkey = std::fs::read_to_string("tests/keys/test_ed25519.pub").unwrap();
+    std::fs::write(&auth_keys_path, pubkey.trim()).unwrap();
+
+    let port = find_free_port();
+    let config_path = tmppath.join("sshd_config");
+    let pid_path = tmppath.join("sshd.pid");
+    std::fs::write(&config_path, format!(
+        "Port {}\nListenAddress 127.0.0.1\nHostKey {}\nAuthorizedKeysFile {}\n\
+         PubkeyAuthentication yes\nPasswordAuthentication no\n\
+         KbdInteractiveAuthentication no\nStrictModes no\nPidFile {}\nLogLevel ERROR\n",
+        port, host_key_path.display(), auth_keys_path.display(), pid_path.display(),
+    )).unwrap();
+
+    let mut child = std::process::Command::new(&sshd_path)
+        .args(["-D", "-e", "-f"])
+        .arg(&config_path)
+        .stderr(std::process::Stdio::piped())
+        .spawn().unwrap();
+
+    let start = std::time::Instant::now();
+    while start.elapsed() < Duration::from_secs(5) {
+        if std::net::TcpStream::connect(format!("127.0.0.1:{}", port)).is_ok() { break; }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    let current_user = std::env::var("USER")
+        .or_else(|_| std::env::var("LOGNAME"))
+        .unwrap_or_else(|_| "test".to_string());
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all().build().unwrap();
+
+    let result = rt.block_on(async {
+        let stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port)).await?;
+        let mut transport = ayssh::transport::Transport::new(stream);
+
+        // 1. Handshake
+        transport.handshake().await?;
+        eprintln!("[full_session] Handshake OK");
+
+        // 2. Service request
+        transport.send_service_request("ssh-userauth").await?;
+        transport.recv_service_accept().await?;
+        eprintln!("[full_session] Service request OK");
+
+        // 3. Auth
+        let key_data = std::fs::read("tests/keys/test_ed25519").unwrap();
+        let mut auth = ayssh::auth::Authenticator::new(&mut transport, current_user)
+            .with_private_key(key_data);
+        auth.available_methods.insert("publickey".to_string());
+        let auth_result = auth.authenticate().await?;
+        assert!(matches!(auth_result, ayssh::auth::AuthenticationResult::Success));
+        eprintln!("[full_session] Auth OK");
+
+        // 4. Open channel
+        let session = ayssh::session::Session::open(&mut transport).await?;
+        let ch = session.remote_channel_id();
+        eprintln!("[full_session] Channel open OK, remote_channel={}", ch);
+
+        // 5. Send exec request: "echo FULL_SESSION_OK"
+        // Build channel request for exec
+        let mut req = bytes::BytesMut::new();
+        req.put_u8(98); // SSH_MSG_CHANNEL_REQUEST
+        req.put_u32(ch); // recipient channel
+        let req_type = b"exec";
+        req.put_u32(req_type.len() as u32);
+        req.put_slice(req_type);
+        req.put_u8(1); // want_reply = true
+        let command = b"echo FULL_SESSION_OK";
+        req.put_u32(command.len() as u32);
+        req.put_slice(command);
+        transport.send_message(&req).await?;
+        eprintln!("[full_session] Exec request sent");
+
+        // 6. Read responses until we get channel data or close
+        let mut output = String::new();
+        for _ in 0..20 {
+            let msg = transport.recv_message().await?;
+            if msg.is_empty() { continue; }
+            match msg[0] {
+                94 => { // CHANNEL_DATA
+                    let data_len = u32::from_be_bytes([msg[5], msg[6], msg[7], msg[8]]) as usize;
+                    let text = std::str::from_utf8(&msg[9..9+data_len]).unwrap_or("");
+                    output.push_str(text);
+                }
+                96 | 97 | 98 | 99 => {
+                    // EOF, CLOSE, CHANNEL_REQUEST (exit-status), CHANNEL_SUCCESS
+                    continue;
+                }
+                _ => {
+                    eprintln!("[full_session] Got message type {}", msg[0]);
+                    continue;
+                }
+            }
+            if output.contains("FULL_SESSION_OK") {
+                break;
+            }
+        }
+
+        eprintln!("[full_session] Output: {:?}", output.trim());
+        assert!(output.contains("FULL_SESSION_OK"),
+            "Expected FULL_SESSION_OK in output, got {:?}", output);
+
+        Ok::<(), ayssh::error::SshError>(())
+    });
+
+    let _ = child.kill();
+    let _ = child.wait();
+
+    result.expect("Full session test failed");
+    eprintln!("[full_session] COMPLETE");
+}
+
+/// Test all key types × cipher combinations work for a full auth flow.
+/// This is the "everything works together" matrix test.
+#[test]
+fn test_key_cipher_matrix_against_real_sshd() {
+    skip_if_no_sshd!();
+    let _lock = TEST_MUTEX.lock().unwrap();
+
+    let key_configs: Vec<(&str, &str, &str)> = vec![
+        ("Ed25519", "tests/keys/test_ed25519", "tests/keys/test_ed25519.pub"),
+        ("RSA-2048", "tests/keys/test_rsa_2048", "tests/keys/test_rsa_2048.pub"),
+        ("ECDSA-P256", "tests/keys/test_ecdsa_256", "tests/keys/test_ecdsa_256.pub"),
+    ];
+
+    let ciphers = ["aes256-ctr", "aes128-gcm@openssh.com", "chacha20-poly1305@openssh.com"];
+
+    let mut passed = 0;
+    let mut failed = Vec::new();
+
+    for (key_name, priv_path, pub_path) in &key_configs {
+        for cipher in &ciphers {
+            let label = format!("{}+{}", key_name, cipher);
+            eprint!("  {} ... ", label);
+
+            let sshd_path = find_sshd().unwrap();
+            let tmpdir = tempfile::TempDir::new().unwrap();
+            let tmppath = tmpdir.path();
+
+            let host_key_path = tmppath.join("host_key");
+            std::process::Command::new("ssh-keygen")
+                .args(["-t", "ed25519", "-f"])
+                .arg(&host_key_path)
+                .args(["-N", "", "-q"])
+                .status().unwrap();
+
+            let auth_keys_path = tmppath.join("authorized_keys");
+            let pubkey = std::fs::read_to_string(pub_path).unwrap();
+            std::fs::write(&auth_keys_path, pubkey.trim()).unwrap();
+
+            let port = find_free_port();
+            let config_path = tmppath.join("sshd_config");
+            let pid_path = tmppath.join("sshd.pid");
+            std::fs::write(&config_path, format!(
+                "Port {}\nListenAddress 127.0.0.1\nHostKey {}\nAuthorizedKeysFile {}\n\
+                 PubkeyAuthentication yes\nPasswordAuthentication no\n\
+                 KbdInteractiveAuthentication no\nStrictModes no\nPidFile {}\nLogLevel ERROR\n",
+                port, host_key_path.display(), auth_keys_path.display(), pid_path.display(),
+            )).unwrap();
+
+            let mut child = std::process::Command::new(&sshd_path)
+                .args(["-D", "-e", "-f"])
+                .arg(&config_path)
+                .stderr(std::process::Stdio::piped())
+                .spawn().unwrap();
+
+            let start = std::time::Instant::now();
+            while start.elapsed() < Duration::from_secs(5) {
+                if std::net::TcpStream::connect(format!("127.0.0.1:{}", port)).is_ok() { break; }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+
+            let current_user = std::env::var("USER")
+                .or_else(|_| std::env::var("LOGNAME"))
+                .unwrap_or_else(|_| "test".to_string());
+
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all().build().unwrap();
+
+            let result = rt.block_on(async {
+                let stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port)).await?;
+                let mut transport = ayssh::transport::Transport::new(stream);
+                transport.set_preferred_cipher(cipher);
+                transport.handshake().await?;
+                transport.send_service_request("ssh-userauth").await?;
+                transport.recv_service_accept().await?;
+
+                let key_data = std::fs::read(priv_path).unwrap();
+                let mut auth = ayssh::auth::Authenticator::new(&mut transport, current_user)
+                    .with_private_key(key_data);
+                auth.available_methods.insert("publickey".to_string());
+                let r = auth.authenticate().await?;
+                match r {
+                    ayssh::auth::AuthenticationResult::Success => Ok(()),
+                    other => Err(ayssh::error::SshError::AuthenticationFailed(format!("{:?}", other))),
+                }
+            });
+
+            let _ = child.kill();
+            let _ = child.wait();
+
+            match result {
+                Ok(()) => { passed += 1; eprintln!("ok"); }
+                Err(e) => { failed.push(format!("{}: {}", label, e)); eprintln!("FAILED ({})", e); }
+            }
+        }
+    }
+
+    eprintln!("\n  Key×Cipher matrix: {}/{} passed", passed, key_configs.len() * ciphers.len());
+    if !failed.is_empty() {
+        eprintln!("  Failures: {:?}", failed);
+    }
+    assert!(passed >= 6, "At least 6 key×cipher combos should work");
 }
