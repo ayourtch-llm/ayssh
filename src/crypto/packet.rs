@@ -180,12 +180,17 @@ pub fn calculate_padding(payload_len: usize) -> usize {
         padding_needed += BLOCK_ALIGNMENT;
     }
 
-    // Ensure padding doesn't exceed MAX_PADDING
-    if padding_needed > MAX_PADDING {
-        MAX_PADDING
-    } else {
-        padding_needed
-    }
+    // With BLOCK_ALIGNMENT=8 and MIN_PADDING=4, the maximum padding_needed
+    // is 15 (7 from alignment + 8 from min-padding bump), so this can never
+    // exceed MAX_PADDING(255). Panic if our math is wrong rather than silently
+    // clamping, since that would indicate a logic error.
+    assert!(
+        padding_needed <= MAX_PADDING,
+        "BUG: calculate_padding produced {} bytes (max {}). \
+         With block_align={} and min_pad={}, this should be impossible.",
+        padding_needed, MAX_PADDING, BLOCK_ALIGNMENT, MIN_PADDING
+    );
+    padding_needed
 }
 
 #[cfg(test)]
