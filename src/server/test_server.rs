@@ -113,12 +113,33 @@ impl TestSshServer {
     }
 }
 
+/// Auth behavior for the test server
+#[derive(Debug, Clone)]
+pub enum AuthBehavior {
+    /// Accept any auth attempt
+    AcceptAll,
+    /// Reject auth with USERAUTH_FAILURE
+    RejectPassword { available_methods: String },
+}
+
 /// Perform SSH handshake + auth on a connection.
 /// Returns (ServerEncryptedIO, client_channel_id) ready for data exchange.
 pub async fn server_handshake(
     stream: TcpStream,
     host_key: &HostKeyPair,
     filter: &AlgorithmFilter,
+) -> Result<(ServerEncryptedIO, u32), SshError> {
+    server_handshake_with_auth(stream, host_key, filter, &AuthBehavior::AcceptAll).await
+}
+
+/// Perform SSH handshake with configurable auth behavior.
+/// With AcceptAll, returns (ServerEncryptedIO, client_channel_id) ready for data exchange.
+/// With RejectPassword, sends USERAUTH_FAILURE and returns (io, 0).
+pub async fn server_handshake_with_auth(
+    stream: TcpStream,
+    host_key: &HostKeyPair,
+    filter: &AlgorithmFilter,
+    auth_behavior: &AuthBehavior,
 ) -> Result<(ServerEncryptedIO, u32), SshError> {
     let mut io = ServerEncryptedIO::new(stream);
     let mut send_seq: u32 = 0;
@@ -329,16 +350,32 @@ pub async fn server_handshake(
     io.send_message(&accept).await?;
     debug!("Sent SERVICE_ACCEPT");
 
-    // Step 8: Handle USERAUTH_REQUEST - accept any password
+    // Step 8: Handle USERAUTH_REQUEST
     let auth_req = io.recv_message().await?;
     if auth_req.is_empty() || auth_req[0] != 50 {
         return Err(SshError::ProtocolError(format!("Expected USERAUTH_REQUEST (50), got {}", auth_req.get(0).unwrap_or(&0))));
     }
-    debug!("Received USERAUTH_REQUEST, accepting");
+    debug!("Received USERAUTH_REQUEST");
 
-    // Send USERAUTH_SUCCESS
-    io.send_message(&[52]).await?; // SSH_MSG_USERAUTH_SUCCESS
-    debug!("Sent USERAUTH_SUCCESS");
+    match auth_behavior {
+        AuthBehavior::AcceptAll => {
+            // Send USERAUTH_SUCCESS
+            io.send_message(&[52]).await?; // SSH_MSG_USERAUTH_SUCCESS
+            debug!("Sent USERAUTH_SUCCESS");
+        }
+        AuthBehavior::RejectPassword { available_methods } => {
+            // Send USERAUTH_FAILURE
+            let mut fail_msg = BytesMut::new();
+            fail_msg.put_u8(51); // SSH_MSG_USERAUTH_FAILURE
+            let methods = available_methods.as_bytes();
+            fail_msg.put_u32(methods.len() as u32);
+            fail_msg.put_slice(methods);
+            fail_msg.put_u8(0); // partial_success = false
+            io.send_message(&fail_msg).await?;
+            debug!("Sent USERAUTH_FAILURE");
+            return Ok((io, 0));
+        }
+    }
 
     // Step 9: Handle CHANNEL_OPEN
     let chan_open = io.recv_message().await?;
@@ -822,5 +859,53 @@ mod tests {
         if !failed.is_empty() {
             panic!("Crypto matrix: {} failures:\n  {}", failed.len(), failed.join("\n  "));
         }
+    }
+
+    /// Test that wrong password is properly rejected by the server.
+    #[test]
+    fn test_wrong_password_rejected() {
+        use std::sync::mpsc;
+        let (port_tx, port_rx) = mpsc::channel::<u16>();
+
+        let server = std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all().build().unwrap();
+            rt.block_on(async {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                port_tx.send(listener.local_addr().unwrap().port()).unwrap();
+                let host_key = HostKeyPair::generate_ed25519();
+                let filter = AlgorithmFilter::default();
+                let auth_behavior = AuthBehavior::RejectPassword {
+                    available_methods: "password".to_string(),
+                };
+                let (stream, _) = listener.accept().await.unwrap();
+                server_handshake_with_auth(stream, &host_key, &filter, &auth_behavior).await
+                    .expect("Server handshake failed");
+            });
+        });
+
+        let client = std::thread::spawn(move || {
+            let port = port_rx.recv_timeout(std::time::Duration::from_secs(30)).unwrap();
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all().build().unwrap();
+            rt.block_on(async {
+                let mut transport = crate::transport::Transport::new(
+                    TcpStream::connect(format!("127.0.0.1:{}", port)).await.unwrap()
+                );
+                transport.handshake().await.expect("Handshake failed");
+                transport.send_service_request("ssh-userauth").await.unwrap();
+                transport.recv_service_accept().await.unwrap();
+
+                let mut auth = crate::auth::Authenticator::new(&mut transport, "test".to_string())
+                    .with_password("wrong_password".to_string());
+                auth.available_methods.insert("password".to_string());
+                let r = auth.authenticate().await.unwrap();
+                assert!(matches!(r, crate::auth::AuthenticationResult::Failure { .. }),
+                    "Expected Failure, got {:?}", r);
+            });
+        });
+
+        server.join().expect("Server panicked");
+        client.join().expect("Client panicked");
     }
 }
