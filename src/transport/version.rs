@@ -315,4 +315,121 @@ mod tests {
         let data = b"SSH-2.0-OpenSSH_8.4";
         assert!(parse_version_string(data).is_err());
     }
+
+    // --- Edge cases for parse_version_string ---
+
+    #[test]
+    fn test_parse_version_just_prefix_no_software() {
+        // "SSH-2.0\r\n" — only 2 parts after split by '-', needs at least 3
+        let data = b"SSH-2.0\r\n";
+        let result = parse_version_string(data);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("format"));
+    }
+
+    #[test]
+    fn test_parse_version_protocol_not_a_number() {
+        let data = b"SSH-abc-OpenSSH\r\n";
+        let result = parse_version_string(data);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("protocol version"));
+    }
+
+    #[test]
+    fn test_parse_version_not_ssh_prefix() {
+        let data = b"NOTSH-2.0-foo\r\n";
+        let result = parse_version_string(data);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("prefix"));
+    }
+
+    #[test]
+    fn test_parse_version_ssh_15_rejected() {
+        let data = b"SSH-1.5-OldClient\r\n";
+        let result = parse_version_string(data);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("supported"));
+    }
+
+    #[test]
+    fn test_parse_version_empty_data() {
+        let data = b"\r\n";
+        let result = parse_version_string(data);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_version_only_crlf() {
+        let data = b"\r\n";
+        assert!(parse_version_string(data).is_err());
+    }
+
+    #[test]
+    fn test_parse_version_minimal_valid() {
+        let data = b"SSH-2.0-x\r\n";
+        let (proto, sw) = parse_version_string(data).unwrap();
+        assert_eq!(proto, 2);
+        assert_eq!(sw, "x");
+    }
+
+    // --- parse_server_version ---
+
+    #[test]
+    fn test_parse_server_version_error_propagated() {
+        let data = b"GARBAGE\r\n";
+        assert!(parse_server_version(data).is_err());
+    }
+
+    #[test]
+    fn test_parse_server_version_cisco() {
+        let data = b"SSH-1.99-Cisco-1.25\r\n";
+        let sw = parse_server_version(data).unwrap();
+        assert_eq!(sw, "Cisco-1.25");
+    }
+
+    // --- validate_client_version ---
+
+    #[test]
+    fn test_validate_client_version_valid_199() {
+        let data = b"SSH-1.99-MyClient\r\n";
+        assert!(validate_client_version(data).is_ok());
+    }
+
+    #[test]
+    fn test_validate_client_version_invalid_format() {
+        let data = b"not-a-version\r\n";
+        assert!(validate_client_version(data).is_err());
+    }
+
+    // --- async send/recv version ---
+
+    #[tokio::test]
+    async fn test_send_version_writes_correct_bytes() {
+        let mut buf = Vec::new();
+        send_version(&mut buf).await.unwrap();
+        assert_eq!(buf, SSH_VERSION_STRING.as_bytes());
+    }
+
+    #[tokio::test]
+    async fn test_recv_version_parses_valid() {
+        let data = b"SSH-2.0-TestServer\r\n";
+        let mut cursor = std::io::Cursor::new(data.to_vec());
+        let version = recv_version(&mut cursor).await.unwrap();
+        assert_eq!(version, "SSH-2.0-TestServer\r");  // strips \n but keeps \r
+    }
+
+    #[tokio::test]
+    async fn test_recv_version_empty_stream_fails() {
+        let mut cursor = std::io::Cursor::new(vec![]);
+        let result = recv_version(&mut cursor).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_recv_version_no_newline_fails() {
+        let data = b"SSH-2.0-NoNewline";
+        let mut cursor = std::io::Cursor::new(data.to_vec());
+        let result = recv_version(&mut cursor).await;
+        assert!(result.is_err());
+    }
 }
