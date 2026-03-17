@@ -409,18 +409,35 @@ impl PrivateKey {
                 }
             }
             "ecdsa-sha2-nistp256" | "ecdsa-sha2-nistp384" | "ecdsa-sha2-nistp521" => {
-                // ECDSA key - extract from private key blob
-                // Format: 32-bit curve name length + curve name + 32-bit scalar length + scalar
-                let mut ec_cursor = Cursor::new(&priv_key_blob[32..]); // Skip 32-byte public key
-                let mut curve_len_buf = [0u8; 4];
-                ec_cursor.read_exact(&mut curve_len_buf)
-                    .map_err(|_| SshError::CryptoError("Invalid curve name: cannot read length".into()))?;
-                let curve_len = u32::from_be_bytes(curve_len_buf) as usize;
+                // ECDSA private key blob format (OpenSSH):
+                // uint32 checkint1, uint32 checkint2,
+                // string key_type, string curve_name,
+                // string public_key (EC point), string private_key (scalar),
+                // string comment, padding
+                let mut ec_cursor = Cursor::new(&priv_key_blob);
+
+                // Skip checkints (8 bytes)
+                let mut skip = [0u8; 8];
+                ec_cursor.read_exact(&mut skip)
+                    .map_err(|_| SshError::CryptoError("ECDSA: cannot read checkints".into()))?;
+
+                // Skip key_type string
+                let mut len_buf = [0u8; 4];
+                ec_cursor.read_exact(&mut len_buf)
+                    .map_err(|_| SshError::CryptoError("ECDSA: cannot read key_type length".into()))?;
+                let skip_len = u32::from_be_bytes(len_buf) as usize;
+                let mut skip_data = vec![0u8; skip_len];
+                ec_cursor.read_exact(&mut skip_data)
+                    .map_err(|_| SshError::CryptoError("ECDSA: cannot read key_type".into()))?;
+
+                // Read curve_name string
+                ec_cursor.read_exact(&mut len_buf)
+                    .map_err(|_| SshError::CryptoError("ECDSA: cannot read curve_name length".into()))?;
+                let curve_len = u32::from_be_bytes(len_buf) as usize;
                 let mut curve_name = vec![0u8; curve_len];
                 ec_cursor.read_exact(&mut curve_name)
                     .map_err(|_| SshError::CryptoError(format!(
-                        "Invalid curve name: cannot read curve name (len={})",
-                        curve_len
+                        "ECDSA: cannot read curve_name (len={})", curve_len
                     )))?;
 
                 let curve = match curve_name.as_slice() {
@@ -433,15 +450,22 @@ impl PrivateKey {
                     ))),
                 };
 
-                let mut scalar_len_buf = [0u8; 4];
-                ec_cursor.read_exact(&mut scalar_len_buf)
-                    .map_err(|_| SshError::CryptoError("Invalid scalar: cannot read length".into()))?;
-                let scalar_len = u32::from_be_bytes(scalar_len_buf) as usize;
+                // Skip public_key string (EC point)
+                ec_cursor.read_exact(&mut len_buf)
+                    .map_err(|_| SshError::CryptoError("ECDSA: cannot read public_key length".into()))?;
+                let pubkey_len = u32::from_be_bytes(len_buf) as usize;
+                let mut pubkey_data = vec![0u8; pubkey_len];
+                ec_cursor.read_exact(&mut pubkey_data)
+                    .map_err(|_| SshError::CryptoError("ECDSA: cannot read public_key".into()))?;
+
+                // Read private_key scalar
+                ec_cursor.read_exact(&mut len_buf)
+                    .map_err(|_| SshError::CryptoError("ECDSA: cannot read scalar length".into()))?;
+                let scalar_len = u32::from_be_bytes(len_buf) as usize;
                 let mut scalar = vec![0u8; scalar_len];
                 ec_cursor.read_exact(&mut scalar)
                     .map_err(|_| SshError::CryptoError(format!(
-                        "Invalid scalar: cannot read scalar (len={})",
-                        scalar_len
+                        "ECDSA: cannot read scalar (len={})", scalar_len
                     )))?;
 
                 Ok(PrivateKey::Ecdsa(curve, scalar))
@@ -773,34 +797,89 @@ const SSH_ECDSA_NISTP521: &str = "ecdsa-sha2-nistp521";
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
-    use tempfile::NamedTempFile;
 
     #[test]
-    fn test_rsa_key_parsing() {
-        let pem = r#"-----BEGIN RSA PRIVATE KEY-----
-MIIEpAIBAAKCAQEA0Z3VS5JJcds3xfn/ygWyF8PbnGy0AHB7MmE3YvGz
-... (truncated for brevity)
------END RSA PRIVATE KEY-----
-"#;
-
-        // This is a truncated example - would need real key for full test
-        // let key = PrivateKey::parse_pem(pem).unwrap();
-        // assert_eq!(key.key_type(), KeyType::Rsa);
+    fn test_load_rsa_2048_key() {
+        let pem = std::fs::read_to_string("tests/keys/test_rsa_2048").unwrap();
+        let key = PrivateKey::parse_pem(&pem).unwrap();
+        assert_eq!(key.key_type(), KeyType::Rsa);
     }
 
     #[test]
-    fn test_ed25519_key_parsing() {
-        let pem = r#"-----BEGIN OPENSSH PRIVATE KEY-----
-b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZWQy
-NTUxOQAAACBjZGQ3MzE2YzU4YzI0ZDg5YjE2ZjI5ZjI5ZjI5ZjI5ZjI5ZjI5ZjI5ZgAAAAtz
-c2gtZWQyNTUxOQAAACBjZGQ3MzE2YzU4YzI0ZDg5YjE2ZjI5ZjI5ZjI5ZjI5ZjI5ZjI5ZjI5
-ZgAAAA==
------END OPENSSH PRIVATE KEY-----
-"#;
+    fn test_load_rsa_4096_key() {
+        let pem = std::fs::read_to_string("tests/keys/test_rsa_4096").unwrap();
+        let key = PrivateKey::parse_pem(&pem).unwrap();
+        assert_eq!(key.key_type(), KeyType::Rsa);
+    }
 
-        // This is a truncated example - would need real key for full test
-        // let key = PrivateKey::parse_pem(pem).unwrap();
-        // assert_eq!(key.key_type(), KeyType::Ed25519);
+    #[test]
+    fn test_load_rsa_8192_key() {
+        let pem = std::fs::read_to_string("tests/keys/test_rsa_8192").unwrap();
+        let key = PrivateKey::parse_pem(&pem).unwrap();
+        assert_eq!(key.key_type(), KeyType::Rsa);
+    }
+
+    #[test]
+    fn test_load_ed25519_key() {
+        let pem = std::fs::read_to_string("tests/keys/test_ed25519").unwrap();
+        let key = PrivateKey::parse_pem(&pem).unwrap();
+        assert_eq!(key.key_type(), KeyType::Ed25519);
+    }
+
+    #[test]
+    fn test_load_ecdsa_p256_key() {
+        let pem = std::fs::read_to_string("tests/keys/test_ecdsa_256").unwrap();
+        let key = PrivateKey::parse_pem(&pem).unwrap();
+        assert_eq!(key.key_type(), KeyType::Ecdsa(EcdsaCurve::Nistp256));
+    }
+
+    #[test]
+    fn test_load_ecdsa_p384_key() {
+        let pem = std::fs::read_to_string("tests/keys/test_ecdsa_384").unwrap();
+        let key = PrivateKey::parse_pem(&pem).unwrap();
+        assert_eq!(key.key_type(), KeyType::Ecdsa(EcdsaCurve::Nistp384));
+    }
+
+    #[test]
+    fn test_ed25519_key_can_extract_public_key() {
+        let pem = std::fs::read_to_string("tests/keys/test_ed25519").unwrap();
+        let key = PrivateKey::parse_pem(&pem).unwrap();
+        let pub_key = key.to_public_key().unwrap();
+        assert_eq!(pub_key.key_type, KeyType::Ed25519);
+        assert!(!pub_key.blob.is_empty());
+    }
+
+    #[test]
+    fn test_ed25519_key_hash_deterministic() {
+        let pem = std::fs::read_to_string("tests/keys/test_ed25519").unwrap();
+        let key = PrivateKey::parse_pem(&pem).unwrap();
+        let hash1 = key.public_key_hash().unwrap();
+        let hash2 = key.public_key_hash().unwrap();
+        assert_eq!(hash1, hash2);
+        assert_eq!(hash1.len(), 32); // SHA-256
+    }
+
+    #[test]
+    fn test_different_key_types_have_different_hashes() {
+        let rsa_pem = std::fs::read_to_string("tests/keys/test_rsa_2048").unwrap();
+        let ed_pem = std::fs::read_to_string("tests/keys/test_ed25519").unwrap();
+        let rsa_hash = PrivateKey::parse_pem(&rsa_pem).unwrap().public_key_hash().unwrap();
+        let ed_hash = PrivateKey::parse_pem(&ed_pem).unwrap().public_key_hash().unwrap();
+        assert_ne!(rsa_hash, ed_hash);
+    }
+
+    #[test]
+    fn test_ecdsa_p256_key_can_extract_public_key() {
+        let pem = std::fs::read_to_string("tests/keys/test_ecdsa_256").unwrap();
+        let key = PrivateKey::parse_pem(&pem).unwrap();
+        let pub_key = key.to_public_key().unwrap();
+        assert_eq!(pub_key.key_type, KeyType::Ecdsa(EcdsaCurve::Nistp256));
+        assert!(!pub_key.blob.is_empty());
+    }
+
+    #[test]
+    fn test_invalid_pem_returns_error() {
+        let result = PrivateKey::parse_pem("not a valid key");
+        assert!(result.is_err());
     }
 }
