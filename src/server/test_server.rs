@@ -1187,4 +1187,285 @@ mod tests {
         server.join().expect("Server panicked");
         client.join().expect("Client panicked");
     }
+
+    /// Test large data transfer (>32KB) across multiple CHANNEL_DATA messages.
+    /// Exercises the multi-packet data path and verifies data integrity.
+    #[test]
+    fn test_large_data_transfer() {
+        use std::sync::mpsc;
+        let (port_tx, port_rx) = mpsc::channel::<u16>();
+
+        // Generate 100KB of patterned data
+        let total_size: usize = 100 * 1024;
+        let test_data: Vec<u8> = (0..total_size).map(|i| (i % 251) as u8).collect();
+        let test_data_clone = test_data.clone();
+
+        let server = std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all().build().unwrap();
+            rt.block_on(async {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                port_tx.send(listener.local_addr().unwrap().port()).unwrap();
+                let host_key = HostKeyPair::generate_ed25519();
+                let filter = AlgorithmFilter::default();
+                let (stream, _) = listener.accept().await.unwrap();
+                let (mut io, ch) = server_handshake(stream, &host_key, &filter).await
+                    .expect("Server handshake failed");
+
+                // Send data in chunks of 16KB (under max_packet=32KB)
+                let chunk_size = 16 * 1024;
+                for chunk in test_data_clone.chunks(chunk_size) {
+                    let mut msg = BytesMut::new();
+                    msg.put_u8(94); // CHANNEL_DATA
+                    msg.put_u32(ch);
+                    msg.put_u32(chunk.len() as u32);
+                    msg.put_slice(chunk);
+                    io.send_message(&msg).await.unwrap();
+                }
+
+                let mut eof = BytesMut::new();
+                eof.put_u8(96); eof.put_u32(ch);
+                let _ = io.send_message(&eof).await;
+                let mut close = BytesMut::new();
+                close.put_u8(97); close.put_u32(ch);
+                let _ = io.send_message(&close).await;
+            });
+        });
+
+        let client = std::thread::spawn(move || {
+            let port = port_rx.recv_timeout(std::time::Duration::from_secs(30)).unwrap();
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all().build().unwrap();
+            rt.block_on(async {
+                let mut transport = crate::transport::Transport::new(
+                    TcpStream::connect(format!("127.0.0.1:{}", port)).await.unwrap()
+                );
+                transport.handshake().await.unwrap();
+                transport.send_service_request("ssh-userauth").await.unwrap();
+                transport.recv_service_accept().await.unwrap();
+
+                let mut auth = crate::auth::Authenticator::new(&mut transport, "test".to_string())
+                    .with_password("test".to_string());
+                auth.available_methods.insert("password".to_string());
+                auth.authenticate().await.unwrap();
+
+                let session = crate::session::Session::open(&mut transport).await.unwrap();
+                let ch = session.remote_channel_id();
+                transport.send_channel_request(ch, "shell", true).await.unwrap();
+                let _ = transport.recv_message().await.unwrap(); // channel success
+
+                // Read all CHANNEL_DATA messages and reassemble
+                let mut received = Vec::new();
+                loop {
+                    let msg = transport.recv_message().await.unwrap();
+                    if msg.is_empty() { continue; }
+                    match msg[0] {
+                        94 => { // CHANNEL_DATA
+                            let data_len = u32::from_be_bytes([msg[5], msg[6], msg[7], msg[8]]) as usize;
+                            received.extend_from_slice(&msg[9..9+data_len]);
+                        }
+                        96 | 97 => break, // EOF or CLOSE
+                        _ => {}
+                    }
+                }
+
+                // Drain remaining
+                for _ in 0..5 {
+                    match transport.recv_message().await {
+                        Ok(msg) if !msg.is_empty() && msg[0] == 97 => break,
+                        Ok(_) => continue,
+                        Err(_) => break,
+                    }
+                }
+
+                assert_eq!(received.len(), test_data.len(),
+                    "Expected {} bytes, got {}", test_data.len(), received.len());
+                assert_eq!(received, test_data,
+                    "Data mismatch at byte {}", received.iter().zip(test_data.iter())
+                        .position(|(a, b)| a != b).unwrap_or(received.len()));
+            });
+        });
+
+        server.join().expect("Server panicked");
+        client.join().expect("Client panicked");
+    }
+
+    /// Test that the client handles connection timeout (server accepts TCP but never speaks).
+    #[test]
+    fn test_connection_timeout() {
+        use std::sync::mpsc;
+        let (port_tx, port_rx) = mpsc::channel::<u16>();
+
+        // Server: accept TCP connection but never send anything
+        let server = std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all().build().unwrap();
+            rt.block_on(async {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                port_tx.send(listener.local_addr().unwrap().port()).unwrap();
+                let (stream, _) = listener.accept().await.unwrap();
+                // Hold the stream open but never send version string
+                tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                drop(stream);
+            });
+        });
+
+        let client = std::thread::spawn(move || {
+            let port = port_rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all().build().unwrap();
+            rt.block_on(async {
+                let stream = TcpStream::connect(format!("127.0.0.1:{}", port)).await.unwrap();
+                let mut transport = crate::transport::Transport::new(stream);
+
+                // Handshake should timeout or fail (server never sends version)
+                let start = std::time::Instant::now();
+                let result = tokio::time::timeout(
+                    std::time::Duration::from_secs(3),
+                    transport.handshake(),
+                ).await;
+
+                let elapsed = start.elapsed();
+                assert!(elapsed < std::time::Duration::from_secs(5),
+                    "Should timeout within 5s, took {:?}", elapsed);
+
+                match result {
+                    Err(_) => {
+                        // Timeout — expected
+                        eprintln!("[timeout_test] Correctly timed out after {:?}", elapsed);
+                    }
+                    Ok(Err(_)) => {
+                        // Connection error — also acceptable
+                        eprintln!("[timeout_test] Got connection error after {:?}", elapsed);
+                    }
+                    Ok(Ok(())) => {
+                        panic!("Handshake should not succeed against silent server");
+                    }
+                }
+            });
+        });
+
+        client.join().expect("Client panicked");
+        // Don't wait for server — it's sleeping
+        drop(server);
+    }
+
+    /// Test that the client handles server dropping connection mid-handshake.
+    #[test]
+    fn test_server_drops_mid_handshake() {
+        use std::sync::mpsc;
+        let (port_tx, port_rx) = mpsc::channel::<u16>();
+
+        let server = std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all().build().unwrap();
+            rt.block_on(async {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                port_tx.send(listener.local_addr().unwrap().port()).unwrap();
+                let (mut stream, _) = listener.accept().await.unwrap();
+                // Send version string then immediately close
+                use tokio::io::AsyncWriteExt;
+                let _ = stream.write_all(b"SSH-2.0-evil_server\r\n").await;
+                stream.shutdown().await.unwrap();
+            });
+        });
+
+        let client = std::thread::spawn(move || {
+            let port = port_rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all().build().unwrap();
+            rt.block_on(async {
+                let stream = TcpStream::connect(format!("127.0.0.1:{}", port)).await.unwrap();
+                let mut transport = crate::transport::Transport::new(stream);
+                let result = transport.handshake().await;
+                assert!(result.is_err(), "Handshake should fail when server drops mid-handshake");
+                eprintln!("[drop_test] Got expected error: {}", result.unwrap_err());
+            });
+        });
+
+        server.join().expect("Server panicked");
+        client.join().expect("Client panicked");
+    }
+
+    /// Test that the server handles malformed data without crashing.
+    /// Sends garbage bytes after TCP connect — the server should error gracefully.
+    #[test]
+    fn test_server_handles_malformed_data() {
+        use std::sync::mpsc;
+        let (port_tx, port_rx) = mpsc::channel::<u16>();
+
+        let server = std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all().build().unwrap();
+            rt.block_on(async {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                port_tx.send(listener.local_addr().unwrap().port()).unwrap();
+                let host_key = HostKeyPair::generate_ed25519();
+                let filter = AlgorithmFilter::default();
+                let (stream, _) = listener.accept().await.unwrap();
+
+                // server_handshake should fail gracefully, not panic
+                let result = server_handshake(stream, &host_key, &filter).await;
+                assert!(result.is_err(), "Server should reject malformed data");
+                eprintln!("[malformed_test] Server correctly rejected: {}", result.err().unwrap());
+            });
+        });
+
+        let client = std::thread::spawn(move || {
+            let port = port_rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all().build().unwrap();
+            rt.block_on(async {
+                let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port)).await.unwrap();
+                // Send garbage instead of SSH version string
+                use tokio::io::AsyncWriteExt;
+                stream.write_all(b"\x00\x00\x00\xFF GARBAGE DATA NOT SSH\n").await.unwrap();
+                // Give server time to process
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            });
+        });
+
+        // Client thread finishes first
+        client.join().expect("Client panicked");
+        server.join().expect("Server thread panicked (should have handled error gracefully)");
+    }
+
+    /// Test that the server handles premature disconnect without crashing.
+    #[test]
+    fn test_server_handles_premature_disconnect() {
+        use std::sync::mpsc;
+        let (port_tx, port_rx) = mpsc::channel::<u16>();
+
+        let server = std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all().build().unwrap();
+            rt.block_on(async {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                port_tx.send(listener.local_addr().unwrap().port()).unwrap();
+                let host_key = HostKeyPair::generate_ed25519();
+                let filter = AlgorithmFilter::default();
+                let (stream, _) = listener.accept().await.unwrap();
+
+                let result = server_handshake(stream, &host_key, &filter).await;
+                assert!(result.is_err(), "Server should handle disconnect gracefully");
+                eprintln!("[premature_disconnect] Server correctly handled: {}", result.err().unwrap());
+            });
+        });
+
+        let client = std::thread::spawn(move || {
+            let port = port_rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all().build().unwrap();
+            rt.block_on(async {
+                let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port)).await.unwrap();
+                // Send valid version string, then disconnect immediately
+                use tokio::io::AsyncWriteExt;
+                stream.write_all(b"SSH-2.0-test_client\r\n").await.unwrap();
+                stream.shutdown().await.unwrap();
+            });
+        });
+
+        client.join().expect("Client panicked");
+        server.join().expect("Server thread panicked (should have handled disconnect gracefully)");
+    }
 }
