@@ -560,6 +560,18 @@ use tokio::io::AsyncWriteExt;
 mod tests {
     use super::*;
 
+    /// Drain remaining channel messages (EOF, CLOSE) so the server
+    /// doesn't hit broken pipe when the client drops the connection.
+    async fn drain_channel_close(transport: &mut crate::transport::Transport) {
+        for _ in 0..5 {
+            match transport.recv_message().await {
+                Ok(msg) if !msg.is_empty() && msg[0] == 97 => break, // CHANNEL_CLOSE
+                Ok(_) => continue,
+                Err(_) => break,
+            }
+        }
+    }
+
     #[tokio::test]
     async fn test_server_binds_to_random_port() {
         let server = TestSshServer::new(0).await.unwrap();
@@ -641,6 +653,9 @@ mod tests {
                 let len = u32::from_be_bytes([data[5], data[6], data[7], data[8]]) as usize;
                 let text = std::str::from_utf8(&data[9..9+len]).unwrap_or("");
                 assert!(text.contains("AYSSH_TEST_OK"), "Got {:?}", text);
+
+                // Drain EOF + CLOSE so server doesn't hit broken pipe
+                drain_channel_close(&mut transport).await;
             });
         });
 
@@ -728,6 +743,9 @@ mod tests {
                 let len = u32::from_be_bytes([data[5], data[6], data[7], data[8]]) as usize;
                 let text = std::str::from_utf8(&data[9..9+len]).unwrap_or("");
                 assert!(text.contains("AYSSH_TEST_OK"), "Got {:?}", text);
+
+                // Drain EOF + CLOSE so server doesn't hit broken pipe
+                drain_channel_close(&mut transport).await;
             });
         });
 
@@ -810,6 +828,9 @@ mod tests {
                 let len = u32::from_be_bytes([data[5], data[6], data[7], data[8]]) as usize;
                 let text = std::str::from_utf8(&data[9..9+len]).unwrap_or("");
                 assert!(text.contains("AYSSH_TEST_OK"), "Got {:?}", text);
+
+                // Drain EOF + CLOSE so server doesn't hit broken pipe
+                drain_channel_close(&mut transport).await;
             });
         });
 
@@ -886,6 +907,9 @@ mod tests {
                 let len = u32::from_be_bytes([data[5], data[6], data[7], data[8]]) as usize;
                 let text = std::str::from_utf8(&data[9..9+len]).unwrap_or("");
                 assert!(text.contains("AYSSH_TEST_OK"), "Got {:?}", text);
+
+                // Drain EOF + CLOSE so server doesn't hit broken pipe
+                drain_channel_close(&mut transport).await;
             });
         });
 
@@ -1154,6 +1178,9 @@ mod tests {
                 let len = u32::from_be_bytes([data[5], data[6], data[7], data[8]]) as usize;
                 let text = std::str::from_utf8(&data[9..9+len]).unwrap_or("");
                 assert!(text.contains("AYSSH_TEST_OK"), "Got {:?}", text);
+
+                // Drain EOF + CLOSE so server doesn't hit broken pipe
+                drain_channel_close(&mut transport).await;
             });
         });
 
