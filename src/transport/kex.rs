@@ -1035,4 +1035,472 @@ mod tests {
 
         assert_eq!(hash1, hash2, "Exchange hash input must be deterministic");
     }
+
+    #[test]
+    fn test_dh_group1_key_generation() {
+        let mut context = KexContext::new(protocol::KexAlgorithm::DiffieHellmanGroup1Sha1);
+        context.generate_client_key(&mut OsRng).unwrap();
+        assert!(context.client_ephemeral.is_some());
+        assert!(!context.client_ephemeral.as_ref().unwrap().is_empty());
+        assert!(context.client_private.is_some());
+    }
+
+    #[test]
+    fn test_ecdh_nistp256_key_generation() {
+        let mut context = KexContext::new(protocol::KexAlgorithm::EcdhSha2Nistp256);
+        context.generate_client_key(&mut OsRng).unwrap();
+        assert!(context.client_ephemeral.is_some());
+        assert!(context.client_ecdh_keypair.is_some());
+    }
+
+    #[test]
+    fn test_ecdh_nistp384_key_generation() {
+        let mut context = KexContext::new(protocol::KexAlgorithm::EcdhSha2Nistp384);
+        context.generate_client_key(&mut OsRng).unwrap();
+        assert!(context.client_ephemeral.is_some());
+        assert!(context.client_ecdh_keypair.is_some());
+    }
+
+    #[test]
+    fn test_ecdh_nistp521_key_generation() {
+        let mut context = KexContext::new(protocol::KexAlgorithm::EcdhSha2Nistp521);
+        context.generate_client_key(&mut OsRng).unwrap();
+        assert!(context.client_ephemeral.is_some());
+        assert!(context.client_ecdh_keypair.is_some());
+    }
+
+    #[test]
+    fn test_get_curve_type() {
+        assert_eq!(
+            KexContext::new(protocol::KexAlgorithm::Curve25519Sha256).get_curve_type(),
+            Some(CurveType::Curve25519)
+        );
+        assert_eq!(
+            KexContext::new(protocol::KexAlgorithm::EcdhSha2Nistp256).get_curve_type(),
+            Some(CurveType::Nistp256)
+        );
+        assert_eq!(
+            KexContext::new(protocol::KexAlgorithm::EcdhSha2Nistp384).get_curve_type(),
+            Some(CurveType::Nistp384)
+        );
+        assert_eq!(
+            KexContext::new(protocol::KexAlgorithm::EcdhSha2Nistp521).get_curve_type(),
+            Some(CurveType::Nistp521)
+        );
+        assert_eq!(
+            KexContext::new(protocol::KexAlgorithm::DiffieHellmanGroup14Sha256).get_curve_type(),
+            None
+        );
+        assert_eq!(
+            KexContext::new(protocol::KexAlgorithm::DiffieHellmanGroup1Sha1).get_curve_type(),
+            None
+        );
+    }
+
+    #[test]
+    fn test_process_server_kex_init_ecdh_too_short() {
+        let mut context = KexContext::new(protocol::KexAlgorithm::Curve25519Sha256);
+        context.generate_client_key(&mut OsRng).unwrap();
+        // Data too short (less than 4 bytes)
+        let result = context.process_server_kex_init(&[0x00, 0x01]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_process_server_kex_init_ecdh_truncated() {
+        let mut context = KexContext::new(protocol::KexAlgorithm::Curve25519Sha256);
+        context.generate_client_key(&mut OsRng).unwrap();
+        // Length says 32 bytes but only 4 bytes of data follow
+        let mut data = Vec::new();
+        data.extend_from_slice(&32u32.to_be_bytes());
+        data.extend_from_slice(&[0x42; 4]); // only 4 instead of 32
+        let result = context.process_server_kex_init(&data);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_process_server_kex_init_dh_out_of_range() {
+        let mut context = KexContext::new(protocol::KexAlgorithm::DiffieHellmanGroup14Sha256);
+        context.generate_client_key(&mut OsRng).unwrap();
+        // Server public key = 0 (out of range [1, p-1])
+        let zero = BigUint::from(0u8);
+        let encoded = Mpint::encode_length_prefixed(&zero);
+        let result = context.process_server_kex_init(&encoded);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_compute_shared_secret_missing_keys() {
+        let mut context = KexContext::new(protocol::KexAlgorithm::DiffieHellmanGroup14Sha256);
+        // No keys set
+        let result = context.compute_shared_secret();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_compute_shared_secret_ecdh_missing_keys() {
+        let mut context = KexContext::new(protocol::KexAlgorithm::Curve25519Sha256);
+        // No keys set
+        let result = context.compute_shared_secret();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_dh_group1_full_exchange() {
+        let group = DhGroup::group1();
+        let mut context = KexContext::new(protocol::KexAlgorithm::DiffieHellmanGroup1Sha1);
+        context.generate_client_key(&mut OsRng).unwrap();
+
+        // Simulate server
+        let server_private = group.generate_private_key(&mut OsRng, 1024);
+        let server_public = group.compute_public_key(&server_private);
+        let server_pub_mpint = Mpint::encode_length_prefixed(&server_public);
+        context.process_server_kex_init(&server_pub_mpint).unwrap();
+
+        context.set_exchange_info(
+            b"SSH-2.0-Client",
+            b"SSH-2.0-Server",
+            b"client_kexinit",
+            b"server_kexinit",
+        );
+        context.set_server_host_key(b"host_key");
+
+        context.compute_shared_secret().unwrap();
+        assert!(context.shared_secret.is_some());
+        assert!(context.session_id.is_some());
+
+        // DH Group1 uses SHA-1, so session hash should be 20 bytes
+        assert_eq!(context.session_id.as_ref().unwrap().len(), 20);
+    }
+
+    #[test]
+    fn test_curve25519_full_exchange() {
+        use crate::crypto::ecdh::EcdhKeyPair;
+
+        let mut client_ctx = KexContext::new(protocol::KexAlgorithm::Curve25519Sha256);
+        client_ctx.generate_client_key(&mut OsRng).unwrap();
+
+        // Simulate server side
+        let server_keypair = EcdhKeyPair::generate(CurveType::Curve25519, &mut OsRng);
+        let server_pub = server_keypair.encode_public_key();
+        // Wrap in SSH string format (length-prefixed)
+        let mut server_data = Vec::new();
+        server_data.extend_from_slice(&(server_pub.len() as u32).to_be_bytes());
+        server_data.extend_from_slice(&server_pub);
+        client_ctx.process_server_kex_init(&server_data).unwrap();
+
+        client_ctx.set_exchange_info(
+            b"SSH-2.0-Client\r\n",
+            b"SSH-2.0-Server\r\n",
+            b"client_kexinit",
+            b"server_kexinit",
+        );
+        client_ctx.set_server_host_key(b"host_key");
+
+        client_ctx.compute_shared_secret().unwrap();
+        assert!(client_ctx.shared_secret.is_some());
+        assert!(client_ctx.session_id.is_some());
+
+        // Curve25519-SHA256 uses SHA-256
+        assert_eq!(client_ctx.session_id.as_ref().unwrap().len(), 32);
+    }
+
+    #[test]
+    fn test_nistp256_session_hash_is_sha256() {
+        use crate::crypto::ecdh::EcdhKeyPair;
+
+        let mut ctx = KexContext::new(protocol::KexAlgorithm::EcdhSha2Nistp256);
+        ctx.generate_client_key(&mut OsRng).unwrap();
+
+        let server_keypair = EcdhKeyPair::generate(CurveType::Nistp256, &mut OsRng);
+        let server_pub = server_keypair.encode_public_key();
+        let mut server_data = Vec::new();
+        server_data.extend_from_slice(&(server_pub.len() as u32).to_be_bytes());
+        server_data.extend_from_slice(&server_pub);
+        ctx.process_server_kex_init(&server_data).unwrap();
+
+        ctx.set_exchange_info(b"VC", b"VS", b"IC", b"IS");
+        ctx.set_server_host_key(b"HK");
+        ctx.compute_shared_secret().unwrap();
+
+        // nistp256 uses SHA-256 -> 32 bytes
+        assert_eq!(ctx.session_id.as_ref().unwrap().len(), 32);
+    }
+
+    #[test]
+    fn test_nistp384_session_hash_is_sha384() {
+        use crate::crypto::ecdh::EcdhKeyPair;
+
+        let mut ctx = KexContext::new(protocol::KexAlgorithm::EcdhSha2Nistp384);
+        ctx.generate_client_key(&mut OsRng).unwrap();
+
+        let server_keypair = EcdhKeyPair::generate(CurveType::Nistp384, &mut OsRng);
+        let server_pub = server_keypair.encode_public_key();
+        let mut server_data = Vec::new();
+        server_data.extend_from_slice(&(server_pub.len() as u32).to_be_bytes());
+        server_data.extend_from_slice(&server_pub);
+        ctx.process_server_kex_init(&server_data).unwrap();
+
+        ctx.set_exchange_info(b"VC", b"VS", b"IC", b"IS");
+        ctx.set_server_host_key(b"HK");
+        ctx.compute_shared_secret().unwrap();
+
+        // nistp384 uses SHA-384 -> 48 bytes
+        assert_eq!(ctx.session_id.as_ref().unwrap().len(), 48);
+    }
+
+    #[test]
+    fn test_nistp521_session_hash_is_sha512() {
+        use crate::crypto::ecdh::EcdhKeyPair;
+
+        let mut ctx = KexContext::new(protocol::KexAlgorithm::EcdhSha2Nistp521);
+        ctx.generate_client_key(&mut OsRng).unwrap();
+
+        let server_keypair = EcdhKeyPair::generate(CurveType::Nistp521, &mut OsRng);
+        let server_pub = server_keypair.encode_public_key();
+        let mut server_data = Vec::new();
+        server_data.extend_from_slice(&(server_pub.len() as u32).to_be_bytes());
+        server_data.extend_from_slice(&server_pub);
+        ctx.process_server_kex_init(&server_data).unwrap();
+
+        ctx.set_exchange_info(b"VC", b"VS", b"IC", b"IS");
+        ctx.set_server_host_key(b"HK");
+        ctx.compute_shared_secret().unwrap();
+
+        // nistp521 uses SHA-512 -> 64 bytes
+        assert_eq!(ctx.session_id.as_ref().unwrap().len(), 64);
+    }
+
+    #[test]
+    fn test_derive_session_keys_for_aes256_ctr() {
+        let mut context = KexContext::new(protocol::KexAlgorithm::DiffieHellmanGroup14Sha256);
+        let group = DhGroup::group14();
+
+        let client_private = group.generate_private_key(&mut OsRng, 256);
+        let client_public = group.compute_public_key(&client_private);
+        let server_private = group.generate_private_key(&mut OsRng, 256);
+        let server_public = group.compute_public_key(&server_private);
+
+        context.client_private = Some(client_private);
+        context.client_ephemeral = Some(Mpint::encode(&client_public));
+        context.server_public = Some(server_public.clone());
+        context.server_ephemeral = Some(Mpint::encode_length_prefixed(&server_public));
+        context.compute_shared_secret().unwrap();
+
+        let hash = context.session_id.clone().unwrap();
+        let keys = context.derive_session_keys_for(
+            &hash,
+            Some("aes256-ctr"),
+            Some("hmac-sha2-512"),
+        ).unwrap();
+
+        assert_eq!(keys.enc_key_c2s.len(), 32); // AES-256
+        assert_eq!(keys.enc_key_s2c.len(), 32);
+        assert_eq!(keys.mac_key_c2s.len(), 64); // HMAC-SHA2-512
+        assert_eq!(keys.mac_key_s2c.len(), 64);
+        assert_eq!(keys.client_iv.len(), 16); // AES block size
+        assert_eq!(keys.server_iv.len(), 16);
+    }
+
+    #[test]
+    fn test_derive_session_keys_for_aes128_gcm() {
+        let mut context = KexContext::new(protocol::KexAlgorithm::DiffieHellmanGroup14Sha256);
+        let group = DhGroup::group14();
+
+        let client_private = group.generate_private_key(&mut OsRng, 256);
+        let client_public = group.compute_public_key(&client_private);
+        let server_private = group.generate_private_key(&mut OsRng, 256);
+        let server_public = group.compute_public_key(&server_private);
+
+        context.client_private = Some(client_private);
+        context.client_ephemeral = Some(Mpint::encode(&client_public));
+        context.server_public = Some(server_public.clone());
+        context.server_ephemeral = Some(Mpint::encode_length_prefixed(&server_public));
+        context.compute_shared_secret().unwrap();
+
+        let hash = context.session_id.clone().unwrap();
+        let keys = context.derive_session_keys_for(
+            &hash,
+            Some("aes128-gcm@openssh.com"),
+            Some("hmac-sha2-256"),
+        ).unwrap();
+
+        assert_eq!(keys.enc_key_c2s.len(), 16); // AES-128
+        assert_eq!(keys.client_iv.len(), 12); // GCM nonce
+        assert_eq!(keys.mac_key_c2s.len(), 32); // HMAC-SHA2-256
+    }
+
+    #[test]
+    fn test_derive_session_keys_for_chacha20() {
+        let mut context = KexContext::new(protocol::KexAlgorithm::DiffieHellmanGroup14Sha256);
+        let group = DhGroup::group14();
+
+        let client_private = group.generate_private_key(&mut OsRng, 256);
+        let client_public = group.compute_public_key(&client_private);
+        let server_private = group.generate_private_key(&mut OsRng, 256);
+        let server_public = group.compute_public_key(&server_private);
+
+        context.client_private = Some(client_private);
+        context.client_ephemeral = Some(Mpint::encode(&client_public));
+        context.server_public = Some(server_public.clone());
+        context.server_ephemeral = Some(Mpint::encode_length_prefixed(&server_public));
+        context.compute_shared_secret().unwrap();
+
+        let hash = context.session_id.clone().unwrap();
+        let keys = context.derive_session_keys_for(
+            &hash,
+            Some("chacha20-poly1305@openssh.com"),
+            None,
+        ).unwrap();
+
+        assert_eq!(keys.enc_key_c2s.len(), 64); // 2x 32-byte keys
+        assert_eq!(keys.client_iv.len(), 0); // No IV for chacha20
+    }
+
+    #[test]
+    fn test_derive_session_keys_for_hmac_sha1() {
+        let mut context = KexContext::new(protocol::KexAlgorithm::DiffieHellmanGroup14Sha256);
+        let group = DhGroup::group14();
+
+        let client_private = group.generate_private_key(&mut OsRng, 256);
+        let client_public = group.compute_public_key(&client_private);
+        let server_private = group.generate_private_key(&mut OsRng, 256);
+        let server_public = group.compute_public_key(&server_private);
+
+        context.client_private = Some(client_private);
+        context.client_ephemeral = Some(Mpint::encode(&client_public));
+        context.server_public = Some(server_public.clone());
+        context.server_ephemeral = Some(Mpint::encode_length_prefixed(&server_public));
+        context.compute_shared_secret().unwrap();
+
+        let hash = context.session_id.clone().unwrap();
+        let keys = context.derive_session_keys_for(
+            &hash,
+            Some("aes128-cbc"),
+            Some("hmac-sha1"),
+        ).unwrap();
+
+        assert_eq!(keys.enc_key_c2s.len(), 16); // AES-128
+        assert_eq!(keys.mac_key_c2s.len(), 20); // HMAC-SHA1
+    }
+
+    #[test]
+    fn test_derive_session_keys_no_shared_secret() {
+        let mut context = KexContext::new(protocol::KexAlgorithm::DiffieHellmanGroup14Sha256);
+        let result = context.derive_session_keys(&[0u8; 32]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_build_hash_input_no_shared_secret() {
+        let context = KexContext::new(protocol::KexAlgorithm::DiffieHellmanGroup14Sha256);
+        let result = context.build_hash_input();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_session_keys_debug() {
+        let keys = SessionKeys {
+            enc_key_c2s: vec![0u8; 16],
+            enc_key_s2c: vec![0u8; 16],
+            mac_key_c2s: vec![0u8; 32],
+            mac_key_s2c: vec![0u8; 32],
+            client_iv: vec![0u8; 16],
+            server_iv: vec![0u8; 16],
+        };
+        let debug_str = format!("{:?}", keys);
+        assert!(debug_str.contains("16 bytes"));
+        assert!(debug_str.contains("32 bytes"));
+    }
+
+    #[test]
+    fn test_session_keys_clone() {
+        let keys = SessionKeys {
+            enc_key_c2s: vec![1u8; 16],
+            enc_key_s2c: vec![2u8; 16],
+            mac_key_c2s: vec![3u8; 32],
+            mac_key_s2c: vec![4u8; 32],
+            client_iv: vec![5u8; 16],
+            server_iv: vec![6u8; 16],
+        };
+        let cloned = keys.clone();
+        assert_eq!(keys.enc_key_c2s, cloned.enc_key_c2s);
+        assert_eq!(keys.mac_key_s2c, cloned.mac_key_s2c);
+    }
+
+    #[test]
+    fn test_set_exchange_info() {
+        let mut ctx = KexContext::new(protocol::KexAlgorithm::DiffieHellmanGroup14Sha256);
+        ctx.set_exchange_info(b"vc", b"vs", b"ic", b"is");
+        assert_eq!(ctx.client_version.as_deref(), Some(b"vc".as_slice()));
+        assert_eq!(ctx.server_version.as_deref(), Some(b"vs".as_slice()));
+        assert_eq!(ctx.client_kexinit.as_deref(), Some(b"ic".as_slice()));
+        assert_eq!(ctx.server_kexinit.as_deref(), Some(b"is".as_slice()));
+    }
+
+    #[test]
+    fn test_set_server_host_key() {
+        let mut ctx = KexContext::new(protocol::KexAlgorithm::DiffieHellmanGroup14Sha256);
+        ctx.set_server_host_key(b"host-key-blob");
+        assert_eq!(ctx.server_host_key.as_deref(), Some(b"host-key-blob".as_slice()));
+    }
+
+    #[test]
+    fn test_version_string_crlf_stripping_in_hash() {
+        let group = DhGroup::group1();
+        let mut ctx = KexContext::new(protocol::KexAlgorithm::DiffieHellmanGroup1Sha1);
+
+        let private_key = BigUint::from(12345u64);
+        let public_key = group.compute_public_key(&private_key);
+        let server_private = BigUint::from(67890u64);
+        let server_public = group.compute_public_key(&server_private);
+
+        ctx.client_private = Some(private_key);
+        ctx.client_ephemeral = Some(Mpint::encode(&public_key));
+        ctx.server_public = Some(server_public.clone());
+        ctx.server_ephemeral = Some(Mpint::encode_length_prefixed(&server_public));
+        ctx.set_server_host_key(b"hk");
+        ctx.compute_shared_secret().unwrap();
+
+        // With CRLF
+        ctx.set_exchange_info(
+            b"SSH-2.0-C\r\n",
+            b"SSH-2.0-S\r\n",
+            b"ic", b"is",
+        );
+        let hash_crlf = ctx.build_hash_input().unwrap();
+
+        // Without trailing CRLF
+        ctx.set_exchange_info(
+            b"SSH-2.0-C",
+            b"SSH-2.0-S",
+            b"ic", b"is",
+        );
+        let hash_clean = ctx.build_hash_input().unwrap();
+
+        // Both should produce the same hash input (CRLF stripped)
+        assert_eq!(hash_crlf, hash_clean);
+    }
+
+    #[test]
+    fn test_dh_group14_sha1_session_hash_length() {
+        let group = DhGroup::group14();
+        let mut ctx = KexContext::new(protocol::KexAlgorithm::DiffieHellmanGroup14Sha1);
+
+        let client_private = group.generate_private_key(&mut OsRng, 256);
+        let client_public = group.compute_public_key(&client_private);
+        let server_private = group.generate_private_key(&mut OsRng, 256);
+        let server_public = group.compute_public_key(&server_private);
+
+        ctx.client_private = Some(client_private);
+        ctx.client_ephemeral = Some(Mpint::encode(&client_public));
+        ctx.server_public = Some(server_public.clone());
+        ctx.server_ephemeral = Some(Mpint::encode_length_prefixed(&server_public));
+        ctx.set_exchange_info(b"VC", b"VS", b"IC", b"IS");
+        ctx.set_server_host_key(b"HK");
+        ctx.compute_shared_secret().unwrap();
+
+        // DH Group14 SHA-1 -> 20 byte hash
+        assert_eq!(ctx.session_id.as_ref().unwrap().len(), 20);
+    }
 }

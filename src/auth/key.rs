@@ -1099,4 +1099,282 @@ mod tests {
         assert_eq!(our_blob, expected_blob,
             "ECDSA P-384 public key blob must match ssh-keygen output");
     }
+
+    #[test]
+    fn test_key_type_rsa() {
+        let pem = std::fs::read_to_string("tests/keys/test_rsa_2048").unwrap();
+        let key = PrivateKey::parse_pem(&pem).unwrap();
+        assert_eq!(key.key_type(), KeyType::Rsa);
+    }
+
+    #[test]
+    fn test_key_type_ed25519() {
+        let pem = std::fs::read_to_string("tests/keys/test_ed25519").unwrap();
+        let key = PrivateKey::parse_pem(&pem).unwrap();
+        assert_eq!(key.key_type(), KeyType::Ed25519);
+    }
+
+    #[test]
+    fn test_key_type_ecdsa_p256() {
+        let pem = std::fs::read_to_string("tests/keys/test_ecdsa_256").unwrap();
+        let key = PrivateKey::parse_pem(&pem).unwrap();
+        assert_eq!(key.key_type(), KeyType::Ecdsa(EcdsaCurve::Nistp256));
+    }
+
+    #[test]
+    fn test_key_type_ecdsa_p384() {
+        let pem = std::fs::read_to_string("tests/keys/test_ecdsa_384").unwrap();
+        let key = PrivateKey::parse_pem(&pem).unwrap();
+        assert_eq!(key.key_type(), KeyType::Ecdsa(EcdsaCurve::Nistp384));
+    }
+
+    #[test]
+    fn test_ssh_algorithm_names_rsa() {
+        let pem = std::fs::read_to_string("tests/keys/test_rsa_2048").unwrap();
+        let key = PrivateKey::parse_pem(&pem).unwrap();
+        let names = key.ssh_algorithm_names();
+        assert_eq!(names, vec!["rsa-sha2-256", "ssh-rsa"]);
+    }
+
+    #[test]
+    fn test_ssh_algorithm_names_ed25519() {
+        let pem = std::fs::read_to_string("tests/keys/test_ed25519").unwrap();
+        let key = PrivateKey::parse_pem(&pem).unwrap();
+        let names = key.ssh_algorithm_names();
+        assert_eq!(names, vec!["ssh-ed25519"]);
+    }
+
+    #[test]
+    fn test_ssh_algorithm_names_ecdsa_p256() {
+        let pem = std::fs::read_to_string("tests/keys/test_ecdsa_256").unwrap();
+        let key = PrivateKey::parse_pem(&pem).unwrap();
+        let names = key.ssh_algorithm_names();
+        assert_eq!(names, vec!["ecdsa-sha2-nistp256"]);
+    }
+
+    #[test]
+    fn test_ssh_algorithm_names_ecdsa_p384() {
+        let pem = std::fs::read_to_string("tests/keys/test_ecdsa_384").unwrap();
+        let key = PrivateKey::parse_pem(&pem).unwrap();
+        let names = key.ssh_algorithm_names();
+        assert_eq!(names, vec!["ecdsa-sha2-nistp384"]);
+    }
+
+    #[test]
+    fn test_to_public_key_rsa_legacy() {
+        let pem = std::fs::read_to_string("tests/keys/test_rsa_2048").unwrap();
+        let key = PrivateKey::parse_pem(&pem).unwrap();
+        let pub_key = key.to_public_key().unwrap();
+        assert_eq!(pub_key.key_type, KeyType::Rsa);
+        assert_eq!(pub_key.algorithm, "ssh-rsa");
+        assert!(!pub_key.blob.is_empty());
+        // Legacy format uses 1-byte length prefix
+        // First byte is length of "ssh-rsa" = 7
+        assert_eq!(pub_key.blob[0], 7);
+        assert_eq!(&pub_key.blob[1..8], b"ssh-rsa");
+    }
+
+    #[test]
+    fn test_to_public_key_ecdsa_legacy() {
+        let pem = std::fs::read_to_string("tests/keys/test_ecdsa_256").unwrap();
+        let key = PrivateKey::parse_pem(&pem).unwrap();
+        let pub_key = key.to_public_key().unwrap();
+        assert_eq!(pub_key.key_type, KeyType::Ecdsa(EcdsaCurve::Nistp256));
+        assert_eq!(pub_key.algorithm, "ecdsa-sha2-nistp256");
+        assert!(!pub_key.blob.is_empty());
+        // Check 1-byte length prefix for algo name
+        let algo_name = "ecdsa-sha2-nistp256";
+        assert_eq!(pub_key.blob[0], algo_name.len() as u8);
+    }
+
+    #[test]
+    fn test_to_public_key_ecdsa_p384_legacy() {
+        let pem = std::fs::read_to_string("tests/keys/test_ecdsa_384").unwrap();
+        let key = PrivateKey::parse_pem(&pem).unwrap();
+        let pub_key = key.to_public_key().unwrap();
+        assert_eq!(pub_key.key_type, KeyType::Ecdsa(EcdsaCurve::Nistp384));
+        assert_eq!(pub_key.algorithm, "ecdsa-sha2-nistp384");
+    }
+
+    #[test]
+    fn test_to_public_key_ed25519_legacy() {
+        let pem = std::fs::read_to_string("tests/keys/test_ed25519").unwrap();
+        let key = PrivateKey::parse_pem(&pem).unwrap();
+        let pub_key = key.to_public_key().unwrap();
+        assert_eq!(pub_key.key_type, KeyType::Ed25519);
+        assert_eq!(pub_key.algorithm, "ssh-ed25519");
+        // 1-byte length prefix + "ssh-ed25519" (11 bytes) + 1-byte length + 32-byte key
+        assert_eq!(pub_key.blob[0], 11);
+        assert_eq!(&pub_key.blob[1..12], b"ssh-ed25519");
+    }
+
+    #[test]
+    fn test_public_key_hash_rsa() {
+        let pem = std::fs::read_to_string("tests/keys/test_rsa_2048").unwrap();
+        let key = PrivateKey::parse_pem(&pem).unwrap();
+        let hash = key.public_key_hash().unwrap();
+        assert_eq!(hash.len(), 32); // SHA-256
+    }
+
+    #[test]
+    fn test_sign_ed25519() {
+        let pem = std::fs::read_to_string("tests/keys/test_ed25519").unwrap();
+        let key = PrivateKey::parse_pem(&pem).unwrap();
+        let sig = key.sign(b"test data").unwrap();
+        assert!(!sig.data.is_empty());
+    }
+
+    #[test]
+    fn test_sign_rsa_sha256() {
+        let pem = std::fs::read_to_string("tests/keys/test_rsa_2048").unwrap();
+        let key = PrivateKey::parse_pem(&pem).unwrap();
+        let sig = key.sign(b"test data").unwrap();
+        assert!(!sig.data.is_empty());
+    }
+
+    #[test]
+    fn test_sign_with_algorithm_rsa_sha2_256() {
+        let pem = std::fs::read_to_string("tests/keys/test_rsa_2048").unwrap();
+        let key = PrivateKey::parse_pem(&pem).unwrap();
+        let sig = key.sign_with_algorithm(b"test data", "rsa-sha2-256").unwrap();
+        assert!(!sig.data.is_empty());
+    }
+
+    #[test]
+    fn test_sign_with_algorithm_ssh_rsa_legacy() {
+        let pem = std::fs::read_to_string("tests/keys/test_rsa_2048").unwrap();
+        let key = PrivateKey::parse_pem(&pem).unwrap();
+        let sig = key.sign_with_algorithm(b"test data", "ssh-rsa").unwrap();
+        assert!(!sig.data.is_empty());
+    }
+
+    #[test]
+    fn test_sign_with_algorithm_ed25519_ignores_algorithm() {
+        let pem = std::fs::read_to_string("tests/keys/test_ed25519").unwrap();
+        let key = PrivateKey::parse_pem(&pem).unwrap();
+        // For non-RSA keys, algorithm parameter is ignored
+        let sig = key.sign_with_algorithm(b"test data", "anything").unwrap();
+        assert!(!sig.data.is_empty());
+    }
+
+    #[test]
+    fn test_sign_ecdsa_p256() {
+        let pem = std::fs::read_to_string("tests/keys/test_ecdsa_256").unwrap();
+        let key = PrivateKey::parse_pem(&pem).unwrap();
+        let sig = key.sign(b"test data").unwrap();
+        assert!(!sig.data.is_empty());
+    }
+
+    #[test]
+    fn test_sign_ecdsa_p384() {
+        let pem = std::fs::read_to_string("tests/keys/test_ecdsa_384").unwrap();
+        let key = PrivateKey::parse_pem(&pem).unwrap();
+        let sig = key.sign(b"test data").unwrap();
+        assert!(!sig.data.is_empty());
+    }
+
+    #[test]
+    fn test_parse_pem_empty_string() {
+        let result = PrivateKey::parse_pem("");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_pem_garbage() {
+        let result = PrivateKey::parse_pem("-----BEGIN PRIVATE KEY-----\nnotbase64!!\n-----END PRIVATE KEY-----");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_pem_encrypted_key_error() {
+        // Construct a minimal PEM with ENCRYPTED PRIVATE KEY tag
+        let result = PrivateKey::parse_pem(
+            "-----BEGIN ENCRYPTED PRIVATE KEY-----\nAAAA\n-----END ENCRYPTED PRIVATE KEY-----"
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_load_from_file_nonexistent() {
+        let result = PrivateKey::load_from_file("/nonexistent/path/key.pem");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_ssh_public_key_blob_ed25519_format() {
+        let pem = std::fs::read_to_string("tests/keys/test_ed25519").unwrap();
+        let key = PrivateKey::parse_pem(&pem).unwrap();
+        let blob = key.ssh_public_key_blob().unwrap();
+
+        // Parse the blob structure: 4-byte length + "ssh-ed25519" + 4-byte length + 32-byte key
+        let algo_len = u32::from_be_bytes([blob[0], blob[1], blob[2], blob[3]]) as usize;
+        assert_eq!(algo_len, 11); // "ssh-ed25519"
+        assert_eq!(&blob[4..15], b"ssh-ed25519");
+
+        let key_len = u32::from_be_bytes([blob[15], blob[16], blob[17], blob[18]]) as usize;
+        assert_eq!(key_len, 32); // Ed25519 public key is 32 bytes
+        assert_eq!(blob.len(), 4 + 11 + 4 + 32);
+    }
+
+    #[test]
+    fn test_ecdsa_p521_key_operations() {
+        // Test P-521 key if available
+        let pem = std::fs::read_to_string("tests/keys/test_ecdsa_521");
+        if pem.is_err() {
+            // Skip if key not available
+            return;
+        }
+        let pem = pem.unwrap();
+        let key = PrivateKey::parse_pem(&pem).unwrap();
+        assert_eq!(key.key_type(), KeyType::Ecdsa(EcdsaCurve::Nistp521));
+        assert_eq!(key.ssh_algorithm_names(), vec!["ecdsa-sha2-nistp521"]);
+
+        let blob = key.ssh_public_key_blob().unwrap();
+        assert!(!blob.is_empty());
+
+        let sig = key.sign(b"test data").unwrap();
+        assert!(!sig.data.is_empty());
+    }
+
+    #[test]
+    fn test_rsa_4096_ssh_public_key_blob() {
+        let pem = std::fs::read_to_string("tests/keys/test_rsa_4096").unwrap();
+        let key = PrivateKey::parse_pem(&pem).unwrap();
+        let blob = key.ssh_public_key_blob().unwrap();
+
+        // Verify structure: "ssh-rsa" prefix
+        let algo_len = u32::from_be_bytes([blob[0], blob[1], blob[2], blob[3]]) as usize;
+        assert_eq!(algo_len, 7);
+        assert_eq!(&blob[4..11], b"ssh-rsa");
+
+        // Compare against ssh-keygen output
+        let pub_content = std::fs::read_to_string("tests/keys/test_rsa_4096.pub").unwrap();
+        let parts: Vec<&str> = pub_content.trim().splitn(3, ' ').collect();
+        let expected_blob = base64::engine::general_purpose::STANDARD.decode(parts[1]).unwrap();
+        assert_eq!(blob, expected_blob);
+    }
+
+    #[test]
+    fn test_private_key_clone() {
+        let pem = std::fs::read_to_string("tests/keys/test_ed25519").unwrap();
+        let key = PrivateKey::parse_pem(&pem).unwrap();
+        let cloned = key.clone();
+        assert_eq!(key.key_type(), cloned.key_type());
+
+        // Both should produce the same public key blob
+        let blob1 = key.ssh_public_key_blob().unwrap();
+        let blob2 = cloned.ssh_public_key_blob().unwrap();
+        assert_eq!(blob1, blob2);
+    }
+
+    #[test]
+    fn test_public_key_struct_clone() {
+        let pem = std::fs::read_to_string("tests/keys/test_ed25519").unwrap();
+        let key = PrivateKey::parse_pem(&pem).unwrap();
+        let pub_key = key.to_public_key().unwrap();
+        let cloned = pub_key.clone();
+        assert_eq!(pub_key.key_type, cloned.key_type);
+        assert_eq!(pub_key.blob, cloned.blob);
+        assert_eq!(pub_key.algorithm, cloned.algorithm);
+    }
 }

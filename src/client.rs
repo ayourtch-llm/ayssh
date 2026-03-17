@@ -226,3 +226,139 @@ impl Default for SshClient {
         Self::new("localhost".to_string(), 22)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_new_client_defaults() {
+        let client = SshClient::new("example.com".to_string(), 2222);
+        assert_eq!(client.host(), "example.com");
+        assert_eq!(client.port(), 2222);
+        assert!(client.username().is_none());
+        assert!(client.password().is_none());
+        assert!(!client.has_password());
+        assert!(!client.has_publickey());
+    }
+
+    #[test]
+    fn test_default_client() {
+        let client = SshClient::default();
+        assert_eq!(client.host(), "localhost");
+        assert_eq!(client.port(), 22);
+    }
+
+    #[test]
+    fn test_default_allowed_methods() {
+        let client = SshClient::new("host".to_string(), 22);
+        // Default allowed methods: Password, PublicKey, None
+        assert_eq!(client.allowed_methods.len(), 3);
+        assert!(client.allowed_methods.contains(&ProtocolAuthMethod::Password));
+        assert!(client.allowed_methods.contains(&ProtocolAuthMethod::PublicKey));
+        assert!(client.allowed_methods.contains(&ProtocolAuthMethod::None));
+    }
+
+    #[test]
+    fn test_with_username() {
+        let client = SshClient::new("host".to_string(), 22)
+            .with_username("alice".to_string());
+        assert_eq!(client.username(), Some("alice"));
+    }
+
+    #[test]
+    fn test_with_password() {
+        let client = SshClient::new("host".to_string(), 22)
+            .with_password("secret".to_string());
+        assert_eq!(client.password(), Some("secret"));
+        assert!(client.has_password());
+    }
+
+    #[test]
+    fn test_with_private_key() {
+        let client = SshClient::new("host".to_string(), 22)
+            .with_private_key(vec![1, 2, 3]);
+        assert!(client.has_publickey());
+    }
+
+    #[test]
+    fn test_with_allowed_methods() {
+        let client = SshClient::new("host".to_string(), 22)
+            .with_allowed_methods(vec![ProtocolAuthMethod::Password]);
+        assert_eq!(client.allowed_methods.len(), 1);
+        assert!(client.allowed_methods.contains(&ProtocolAuthMethod::Password));
+    }
+
+    #[test]
+    fn test_with_password_auth() {
+        let client = SshClient::new("host".to_string(), 22)
+            .with_password_auth("bob".to_string(), "pass123".to_string());
+        assert_eq!(client.username(), Some("bob"));
+        assert_eq!(client.password(), Some("pass123"));
+        assert!(client.has_password());
+    }
+
+    #[test]
+    fn test_with_publickey_auth() {
+        let key_data = vec![0xDE, 0xAD, 0xBE, 0xEF];
+        let client = SshClient::new("host".to_string(), 22)
+            .with_publickey_auth("carol".to_string(), key_data.clone());
+        assert_eq!(client.username(), Some("carol"));
+        assert!(client.has_publickey());
+        assert_eq!(client.private_key, Some(key_data));
+    }
+
+    #[test]
+    fn test_builder_chaining() {
+        let client = SshClient::new("myserver.com".to_string(), 2222)
+            .with_username("user".to_string())
+            .with_password("pw".to_string())
+            .with_private_key(vec![42])
+            .with_allowed_methods(vec![ProtocolAuthMethod::PublicKey]);
+
+        assert_eq!(client.host(), "myserver.com");
+        assert_eq!(client.port(), 2222);
+        assert_eq!(client.username(), Some("user"));
+        assert_eq!(client.password(), Some("pw"));
+        assert!(client.has_password());
+        assert!(client.has_publickey());
+        assert_eq!(client.allowed_methods.len(), 1);
+    }
+
+    #[test]
+    fn test_create_authenticator_no_username() {
+        let client = SshClient::new("host".to_string(), 22);
+        let result = client.create_authenticator();
+        assert!(result.is_err());
+        match result {
+            Err(SshError::AuthenticationFailed(msg)) => {
+                assert!(msg.contains("No username"));
+            }
+            _ => panic!("Expected AuthenticationFailed error"),
+        }
+    }
+
+    #[test]
+    fn test_create_authenticator_with_username_returns_protocol_error() {
+        let client = SshClient::new("host".to_string(), 22)
+            .with_username("user".to_string());
+        let result = client.create_authenticator();
+        // Should fail because no Transport is available
+        assert!(result.is_err());
+        match result {
+            Err(SshError::ProtocolError(msg)) => {
+                assert!(msg.contains("Transport"));
+            }
+            _ => panic!("Expected ProtocolError about Transport"),
+        }
+    }
+
+    #[test]
+    fn test_no_password_no_publickey() {
+        let client = SshClient::new("host".to_string(), 22);
+        assert!(!client.has_password());
+        assert!(!client.has_publickey());
+        assert!(client.username().is_none());
+        assert!(client.password().is_none());
+    }
+}

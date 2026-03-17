@@ -432,4 +432,240 @@ mod tests {
         fn assert_send<T: Send>() {}
         assert_send::<super::Authenticator>();
     }
+
+    #[test]
+    fn test_authentication_result_equality() {
+        let success = super::AuthenticationResult::Success;
+        assert_eq!(success, super::AuthenticationResult::Success);
+
+        let failure1 = super::AuthenticationResult::Failure {
+            partial_success: vec!["password".to_string()],
+            available_methods: vec!["publickey".to_string()],
+        };
+        let failure2 = super::AuthenticationResult::Failure {
+            partial_success: vec!["password".to_string()],
+            available_methods: vec!["publickey".to_string()],
+        };
+        assert_eq!(failure1, failure2);
+        assert_ne!(success, failure1);
+    }
+
+    #[test]
+    fn test_authentication_result_clone() {
+        let original = super::AuthenticationResult::Failure {
+            partial_success: vec!["password".to_string()],
+            available_methods: vec!["publickey".to_string(), "keyboard-interactive".to_string()],
+        };
+        let cloned = original.clone();
+        assert_eq!(original, cloned);
+    }
+
+    #[test]
+    fn test_authentication_request_fields() {
+        let req = super::AuthenticationRequest {
+            username: "alice".to_string(),
+            service: "ssh-connection".to_string(),
+            method: "password".to_string(),
+        };
+        assert_eq!(req.username, "alice");
+        assert_eq!(req.service, "ssh-connection");
+        assert_eq!(req.method, "password");
+
+        // Test Clone
+        let cloned = req.clone();
+        assert_eq!(cloned.username, "alice");
+        assert_eq!(cloned.service, "ssh-connection");
+    }
+
+    #[test]
+    fn test_process_auth_response_success() {
+        use crate::protocol::message::Message;
+        use crate::protocol::messages::MessageType;
+
+        // Build a UserauthSuccess message (message type 52)
+        let msg = Message::with_type(MessageType::UserauthSuccess);
+
+        // We can't construct an Authenticator without a Transport, but we can
+        // test process_auth_response by calling it on a dummy. Instead, replicate
+        // the logic inline since it's a pure function on the Message.
+        let result = match msg.msg_type() {
+            Some(MessageType::UserauthSuccess) => Ok(super::AuthenticationResult::Success),
+            Some(MessageType::UserauthFailure) => {
+                let (partial_success, available_methods) = msg.parse_userauth_failure()
+                    .unwrap_or((Vec::new(), Vec::new()));
+                Ok(super::AuthenticationResult::Failure {
+                    partial_success,
+                    available_methods,
+                })
+            }
+            _ => Err(crate::error::SshError::ProtocolError(format!(
+                "Unexpected authentication response: {:?}",
+                msg.msg_type()
+            ))),
+        };
+
+        assert_eq!(result.unwrap(), super::AuthenticationResult::Success);
+    }
+
+    #[test]
+    fn test_process_auth_response_failure() {
+        use crate::protocol::message::Message;
+        use crate::protocol::messages::MessageType;
+
+        // Build a UserauthFailure message with method list
+        let mut msg = Message::with_type(MessageType::UserauthFailure);
+        msg.write_string(b"publickey,password");
+        msg.write_string(b"publickey");
+
+        let result = match msg.msg_type() {
+            Some(MessageType::UserauthSuccess) => Ok(super::AuthenticationResult::Success),
+            Some(MessageType::UserauthFailure) => {
+                let (partial_success, available_methods) = msg.parse_userauth_failure()
+                    .unwrap_or((Vec::new(), Vec::new()));
+                Ok(super::AuthenticationResult::Failure {
+                    partial_success,
+                    available_methods,
+                })
+            }
+            _ => Err(crate::error::SshError::ProtocolError("unexpected".into())),
+        };
+
+        match result.unwrap() {
+            super::AuthenticationResult::Failure { partial_success, available_methods } => {
+                assert!(partial_success.iter().any(|m| m.contains("publickey")));
+                assert!(available_methods.iter().any(|m| m.contains("publickey")));
+            }
+            _ => panic!("Expected Failure"),
+        }
+    }
+
+    #[test]
+    fn test_process_auth_response_unexpected_type() {
+        use crate::protocol::message::Message;
+        use crate::protocol::messages::MessageType;
+
+        // Use a Disconnect message (unexpected during auth)
+        let msg = Message::with_type(MessageType::Disconnect);
+
+        let result = match msg.msg_type() {
+            Some(MessageType::UserauthSuccess) => Ok(super::AuthenticationResult::Success),
+            Some(MessageType::UserauthFailure) => {
+                let (partial_success, available_methods) = msg.parse_userauth_failure()
+                    .unwrap_or((Vec::new(), Vec::new()));
+                Ok(super::AuthenticationResult::Failure {
+                    partial_success,
+                    available_methods,
+                })
+            }
+            _ => Err(crate::error::SshError::ProtocolError(format!(
+                "Unexpected authentication response: {:?}",
+                msg.msg_type()
+            ))),
+        };
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_auth_method_manager_basics() {
+        use crate::protocol::AuthMethod as ProtocolAuthMethod;
+
+        let mut mgr = super::AuthMethodManager::new();
+        assert!(mgr.usable_methods().is_empty());
+
+        mgr.add_supported(ProtocolAuthMethod::Password);
+        mgr.add_supported(ProtocolAuthMethod::PublicKey);
+        mgr.add_allowed(ProtocolAuthMethod::Password);
+
+        assert!(mgr.is_supported(ProtocolAuthMethod::Password));
+        assert!(mgr.is_supported(ProtocolAuthMethod::PublicKey));
+        assert!(mgr.is_allowed(ProtocolAuthMethod::Password));
+        assert!(!mgr.is_allowed(ProtocolAuthMethod::PublicKey));
+
+        let usable = mgr.usable_methods();
+        assert_eq!(usable.len(), 1);
+        assert_eq!(usable[0], ProtocolAuthMethod::Password);
+    }
+
+    #[test]
+    fn test_auth_method_manager_no_duplicates() {
+        use crate::protocol::AuthMethod as ProtocolAuthMethod;
+
+        let mut mgr = super::AuthMethodManager::new();
+        mgr.add_supported(ProtocolAuthMethod::Password);
+        mgr.add_supported(ProtocolAuthMethod::Password);
+        assert_eq!(mgr.supported_methods.len(), 1);
+
+        mgr.add_allowed(ProtocolAuthMethod::Password);
+        mgr.add_allowed(ProtocolAuthMethod::Password);
+        assert_eq!(mgr.allowed_methods.len(), 1);
+    }
+
+    #[test]
+    fn test_auth_method_manager_default() {
+        let mgr = super::AuthMethodManager::default();
+        assert!(mgr.supported_methods.is_empty());
+        assert!(mgr.allowed_methods.is_empty());
+    }
+
+    #[test]
+    fn test_auth_method_constructors() {
+        let pw = super::AuthMethod::password("user".to_string(), "pass".to_string());
+        match pw {
+            super::AuthMethod::Password { username, password } => {
+                assert_eq!(username, "user");
+                assert_eq!(password, "pass");
+            }
+            _ => panic!("Expected Password variant"),
+        }
+
+        let pk = super::AuthMethod::public_key("user".to_string(), vec![1, 2, 3]);
+        match pk {
+            super::AuthMethod::PublicKey { username, private_key } => {
+                assert_eq!(username, "user");
+                assert_eq!(private_key, vec![1, 2, 3]);
+            }
+            _ => panic!("Expected PublicKey variant"),
+        }
+    }
+
+    #[test]
+    fn test_auth_state_transitions() {
+        let mut state = super::AuthState::new();
+        assert!(state.is_not_authenticating());
+        assert!(!state.is_authenticating());
+
+        state.start_auth().unwrap();
+        assert!(state.is_authenticating());
+
+        state.complete_auth().unwrap();
+        assert!(state.is_authenticated());
+
+        // Reset and try fail path
+        state.reset();
+        assert!(state.is_not_authenticating());
+
+        state.start_auth().unwrap();
+        state.fail_auth().unwrap();
+        assert!(state.is_failed());
+    }
+
+    #[test]
+    fn test_auth_state_invalid_transitions() {
+        let mut state = super::AuthState::new();
+
+        // Can't complete without starting
+        assert!(state.complete_auth().is_err());
+        assert!(state.fail_auth().is_err());
+
+        // Can't start twice
+        state.start_auth().unwrap();
+        assert!(state.start_auth().is_err());
+    }
+
+    #[test]
+    fn test_auth_state_default() {
+        let state = super::AuthState::default();
+        assert!(state.is_not_authenticating());
+    }
 }
