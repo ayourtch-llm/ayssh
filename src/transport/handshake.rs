@@ -630,4 +630,222 @@ mod tests {
         assert_eq!(negotiated.kex, "diffie-hellman-group1-sha1");
         assert_eq!(negotiated.compression, "none");
     }
+
+    // --- parse_version_string edge cases ---
+
+    #[test]
+    fn test_parse_version_not_ssh_prefix() {
+        assert!(parse_version_string(b"NOTSH-2.0-foo").is_err());
+    }
+
+    #[test]
+    fn test_parse_version_minimal_two_parts() {
+        // "SSH-2.0" has only 2 parts after split on '-', software_version is empty
+        let (proto, sw) = parse_version_string(b"SSH-2.0").unwrap();
+        assert_eq!(proto, 2);
+        assert_eq!(sw, ""); // no software version component
+    }
+
+    #[test]
+    fn test_parse_version_single_part() {
+        // "SSH" has only 1 part — too few
+        assert!(parse_version_string(b"SSH").is_err());
+    }
+
+    #[test]
+    fn test_parse_version_non_numeric_protocol() {
+        assert!(parse_version_string(b"SSH-abc-foo").is_err());
+    }
+
+    #[test]
+    fn test_parse_version_ssh15_rejected() {
+        assert!(parse_version_string(b"SSH-1.5-OldServer").is_err());
+    }
+
+    #[test]
+    fn test_parse_version_multiple_dashes_in_software() {
+        let (proto, sw) = parse_version_string(b"SSH-2.0-My-Cool-Server-1.0").unwrap();
+        assert_eq!(proto, 2);
+        assert_eq!(sw, "My-Cool-Server-1.0");
+    }
+
+    // --- generate_client_kexinit_with_prefs ---
+
+    #[test]
+    fn test_kexinit_with_preferred_cipher() {
+        let kexinit = generate_client_kexinit_with_prefs(None, Some("aes256-ctr"), None);
+        let proposal = parse_server_kexinit(&kexinit).unwrap();
+        assert_eq!(proposal.encryption_algorithms_c2s[0], "aes256-ctr");
+    }
+
+    #[test]
+    fn test_kexinit_with_preferred_mac() {
+        let kexinit = generate_client_kexinit_with_prefs(None, None, Some("hmac-sha2-512"));
+        let proposal = parse_server_kexinit(&kexinit).unwrap();
+        assert_eq!(proposal.mac_algorithms_c2s[0], "hmac-sha2-512");
+    }
+
+    #[test]
+    fn test_kexinit_with_preferred_kex() {
+        let kexinit = generate_client_kexinit_with_prefs(Some("curve25519-sha256"), None, None);
+        let proposal = parse_server_kexinit(&kexinit).unwrap();
+        assert_eq!(proposal.kex_algorithms[0], "curve25519-sha256");
+    }
+
+    #[test]
+    fn test_kexinit_with_all_prefs() {
+        let kexinit = generate_client_kexinit_with_prefs(
+            Some("ecdh-sha2-nistp256"),
+            Some("aes128-gcm@openssh.com"),
+            Some("hmac-sha1-etm@openssh.com"),
+        );
+        let proposal = parse_server_kexinit(&kexinit).unwrap();
+        assert_eq!(proposal.kex_algorithms[0], "ecdh-sha2-nistp256");
+        assert_eq!(proposal.encryption_algorithms_c2s[0], "aes128-gcm@openssh.com");
+        assert_eq!(proposal.mac_algorithms_c2s[0], "hmac-sha1-etm@openssh.com");
+    }
+
+    #[test]
+    fn test_kexinit_preferred_not_duplicated() {
+        let kexinit = generate_client_kexinit_with_prefs(None, Some("aes128-ctr"), None);
+        let proposal = parse_server_kexinit(&kexinit).unwrap();
+        let count = proposal.encryption_algorithms_c2s.iter()
+            .filter(|a| *a == "aes128-ctr").count();
+        assert_eq!(count, 1, "Preferred cipher should appear exactly once");
+    }
+
+    // --- parse_server_kexinit error cases ---
+
+    #[test]
+    fn test_kexinit_parse_empty() {
+        assert!(parse_server_kexinit(&[]).is_err());
+    }
+
+    #[test]
+    fn test_kexinit_parse_wrong_msg_type() {
+        let mut data = vec![21]; // NEWKEYS instead of KEXINIT
+        data.extend_from_slice(&[0; 100]);
+        assert!(parse_server_kexinit(&data).is_err());
+    }
+
+    #[test]
+    fn test_kexinit_parse_too_short_for_cookie() {
+        let data = vec![20, 0, 0, 0]; // msg type + 3 bytes (need 16 for cookie)
+        assert!(parse_server_kexinit(&data).is_err());
+    }
+
+    // --- select_algorithm edge cases ---
+
+    #[test]
+    fn test_select_algorithm_empty_preferred() {
+        let result = select_algorithm(&[], &["aes128-ctr".to_string()]);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_select_algorithm_empty_server() {
+        let result = select_algorithm(&["aes128-ctr".to_string()], &[]);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_select_algorithm_first_match_wins() {
+        let preferred = vec!["first".to_string(), "second".to_string()];
+        let server = vec!["second".to_string(), "first".to_string()];
+        assert_eq!(select_algorithm(&preferred, &server), Some("first".to_string()));
+    }
+
+    // --- negotiate_algorithms with restricted lists ---
+
+    #[test]
+    fn test_negotiate_respects_client_preference() {
+        let mut client = parse_server_kexinit(&generate_client_kexinit()).unwrap();
+        let server = parse_server_kexinit(&generate_client_kexinit()).unwrap();
+        // Reverse client KEX order
+        client.kex_algorithms.reverse();
+        let negotiated = negotiate_algorithms(&client, &server);
+        // Should pick client's first that's also in server
+        assert!(server.kex_algorithms.contains(&negotiated.kex));
+        assert_eq!(negotiated.kex, client.kex_algorithms[0]);
+    }
+
+    // --- HandshakeState ---
+
+    #[test]
+    fn test_handshake_state_all_fields() {
+        let mut state = HandshakeState::default();
+        state.enc_c2s = Some("aes128-ctr".to_string());
+        state.enc_s2c = Some("aes256-ctr".to_string());
+        state.mac_c2s = Some("hmac-sha1".to_string());
+        state.mac_s2c = Some("hmac-sha2-256".to_string());
+        assert_eq!(state.enc_c2s, Some("aes128-ctr".to_string()));
+        assert_eq!(state.mac_s2c, Some("hmac-sha2-256".to_string()));
+    }
+
+    #[test]
+    fn test_handshake_state_clone() {
+        let mut state = HandshakeState::default();
+        state.enc_c2s = Some("aes128-ctr".to_string());
+        let cloned = state.clone();
+        assert_eq!(state.enc_c2s, cloned.enc_c2s);
+    }
+
+    #[test]
+    fn test_handshake_state_debug() {
+        let state = HandshakeState::default();
+        let debug = format!("{:?}", state);
+        assert!(debug.contains("HandshakeState"));
+    }
+
+    // --- async version exchange ---
+
+    #[tokio::test]
+    async fn test_send_version_writes_correct_bytes() {
+        let mut buf = Vec::new();
+        send_version(&mut buf).await.unwrap();
+        assert_eq!(buf, SSH_VERSION_STRING.as_bytes());
+    }
+
+    #[tokio::test]
+    async fn test_send_version_custom() {
+        let mut buf = Vec::new();
+        send_version_custom(&mut buf, "SSH-2.0-test\r\n").await.unwrap();
+        assert_eq!(buf, b"SSH-2.0-test\r\n");
+    }
+
+    #[tokio::test]
+    async fn test_recv_version_valid() {
+        let data = b"SSH-2.0-TestServer\r\n";
+        let mut cursor = std::io::Cursor::new(data.to_vec());
+        let version = recv_version(&mut cursor).await.unwrap();
+        assert_eq!(version, "SSH-2.0-TestServer");
+    }
+
+    #[tokio::test]
+    async fn test_recv_version_lf_only() {
+        let data = b"SSH-2.0-NoCarriageReturn\n";
+        let mut cursor = std::io::Cursor::new(data.to_vec());
+        let version = recv_version(&mut cursor).await.unwrap();
+        assert_eq!(version, "SSH-2.0-NoCarriageReturn");
+    }
+
+    #[tokio::test]
+    async fn test_recv_version_too_long() {
+        let mut data = b"SSH-2.0-".to_vec();
+        data.extend_from_slice(&[b'a'; 300]); // way over 255
+        data.push(b'\n');
+        let mut cursor = std::io::Cursor::new(data);
+        let result = recv_version(&mut cursor).await;
+        assert!(result.is_err());
+    }
+
+    // --- constants ---
+
+    #[test]
+    fn test_version_string_constants() {
+        assert!(SSH_VERSION_STRING.starts_with("SSH-2.0-"));
+        assert!(SSH_VERSION_STRING.ends_with("\r\n"));
+        assert!(SSH_SERVER_VERSION_STRING.starts_with("SSH-2.0-"));
+        assert!(SSH_SERVER_VERSION_STRING.ends_with("\r\n"));
+    }
 }
