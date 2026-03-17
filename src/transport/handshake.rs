@@ -101,7 +101,7 @@ pub fn generate_client_kexinit_with_prefs(
     rand::rngs::OsRng.fill_bytes(&mut cookie);
     buf.put(&cookie[..]);
 
-    let default_kex = "diffie-hellman-group1-sha1,diffie-hellman-group14-sha1,diffie-hellman-group14-sha256,curve25519-sha256,ecdh-sha2-nistp256,ecdh-sha2-nistp384,ecdh-sha2-nistp521";
+    let default_kex = "diffie-hellman-group1-sha1,diffie-hellman-group14-sha1,diffie-hellman-group14-sha256,curve25519-sha256,ecdh-sha2-nistp256,ecdh-sha2-nistp384,ecdh-sha2-nistp521,kex-strict-c-v00@openssh.com";
     let kex_list = if let Some(pref) = preferred_kex {
         let others: Vec<&str> = default_kex.split(',').filter(|k| *k != pref).collect();
         format!("{},{}", pref, others.join(","))

@@ -64,6 +64,9 @@ pub struct Transport {
     preferred_cipher: Option<String>,
     /// Preferred MAC algorithm (placed first in KEXINIT)
     preferred_mac: Option<String>,
+    /// Whether kex-strict (CVE-2023-48795 / Terrapin mitigation) is active.
+    /// When true, sequence numbers reset to 0 after NEWKEYS.
+    kex_strict: bool,
 }
 
 /// Encryption state for outgoing packets
@@ -107,6 +110,7 @@ impl Transport {
             preferred_kex: None,
             preferred_cipher: None,
             preferred_mac: None,
+            kex_strict: false,
         }
     }
 
@@ -327,10 +331,16 @@ impl Transport {
         let client_proposal = parse_server_kexinit(&client_kexinit)
             .map_err(|e| crate::error::SshError::ProtocolError(format!("{} - Client KEXINIT: {:?}", e, &client_kexinit[..std::cmp::min(100, client_kexinit.len())])))?;
         
-        // 7. Negotiate algorithms
+        // 7. Check for kex-strict (CVE-2023-48795 Terrapin mitigation)
+        if server_proposal.kex_algorithms.iter().any(|a| a == "kex-strict-s-v00@openssh.com") {
+            debug!("Server supports kex-strict — enabling sequence number reset after NEWKEYS");
+            self.kex_strict = true;
+        }
+
+        // 8. Negotiate algorithms
         let negotiated = negotiate_algorithms(&client_proposal, &server_proposal);
         debug!("Negotiated KEX algorithm: {}", negotiated.kex);
-        
+
         // Store negotiated algorithms in handshake state
         self.handshake.enc_c2s = Some(negotiated.enc_c2s.clone());
         self.handshake.enc_s2c = Some(negotiated.enc_s2c.clone());
@@ -501,7 +511,14 @@ impl Transport {
             debug!("  server_iv: {:?}", session_keys.server_iv);
             
             // Set up client-to-server encryption state
-            // Sequence numbers continue from the pre-NEWKEYS count per RFC 4253 Section 6.4
+            // Per RFC 4253 Section 6.4, sequence numbers normally continue.
+            // With kex-strict (CVE-2023-48795), sequence numbers reset to 0 after NEWKEYS.
+            if self.kex_strict {
+                debug!("kex-strict active: resetting sequence numbers from send={}, recv={} to 0",
+                       self.send_sequence_number, self.recv_sequence_number);
+                self.send_sequence_number = 0;
+                self.recv_sequence_number = 0;
+            }
             debug!("Initializing encryption with send_seq={}, recv_seq={}", self.send_sequence_number, self.recv_sequence_number);
             self.encrypt_state = Some(EncryptionState {
                 enc_key: session_keys.enc_key_c2s.clone(),
@@ -1091,10 +1108,14 @@ pub(crate) fn encrypt_packet_cbc(payload: &[u8], state: &mut EncryptionState) ->
     let payload_len = payload.len();
     // For ETM and AES-GCM modes, length field is cleartext (not encrypted),
     // so alignment applies only to the encrypted portion.
-    // For ChaCha20-Poly1305, the length IS encrypted (with separate key),
-    // and alignment includes it (same as standard mode).
+    // For ETM and AES-GCM, the length field is cleartext, so alignment
+    // applies to the encrypted portion only (1 + payload + padding).
+    // For ChaCha20-Poly1305, the length is encrypted separately. OpenSSH
+    // requires packet_length (= 1 + payload + padding) to be a multiple
+    // of block_size, NOT (4 + packet_length).
+    // For standard mode, the TOTAL (4 + 1 + payload + padding) must align.
     let length_cleartext = (is_etm_mac(&state.mac_algorithm) && !is_aead_cipher(&state.enc_algorithm))
-        || (is_aead_cipher(&state.enc_algorithm) && state.enc_algorithm != "chacha20-poly1305@openssh.com");
+        || is_aead_cipher(&state.enc_algorithm); // includes chacha20 — length is handled separately
     let total_without_padding = if length_cleartext {
         1 + payload_len // only padding_len + payload (no length field)
     } else {

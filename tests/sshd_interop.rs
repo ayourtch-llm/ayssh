@@ -85,6 +85,11 @@ impl SshdInstance {
     /// Start a local sshd on a random port with ed25519 host key.
     /// The authorized_keys file is set up to accept the test ed25519 key.
     fn start() -> Result<Self, String> {
+        Self::start_with_loglevel("ERROR")
+    }
+
+    /// Start sshd with a specific log level (e.g., "DEBUG3" for debugging)
+    fn start_with_loglevel(log_level: &str) -> Result<Self, String> {
         let sshd_path = find_sshd().ok_or("sshd not found")?;
         let tmpdir = tempfile::TempDir::new().map_err(|e| format!("tmpdir: {}", e))?;
         let tmppath = tmpdir.path();
@@ -127,11 +132,12 @@ impl SshdInstance {
              KbdInteractiveAuthentication no\n\
              StrictModes no\n\
              PidFile {pid}\n\
-             LogLevel DEBUG3\n",
+             LogLevel {log_level}\n",
             port = port,
             host_key = host_key_path.display(),
             auth_keys = auth_keys_path.display(),
             pid = pid_path.display(),
+            log_level = log_level,
         )
         .map_err(|e| format!("write config: {}", e))?;
 
@@ -393,7 +399,8 @@ fn test_kex_algorithms_against_real_sshd() {
 fn test_chacha20_debug_against_real_sshd() {
     skip_if_no_sshd!();
 
-    let mut sshd = SshdInstance::start().expect("Failed to start sshd");
+    // Use a dedicated sshd with DEBUG3 for this test
+    let mut sshd = SshdInstance::start_with_loglevel("DEBUG3").expect("Failed to start sshd");
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
