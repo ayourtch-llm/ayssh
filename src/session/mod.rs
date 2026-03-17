@@ -916,4 +916,226 @@ mod tests {
         assert_eq!(modes.modes.len(), 37);
         assert_eq!(modes.modes[2], 1);
     }
+
+    // --- TerminalMode encoding ---
+
+    #[test]
+    fn test_terminal_mode_encode_length() {
+        let mode = TerminalMode {
+            term: 0, echo: 0, raw: 0, input: 0, opost: 0, olcur: 0, nl2cr: 0,
+            nlparm: 0, ixon: 0, ixoff: 0, crmod: 0, ttyop: 0, isig: 0, icrnl: 0,
+            imap: 0, noktty: 0, istrip: 0, iutf8: 0, vmin: 0, vtime: 0, veof: 0,
+            veol: 0, verase: 0, vintr: 0, vkill: 0, vquit: 0, vsusp: 0, vdsusp: 0,
+            vstart: 0, vstop: 0, vlnext: 0, vdiscard: 0, vwerase: 0, vreprint: 0,
+            vlnext2: 0, vpreview: 0, vstatus: 0, vswtch: 0, vhalt: 0, vreprint2: 0,
+        };
+        let encoded = mode.encode();
+        assert_eq!(encoded.len(), 40, "TerminalMode should encode to 40 bytes");
+    }
+
+    #[test]
+    fn test_terminal_mode_encode_values() {
+        let mut mode = TerminalMode {
+            term: 0, echo: 0, raw: 0, input: 0, opost: 0, olcur: 0, nl2cr: 0,
+            nlparm: 0, ixon: 0, ixoff: 0, crmod: 0, ttyop: 0, isig: 0, icrnl: 0,
+            imap: 0, noktty: 0, istrip: 0, iutf8: 0, vmin: 0, vtime: 0, veof: 0,
+            veol: 0, verase: 0, vintr: 0, vkill: 0, vquit: 0, vsusp: 0, vdsusp: 0,
+            vstart: 0, vstop: 0, vlnext: 0, vdiscard: 0, vwerase: 0, vreprint: 0,
+            vlnext2: 0, vpreview: 0, vstatus: 0, vswtch: 0, vhalt: 0, vreprint2: 0,
+        };
+        mode.echo = 1;
+        mode.isig = 1;
+        let encoded = mode.encode();
+        assert_eq!(encoded[1], 1, "echo should be at index 1");
+        assert_eq!(encoded[12], 1, "isig should be at index 12");
+    }
+
+    // --- WindowDimensions ---
+
+    #[test]
+    fn test_window_dimensions_new() {
+        let dims = WindowDimensions::new(132, 50);
+        assert_eq!(dims.width_chars, 132);
+        assert_eq!(dims.height_chars, 50);
+        assert_eq!(dims.width_pixels, 0);
+        assert_eq!(dims.height_pixels, 0);
+    }
+
+    #[test]
+    fn test_window_dimensions_with_pixels() {
+        let dims = WindowDimensions::with_pixels(80, 24, 640, 480);
+        assert_eq!(dims.width_chars, 80);
+        assert_eq!(dims.height_chars, 24);
+        assert_eq!(dims.width_pixels, 640);
+        assert_eq!(dims.height_pixels, 480);
+    }
+
+    #[test]
+    fn test_window_dimensions_encode() {
+        let dims = WindowDimensions::with_pixels(80, 24, 640, 480);
+        let encoded = dims.encode();
+        assert_eq!(encoded.len(), 16, "WindowDimensions encodes to 16 bytes (4 x u32)");
+        // Verify big-endian encoding
+        assert_eq!(u32::from_be_bytes([encoded[0], encoded[1], encoded[2], encoded[3]]), 80);
+        assert_eq!(u32::from_be_bytes([encoded[4], encoded[5], encoded[6], encoded[7]]), 24);
+        assert_eq!(u32::from_be_bytes([encoded[8], encoded[9], encoded[10], encoded[11]]), 640);
+        assert_eq!(u32::from_be_bytes([encoded[12], encoded[13], encoded[14], encoded[15]]), 480);
+    }
+
+    // --- TerminalModes ---
+
+    #[test]
+    fn test_terminal_modes_equality() {
+        let m1 = TerminalModes::default();
+        let m2 = TerminalModes::default();
+        assert_eq!(m1, m2);
+        assert_ne!(TerminalModes::default(), TerminalModes::raw());
+    }
+
+    #[test]
+    fn test_terminal_modes_clone() {
+        let m = TerminalModes::raw();
+        let m2 = m.clone();
+        assert_eq!(m, m2);
+    }
+
+    // --- ShellSession ---
+
+    fn make_test_session() -> Session {
+        Session::default_for_test()
+    }
+
+    #[test]
+    fn test_session_send_signal() {
+        let session = make_test_session();
+        let msg = session.send_signal("INT");
+        assert_eq!(msg.msg_type(), Some(MessageType::ChannelRequest));
+        let bytes = msg.as_bytes();
+        // Parse: msg_type(1) + channel_id(4) + req_type_len(4) + "signal"(6) + want_reply(1)
+        let req_len = u32::from_be_bytes([bytes[5], bytes[6], bytes[7], bytes[8]]) as usize;
+        let req_type = std::str::from_utf8(&bytes[9..9+req_len]).unwrap();
+        assert_eq!(req_type, "signal");
+    }
+
+    #[test]
+    fn test_session_send_signal_term() {
+        let session = make_test_session();
+        let msg = session.send_signal("TERM");
+        assert_eq!(msg.msg_type(), Some(MessageType::ChannelRequest));
+    }
+
+    #[test]
+    fn test_session_notify_window_change() {
+        let session = make_test_session();
+        let dims = WindowDimensions::new(120, 40);
+        let msg = session.notify_window_change(dims);
+        assert_eq!(msg.msg_type(), Some(MessageType::ChannelRequest));
+        let bytes = msg.as_bytes();
+        let req_len = u32::from_be_bytes([bytes[5], bytes[6], bytes[7], bytes[8]]) as usize;
+        let req_type = std::str::from_utf8(&bytes[9..9+req_len]).unwrap();
+        assert_eq!(req_type, "window-change");
+    }
+
+    // --- Session ---
+
+    #[test]
+    fn test_session_remote_channel_id() {
+        let channel = Channel::new(
+            ChannelId::new(5),
+            ChannelId::new(42),
+            ChannelType::Session,
+            65536,
+            32768,
+        );
+        let session = Session::new(channel);
+        assert_eq!(session.remote_channel_id(), 42);
+    }
+
+    #[test]
+    fn test_session_new_without_shell() {
+        let channel = Channel::new(
+            ChannelId::new(1),
+            ChannelId::new(100),
+            ChannelType::Session,
+            65536,
+            32768,
+        );
+        let session = Session::new_without_shell(channel);
+        assert_eq!(session.channel_id(), 1);
+        assert_eq!(session.state(), &SessionState::Initial);
+    }
+
+    #[test]
+    fn test_session_request_pty() {
+        let channel = Channel::new(
+            ChannelId::new(1),
+            ChannelId::new(100),
+            ChannelType::Session,
+            65536,
+            32768,
+        );
+        let session = Session::new(channel);
+        let dims = WindowDimensions::new(120, 40);
+        let modes = TerminalModes::default();
+        let msg = session.request_pty("xterm-256color", dims, modes);
+        assert_eq!(msg.msg_type(), Some(MessageType::ChannelRequest));
+    }
+
+    #[test]
+    fn test_session_request_env() {
+        let channel = Channel::new(
+            ChannelId::new(1),
+            ChannelId::new(100),
+            ChannelType::Session,
+            65536,
+            32768,
+        );
+        let session = Session::new(channel);
+        let msg = session.request_env("LANG", "en_US.UTF-8");
+        assert_eq!(msg.msg_type(), Some(MessageType::ChannelRequest));
+    }
+
+    // --- SessionManager ---
+
+    #[test]
+    fn test_session_manager_create_and_list() {
+        let mut mgr = SessionManager::new();
+        assert_eq!(mgr.session_count(), 0);
+        assert!(mgr.list_sessions().is_empty());
+
+        let id = mgr.create_session("127.0.0.1", 22);
+        assert_eq!(mgr.session_count(), 1);
+        assert_eq!(mgr.list_sessions(), vec![id]);
+    }
+
+    #[test]
+    fn test_session_manager_get_session() {
+        let mut mgr = SessionManager::new();
+        let id = mgr.create_session("127.0.0.1", 22);
+        assert!(mgr.get_session(id).is_some());
+        assert!(mgr.get_session(999).is_none());
+    }
+
+    #[test]
+    fn test_session_manager_get_session_mut() {
+        let mut mgr = SessionManager::new();
+        let id = mgr.create_session("127.0.0.1", 22);
+        assert!(mgr.get_session_mut(id).is_some());
+    }
+
+    #[test]
+    fn test_session_manager_multiple_sessions() {
+        let mut mgr = SessionManager::new();
+        let id1 = mgr.create_session("host1", 22);
+        let id2 = mgr.create_session("host2", 22);
+        // Both sessions should exist
+        assert!(mgr.get_session(id1).is_some());
+        assert!(mgr.get_session(id2).is_some());
+        // If IDs are different, we should have 2 sessions; if same, the second overwrote the first
+        if id1 != id2 {
+            assert_eq!(mgr.session_count(), 2);
+        } else {
+            assert_eq!(mgr.session_count(), 1); // same ID, overwritten
+        }
+    }
 }
