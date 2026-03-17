@@ -93,6 +93,16 @@ pub(crate) struct DecryptionState {
     pub(crate) mac_algorithm: String,
 }
 
+impl std::fmt::Debug for Transport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Transport")
+            .field("state", &self.state())
+            .field("encrypted", &self.encrypt_state.is_some())
+            .field("kex_strict", &self.kex_strict)
+            .finish()
+    }
+}
+
 impl Transport {
     /// Create a new transport with the given socket
     pub fn new(stream: TcpStream) -> Self {

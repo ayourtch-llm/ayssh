@@ -34,6 +34,12 @@ pub struct HmacSha256 {
     context: hmac::Context,
 }
 
+impl std::fmt::Debug for HmacSha256 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HmacSha256").finish_non_exhaustive()
+    }
+}
+
 impl HmacSha256 {
     /// Create a new HMAC-SHA256 instance with the given key
     ///
@@ -84,6 +90,12 @@ pub struct HmacSha512 {
     context: hmac::Context,
 }
 
+impl std::fmt::Debug for HmacSha512 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HmacSha512").finish_non_exhaustive()
+    }
+}
+
 impl HmacSha512 {
     /// Create a new HMAC-SHA512 instance with the given key
     pub fn new(key: &[u8]) -> Self {
@@ -113,6 +125,12 @@ pub struct HmacSha1 {
     data: Vec<u8>,
     /// Key for HMAC
     key: Vec<u8>,
+}
+
+impl std::fmt::Debug for HmacSha1 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HmacSha1").finish_non_exhaustive()
+    }
 }
 
 impl HmacSha1 {

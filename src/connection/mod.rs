@@ -26,6 +26,15 @@ pub struct Connection {
 pub use crate::transport::Transport;
 pub use state::ConnectionStateMachine;
 
+impl std::fmt::Debug for Connection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Connection")
+            .field("is_connected", &self.is_connected)
+            .field("config", &self.config)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Connection {
     /// Creates a new connection with the given configuration
     pub fn new(config: Config) -> Self {

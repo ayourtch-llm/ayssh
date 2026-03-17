@@ -21,6 +21,18 @@ pub struct SshClient {
     allowed_methods: Vec<ProtocolAuthMethod>,
 }
 
+impl std::fmt::Debug for SshClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SshClient")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("username", &self.username)
+            .field("has_password", &self.password.is_some())
+            .field("has_private_key", &self.private_key.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
 impl SshClient {
     /// Create a new SSH client
     pub fn new(host: String, port: u16) -> Self {

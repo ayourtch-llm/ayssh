@@ -23,6 +23,15 @@ pub struct ServerEncryptedIO {
     read_buffer: Vec<u8>,
 }
 
+impl std::fmt::Debug for ServerEncryptedIO {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ServerEncryptedIO")
+            .field("encryption_active", &self.encrypt_state.is_some())
+            .field("decryption_active", &self.decrypt_state.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
 impl ServerEncryptedIO {
     pub fn new(stream: TcpStream) -> Self {
         Self {

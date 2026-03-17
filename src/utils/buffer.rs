@@ -9,6 +9,12 @@ pub struct SshReader<R: Read> {
     inner: R,
 }
 
+impl<R: Read> std::fmt::Debug for SshReader<R> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SshReader").finish_non_exhaustive()
+    }
+}
+
 impl<R: Read> SshReader<R> {
     /// Create a new SSH reader
     pub fn new(reader: R) -> Self {
@@ -50,6 +56,12 @@ impl<R: Read> SshReader<R> {
 /// Buffer for writing SSH data
 pub struct SshWriter<W: Write> {
     inner: W,
+}
+
+impl<W: Write> std::fmt::Debug for SshWriter<W> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SshWriter").finish_non_exhaustive()
+    }
 }
 
 impl<W: Write> SshWriter<W> {
