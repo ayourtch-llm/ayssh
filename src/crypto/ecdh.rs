@@ -368,6 +368,39 @@ mod tests {
     }
 
     #[test]
+    fn test_nistp256_shared_secret_matches() {
+        let mut rng = OsRng;
+        let alice = EcdhKeyPair::generate(CurveType::Nistp256, &mut rng);
+        let bob = EcdhKeyPair::generate(CurveType::Nistp256, &mut rng);
+        let alice_secret = alice.compute_shared_secret(&bob.public_key);
+        let bob_secret = bob.compute_shared_secret(&alice.public_key);
+        assert_eq!(alice_secret, bob_secret);
+        assert_eq!(alice_secret.len(), 32); // P-256 shared secret is 32 bytes (x-coordinate)
+    }
+
+    #[test]
+    fn test_nistp384_shared_secret_matches() {
+        let mut rng = OsRng;
+        let alice = EcdhKeyPair::generate(CurveType::Nistp384, &mut rng);
+        let bob = EcdhKeyPair::generate(CurveType::Nistp384, &mut rng);
+        let alice_secret = alice.compute_shared_secret(&bob.public_key);
+        let bob_secret = bob.compute_shared_secret(&alice.public_key);
+        assert_eq!(alice_secret, bob_secret);
+        assert_eq!(alice_secret.len(), 48); // P-384 shared secret is 48 bytes
+    }
+
+    #[test]
+    fn test_nistp521_shared_secret_matches() {
+        let mut rng = OsRng;
+        let alice = EcdhKeyPair::generate(CurveType::Nistp521, &mut rng);
+        let bob = EcdhKeyPair::generate(CurveType::Nistp521, &mut rng);
+        let alice_secret = alice.compute_shared_secret(&bob.public_key);
+        let bob_secret = bob.compute_shared_secret(&alice.public_key);
+        assert_eq!(alice_secret, bob_secret);
+        assert_eq!(alice_secret.len(), 66); // P-521 shared secret is 66 bytes
+    }
+
+    #[test]
     fn test_encode_decode_public_key_nistp256() {
         let key_pair = EcdhKeyPair::generate(CurveType::Nistp256, &mut OsRng);
         let encoded = key_pair.encode_public_key();
