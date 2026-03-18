@@ -219,7 +219,7 @@ macro_rules! skip_if_no_sshd {
 #[test]
 fn test_handshake_against_real_sshd() {
     skip_if_no_sshd!();
-    let _lock = TEST_MUTEX.lock().unwrap();
+    let _lock = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
 
     let sshd = SshdInstance::start().expect("Failed to start sshd");
     eprintln!("[sshd_interop] sshd running on port {}", sshd.port);
@@ -263,7 +263,7 @@ fn test_handshake_against_real_sshd() {
 #[test]
 fn test_service_request_against_real_sshd() {
     skip_if_no_sshd!();
-    let _lock = TEST_MUTEX.lock().unwrap();
+    let _lock = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
 
     let sshd = SshdInstance::start().expect("Failed to start sshd");
 
@@ -301,7 +301,7 @@ fn test_service_request_against_real_sshd() {
 #[test]
 fn test_ed25519_auth_against_real_sshd() {
     skip_if_no_sshd!();
-    let _lock = TEST_MUTEX.lock().unwrap();
+    let _lock = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
 
     let sshd = SshdInstance::start().expect("Failed to start sshd");
     let current_user = std::env::var("USER")
@@ -348,7 +348,7 @@ fn test_ed25519_auth_against_real_sshd() {
 #[test]
 fn test_kex_algorithms_against_real_sshd() {
     skip_if_no_sshd!();
-    let _lock = TEST_MUTEX.lock().unwrap();
+    let _lock = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
 
     let kex_algorithms = [
         "curve25519-sha256",
@@ -408,7 +408,7 @@ fn test_kex_algorithms_against_real_sshd() {
 #[test]
 fn test_chacha20_debug_against_real_sshd() {
     skip_if_no_sshd!();
-    let _lock = TEST_MUTEX.lock().unwrap();
+    let _lock = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
 
     // Use a dedicated sshd with DEBUG3 for this test
     let mut sshd = SshdInstance::start_with_loglevel("DEBUG3").expect("Failed to start sshd");
@@ -458,7 +458,7 @@ fn test_chacha20_debug_against_real_sshd() {
 #[test]
 fn test_ciphers_against_real_sshd() {
     skip_if_no_sshd!();
-    let _lock = TEST_MUTEX.lock().unwrap();
+    let _lock = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
 
     let ciphers = [
         "aes128-ctr",
@@ -527,7 +527,7 @@ fn test_ciphers_against_real_sshd() {
 #[test]
 fn test_macs_against_real_sshd() {
     skip_if_no_sshd!();
-    let _lock = TEST_MUTEX.lock().unwrap();
+    let _lock = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
 
     let macs = [
         "hmac-sha1",
@@ -586,7 +586,7 @@ fn test_macs_against_real_sshd() {
 #[test]
 fn test_rsa_auth_against_real_sshd() {
     skip_if_no_sshd!();
-    let _lock = TEST_MUTEX.lock().unwrap();
+    let _lock = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
 
     // We need authorized_keys to include the RSA pubkey.
     // Start a custom sshd with both ed25519 and RSA keys authorized.
@@ -689,7 +689,7 @@ fn test_rsa_auth_against_real_sshd() {
 #[test]
 fn test_ecdsa_p256_auth_against_real_sshd() {
     skip_if_no_sshd!();
-    let _lock = TEST_MUTEX.lock().unwrap();
+    let _lock = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
 
     // Start sshd with ECDSA P-256 pubkey in authorized_keys + DEBUG3 logging
     let sshd_path = find_sshd().unwrap();
@@ -875,7 +875,7 @@ fn run_pubkey_auth_test(private_key_path: &str, public_key_path: &str, label: &s
 #[test]
 fn test_ecdsa_p384_auth_against_real_sshd() {
     skip_if_no_sshd!();
-    let _lock = TEST_MUTEX.lock().unwrap();
+    let _lock = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     run_pubkey_auth_test(
         "tests/keys/test_ecdsa_384", "tests/keys/test_ecdsa_384.pub",
         "ECDSA P-384",
@@ -886,7 +886,7 @@ fn test_ecdsa_p384_auth_against_real_sshd() {
 #[test]
 fn test_ecdsa_p521_auth_against_real_sshd() {
     skip_if_no_sshd!();
-    let _lock = TEST_MUTEX.lock().unwrap();
+    let _lock = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     run_pubkey_auth_test(
         "tests/keys/test_ecdsa_521", "tests/keys/test_ecdsa_521.pub",
         "ECDSA P-521",
@@ -897,7 +897,7 @@ fn test_ecdsa_p521_auth_against_real_sshd() {
 #[test]
 fn test_rsa_4096_auth_against_real_sshd() {
     skip_if_no_sshd!();
-    let _lock = TEST_MUTEX.lock().unwrap();
+    let _lock = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     run_pubkey_auth_test(
         "tests/keys/test_rsa_4096", "tests/keys/test_rsa_4096.pub",
         "RSA-4096",
@@ -909,7 +909,7 @@ fn test_rsa_4096_auth_against_real_sshd() {
 #[test]
 fn test_cipher_mac_combos_against_real_sshd() {
     skip_if_no_sshd!();
-    let _lock = TEST_MUTEX.lock().unwrap();
+    let _lock = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
 
     // Representative combinations — not exhaustive but covers interesting pairs
     let combos: Vec<(&str, &str)> = vec![
@@ -971,7 +971,7 @@ fn test_cipher_mac_combos_against_real_sshd() {
 #[test]
 fn test_rsa_8192_auth_against_real_sshd() {
     skip_if_no_sshd!();
-    let _lock = TEST_MUTEX.lock().unwrap();
+    let _lock = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     run_pubkey_auth_test(
         "tests/keys/test_rsa_8192", "tests/keys/test_rsa_8192.pub",
         "RSA-8192",
@@ -983,7 +983,7 @@ fn test_rsa_8192_auth_against_real_sshd() {
 #[test]
 fn test_full_session_against_real_sshd() {
     skip_if_no_sshd!();
-    let _lock = TEST_MUTEX.lock().unwrap();
+    let _lock = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
 
     // sshd with ed25519 key in authorized_keys
     let sshd_path = find_sshd().unwrap();
@@ -1116,7 +1116,7 @@ fn test_full_session_against_real_sshd() {
 #[test]
 fn test_key_cipher_matrix_against_real_sshd() {
     skip_if_no_sshd!();
-    let _lock = TEST_MUTEX.lock().unwrap();
+    let _lock = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
 
     let key_configs: Vec<(&str, &str, &str)> = vec![
         ("Ed25519", "tests/keys/test_ed25519", "tests/keys/test_ed25519.pub"),
@@ -1220,7 +1220,7 @@ fn test_key_cipher_matrix_against_real_sshd() {
 #[test]
 fn test_bidirectional_data_against_real_sshd() {
     skip_if_no_sshd!();
-    let _lock = TEST_MUTEX.lock().unwrap();
+    let _lock = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
 
     let sshd_path = find_sshd().unwrap();
     let tmpdir = tempfile::TempDir::new().unwrap();
@@ -1346,7 +1346,7 @@ fn test_bidirectional_data_against_real_sshd() {
 #[test]
 fn test_rapid_sequential_connections() {
     skip_if_no_sshd!();
-    let _lock = TEST_MUTEX.lock().unwrap();
+    let _lock = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
 
     let sshd = SshdInstance::start().expect("Failed to start sshd");
     let mut passed = 0;
@@ -1378,7 +1378,7 @@ fn test_rapid_sequential_connections() {
 #[test]
 fn test_kex_cipher_cross_product() {
     skip_if_no_sshd!();
-    let _lock = TEST_MUTEX.lock().unwrap();
+    let _lock = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
 
     let combos: Vec<(&str, &str)> = vec![
         ("curve25519-sha256", "aes128-ctr"),

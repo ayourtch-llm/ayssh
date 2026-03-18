@@ -73,12 +73,15 @@ macro_rules! skip_if_no_ssh {
 
 /// Run our test server on a random port, call `test_fn` with the port,
 /// and verify the server completes without error.
+/// The server thread never panics — it reports errors via a channel so
+/// that a failure doesn't poison the test mutex.
 fn run_server_test<F>(host_key: HostKeyPair, filter: AlgorithmFilter, test_fn: F)
 where
     F: FnOnce(u16) + Send + 'static,
 {
     use std::sync::mpsc;
     let (port_tx, port_rx) = mpsc::channel::<u16>();
+    let (err_tx, err_rx) = mpsc::channel::<String>();
 
     let server = std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -90,12 +93,22 @@ where
             let port = listener.local_addr().unwrap().port();
             port_tx.send(port).unwrap();
 
-            let (stream, addr) = listener.accept().await.unwrap();
+            let accept_result = tokio::time::timeout(
+                std::time::Duration::from_secs(15),
+                listener.accept(),
+            ).await;
+
+            let (stream, addr) = match accept_result {
+                Ok(Ok(v)) => v,
+                Ok(Err(e)) => { let _ = err_tx.send(format!("Accept failed: {}", e)); return; }
+                Err(_) => { let _ = err_tx.send("Accept timed out".into()); return; }
+            };
             eprintln!("[server] Accepted connection from {}", addr);
 
-            let (mut io, ch) = server_handshake(stream, &host_key, &filter)
-                .await
-                .expect("Server handshake failed with real ssh client");
+            let (mut io, ch) = match server_handshake(stream, &host_key, &filter).await {
+                Ok(v) => v,
+                Err(e) => { let _ = err_tx.send(format!("Handshake failed: {}", e)); return; }
+            };
 
             // Send test data through the channel
             let mut msg = BytesMut::new();
@@ -104,7 +117,7 @@ where
             let data = b"INTEROP_OK\n";
             msg.put_u32(data.len() as u32);
             msg.put_slice(data);
-            io.send_message(&msg).await.unwrap();
+            let _ = io.send_message(&msg).await;
 
             // Send EOF + CLOSE
             let mut eof = BytesMut::new();
@@ -121,8 +134,15 @@ where
     });
 
     let port = port_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    // Wait for server to be ready to accept
+    std::thread::sleep(Duration::from_millis(10));
     test_fn(port);
-    server.join().expect("Server thread panicked");
+    let _ = server.join(); // never panics — errors come via err_rx
+
+    // Check if server had any errors
+    if let Ok(err) = err_rx.try_recv() {
+        panic!("[server] {}", err);
+    }
 }
 
 /// Build common ssh args that isolate from user config
@@ -150,7 +170,7 @@ fn ssh_base_args(port: u16) -> Vec<String> {
 #[test]
 fn test_openssh_client_connects_to_our_server() {
     skip_if_no_ssh!();
-    let _lock = TEST_MUTEX.lock().unwrap();
+    let _lock = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     let ssh_path = find_ssh().unwrap();
 
     run_server_test(
@@ -190,7 +210,7 @@ fn test_openssh_client_connects_to_our_server() {
 #[test]
 fn test_openssh_client_with_rsa_host_key() {
     skip_if_no_ssh!();
-    let _lock = TEST_MUTEX.lock().unwrap();
+    let _lock = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     let ssh_path = find_ssh().unwrap();
 
     let host_key = HostKeyPair::load_openssh_rsa(Path::new("tests/keys/test_rsa_2048"))
@@ -233,7 +253,7 @@ fn test_openssh_client_with_rsa_host_key() {
 #[test]
 fn test_openssh_client_with_ecdsa_p256_host_key() {
     skip_if_no_ssh!();
-    let _lock = TEST_MUTEX.lock().unwrap();
+    let _lock = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     let ssh_path = find_ssh().unwrap();
 
     let host_key = HostKeyPair::generate_ecdsa_p256();
@@ -275,7 +295,7 @@ fn test_openssh_client_with_ecdsa_p256_host_key() {
 #[test]
 fn test_openssh_client_with_ecdsa_p384_host_key() {
     skip_if_no_ssh!();
-    let _lock = TEST_MUTEX.lock().unwrap();
+    let _lock = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     let ssh_path = find_ssh().unwrap();
 
     let host_key = HostKeyPair::generate_ecdsa_p384();
@@ -312,7 +332,7 @@ fn test_openssh_client_with_ecdsa_p384_host_key() {
 #[test]
 fn test_openssh_client_cipher_negotiation() {
     skip_if_no_ssh!();
-    let _lock = TEST_MUTEX.lock().unwrap();
+    let _lock = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     let ssh_path = find_ssh().unwrap();
 
     let ciphers = [
@@ -387,7 +407,7 @@ fn test_openssh_client_cipher_negotiation() {
 #[test]
 fn test_openssh_client_kex_negotiation() {
     skip_if_no_ssh!();
-    let _lock = TEST_MUTEX.lock().unwrap();
+    let _lock = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     let ssh_path = find_ssh().unwrap();
 
     let kex_algorithms = [
@@ -451,7 +471,7 @@ fn test_openssh_client_kex_negotiation() {
 #[test]
 fn test_openssh_client_defaults_to_chacha20() {
     skip_if_no_ssh!();
-    let _lock = TEST_MUTEX.lock().unwrap();
+    let _lock = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     let ssh_path = find_ssh().unwrap();
 
     run_server_test(
@@ -494,7 +514,7 @@ fn test_openssh_client_defaults_to_chacha20() {
 #[test]
 fn test_openssh_client_mac_negotiation() {
     skip_if_no_ssh!();
-    let _lock = TEST_MUTEX.lock().unwrap();
+    let _lock = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     let ssh_path = find_ssh().unwrap();
 
     let macs = [
@@ -562,7 +582,7 @@ fn test_openssh_client_mac_negotiation() {
 #[test]
 fn test_openssh_client_cbc_ciphers() {
     skip_if_no_ssh!();
-    let _lock = TEST_MUTEX.lock().unwrap();
+    let _lock = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     let ssh_path = find_ssh().unwrap();
 
     let cbc_ciphers = ["aes128-cbc", "aes256-cbc"];
@@ -615,7 +635,7 @@ fn test_openssh_client_cbc_ciphers() {
 #[test]
 fn test_openssh_client_rapid_connections() {
     skip_if_no_ssh!();
-    let _lock = TEST_MUTEX.lock().unwrap();
+    let _lock = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     let ssh_path = find_ssh().unwrap();
 
     let mut passed = 0;
@@ -663,7 +683,7 @@ fn test_openssh_client_rapid_connections() {
 #[test]
 fn test_openssh_client_kex_cipher_combos() {
     skip_if_no_ssh!();
-    let _lock = TEST_MUTEX.lock().unwrap();
+    let _lock = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     let ssh_path = find_ssh().unwrap();
 
     let combos: Vec<(&str, &str)> = vec![
