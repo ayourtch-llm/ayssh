@@ -1196,7 +1196,98 @@ mod tests {
         assert!(result.is_err());
     }
 
-    /// Test SCP upload roundtrip using our test server's SCP handler.
+    /// Test ScpSession::upload (password) against our test SCP server.
+    #[test]
+    fn test_scp_session_upload_password_with_test_server() {
+        use crate::server::test_server::*;
+        use crate::server::host_key::HostKeyPair;
+
+        let (port_tx, port_rx) = std::sync::mpsc::channel::<u16>();
+        let (data_tx, data_rx) = std::sync::mpsc::channel::<(String, Vec<u8>)>();
+
+        let server = std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all().build().unwrap();
+            rt.block_on(async {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                port_tx.send(listener.local_addr().unwrap().port()).unwrap();
+                let host_key = HostKeyPair::generate_ed25519();
+                let filter = AlgorithmFilter::default();
+                let (stream, _) = listener.accept().await.unwrap();
+                let (mut io, ch) = server_handshake(stream, &host_key, &filter).await
+                    .expect("Server handshake failed");
+                let (filename, file_data) = handle_scp_upload(&mut io, ch).await
+                    .expect("SCP upload failed");
+                data_tx.send((filename, file_data)).unwrap();
+            });
+        });
+
+        let client = std::thread::spawn(move || {
+            let port = port_rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all().build().unwrap();
+            rt.block_on(async {
+                let test_data = b"Upload via ScpSession::upload!";
+                ScpSession::upload(
+                    "127.0.0.1", port, "test", "test",
+                    "/tmp/test_upload.txt",
+                    test_data, 0o644,
+                ).await.unwrap();
+            });
+        });
+
+        client.join().expect("Client panicked");
+        server.join().expect("Server panicked");
+
+        let (filename, data) = data_rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        assert_eq!(filename, "test_upload.txt");
+        assert_eq!(data, b"Upload via ScpSession::upload!");
+    }
+
+    /// Test ScpSession::download (password) against our test SCP server.
+    #[test]
+    fn test_scp_session_download_password_with_test_server() {
+        use crate::server::test_server::*;
+        use crate::server::host_key::HostKeyPair;
+
+        let (port_tx, port_rx) = std::sync::mpsc::channel::<u16>();
+        let test_content = b"Download via ScpSession::download!";
+
+        let content = test_content.to_vec();
+        let server = std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all().build().unwrap();
+            rt.block_on(async {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                port_tx.send(listener.local_addr().unwrap().port()).unwrap();
+                let host_key = HostKeyPair::generate_ed25519();
+                let filter = AlgorithmFilter::default();
+                let (stream, _) = listener.accept().await.unwrap();
+                let (mut io, ch) = server_handshake(stream, &host_key, &filter).await
+                    .expect("Server handshake failed");
+                handle_scp_download(&mut io, ch, "file.txt", &content, 0o644).await
+                    .expect("SCP download failed");
+            });
+        });
+
+        let client = std::thread::spawn(move || {
+            let port = port_rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all().build().unwrap();
+            rt.block_on(async {
+                let data = ScpSession::download(
+                    "127.0.0.1", port, "test", "test",
+                    "/tmp/file.txt",
+                ).await.unwrap();
+                assert_eq!(data, test_content);
+            });
+        });
+
+        client.join().expect("Client panicked");
+        server.join().expect("Server panicked");
+    }
+
+    /// Test SCP upload roundtrip using our test server's SCP handler (manual protocol).
     #[test]
     fn test_scp_upload_with_test_server() {
         use crate::server::test_server::*;
