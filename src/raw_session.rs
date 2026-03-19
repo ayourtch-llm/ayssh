@@ -447,10 +447,184 @@ mod tests {
     #[tokio::test]
     async fn test_receive_timeout_returns_empty() {
         let (mut session, _server) = make_session_pair().await;
-        // receive with a very short timeout on a connection that has no data should return empty
         let result = session.receive(Duration::from_millis(50)).await;
-        // This could either timeout (Ok(vec![])) or get an error since it's raw TCP without SSH framing
-        // Either outcome is acceptable for a non-SSH-framed connection
         assert!(result.is_ok() || result.is_err());
+    }
+
+    /// Full end-to-end test using our test server: handshake → auth → PTY → shell → send/receive
+    #[test]
+    fn test_raw_session_full_flow_with_test_server() {
+        use crate::server::test_server::*;
+        use crate::server::host_key::HostKeyPair;
+        use bytes::BufMut;
+
+        let (port_tx, port_rx) = std::sync::mpsc::channel::<u16>();
+
+        let server = std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all().build().unwrap();
+            rt.block_on(async {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                port_tx.send(listener.local_addr().unwrap().port()).unwrap();
+                let host_key = HostKeyPair::generate_ed25519();
+                let filter = AlgorithmFilter::default();
+                let (stream, _) = listener.accept().await.unwrap();
+                let (mut io, ch) = server_handshake(stream, &host_key, &filter).await
+                    .expect("Server handshake failed");
+
+                // Send test data
+                let mut msg = bytes::BytesMut::new();
+                msg.put_u8(94); msg.put_u32(ch);
+                let data = b"RAW_SESSION_TEST_OK\n";
+                msg.put_u32(data.len() as u32); msg.put_slice(data);
+                io.send_message(&msg).await.unwrap();
+
+                let mut eof = bytes::BytesMut::new();
+                eof.put_u8(96); eof.put_u32(ch);
+                let _ = io.send_message(&eof).await;
+                let mut close = bytes::BytesMut::new();
+                close.put_u8(97); close.put_u32(ch);
+                let _ = io.send_message(&close).await;
+            });
+        });
+
+        let client = std::thread::spawn(move || {
+            let port = port_rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all().build().unwrap();
+            rt.block_on(async {
+                // Test connect_and_handshake + authenticate_password + open_pty_shell
+                let mut transport = RawSshSession::connect_and_handshake("127.0.0.1", port).await.unwrap();
+                RawSshSession::authenticate_password(&mut transport, "test", "test").await.unwrap();
+                let mut session = RawSshSession::open_pty_shell(transport).await.unwrap();
+
+                assert!(session.channel_id() < 100); // reasonable channel id
+
+                // Test receive — should get the test data
+                let data = session.receive(Duration::from_secs(5)).await.unwrap();
+                let text = String::from_utf8_lossy(&data);
+                assert!(text.contains("RAW_SESSION_TEST_OK"), "Got: {:?}", text);
+
+                // Drain EOF/CLOSE
+                for _ in 0..5 {
+                    match session.receive(Duration::from_millis(500)).await {
+                        Ok(d) if d.is_empty() => break,
+                        Err(_) => break,
+                        _ => continue,
+                    }
+                }
+
+                let _ = session.disconnect().await;
+            });
+        });
+
+        server.join().expect("Server panicked");
+        client.join().expect("Client panicked");
+    }
+
+    /// Test send method with test server
+    #[test]
+    fn test_raw_session_send_with_test_server() {
+        use crate::server::test_server::*;
+        use crate::server::host_key::HostKeyPair;
+        use bytes::BufMut;
+
+        let (port_tx, port_rx) = std::sync::mpsc::channel::<u16>();
+
+        let server = std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all().build().unwrap();
+            rt.block_on(async {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                port_tx.send(listener.local_addr().unwrap().port()).unwrap();
+                let host_key = HostKeyPair::generate_ed25519();
+                let filter = AlgorithmFilter::default();
+                let (stream, _) = listener.accept().await.unwrap();
+                let (mut io, ch) = server_handshake(stream, &host_key, &filter).await
+                    .expect("Server handshake failed");
+
+                // Read what client sends (should be CHANNEL_DATA)
+                let msg = io.recv_message().await.unwrap();
+                assert!(!msg.is_empty());
+                // Send back acknowledgment
+                let mut reply = bytes::BytesMut::new();
+                reply.put_u8(94); reply.put_u32(ch);
+                let data = b"ACK";
+                reply.put_u32(data.len() as u32); reply.put_slice(data);
+                io.send_message(&reply).await.unwrap();
+
+                let mut eof = bytes::BytesMut::new();
+                eof.put_u8(96); eof.put_u32(ch);
+                let _ = io.send_message(&eof).await;
+                let mut close = bytes::BytesMut::new();
+                close.put_u8(97); close.put_u32(ch);
+                let _ = io.send_message(&close).await;
+            });
+        });
+
+        let client = std::thread::spawn(move || {
+            let port = port_rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all().build().unwrap();
+            rt.block_on(async {
+                let mut transport = RawSshSession::connect_and_handshake("127.0.0.1", port).await.unwrap();
+                RawSshSession::authenticate_password(&mut transport, "test", "test").await.unwrap();
+                let mut session = RawSshSession::open_pty_shell(transport).await.unwrap();
+
+                // Test send
+                session.send(b"hello from client\n").await.unwrap();
+
+                // Read acknowledgment
+                let ack = session.receive(Duration::from_secs(5)).await.unwrap();
+                assert_eq!(ack, b"ACK");
+
+                // Drain
+                for _ in 0..5 {
+                    match session.receive(Duration::from_millis(500)).await {
+                        Ok(d) if d.is_empty() => break,
+                        Err(_) => break,
+                        _ => continue,
+                    }
+                }
+            });
+        });
+
+        server.join().expect("Server panicked");
+        client.join().expect("Client panicked");
+    }
+
+    /// Test connect failure (bad host)
+    #[tokio::test]
+    async fn test_connect_and_handshake_bad_host() {
+        let result = RawSshSession::connect_and_handshake("127.0.0.1", 1).await;
+        assert!(result.is_err());
+    }
+
+    /// Test connect_with_password error (no server)
+    #[tokio::test]
+    async fn test_connect_with_password_no_server() {
+        let result = RawSshSession::connect_with_password("127.0.0.1", 1, "user", "pass").await;
+        assert!(result.is_err());
+    }
+
+    /// Test connect_with_publickey error (no server)
+    #[tokio::test]
+    async fn test_connect_with_publickey_no_server() {
+        let result = RawSshSession::connect_with_publickey("127.0.0.1", 1, "user", b"key").await;
+        assert!(result.is_err());
+    }
+
+    /// Test exec_with_password error (no server)
+    #[tokio::test]
+    async fn test_exec_with_password_no_server() {
+        let result = RawSshSession::exec_with_password("127.0.0.1", 1, "user", "pass", "ls").await;
+        assert!(result.is_err());
+    }
+
+    /// Test exec_with_publickey error (no server)
+    #[tokio::test]
+    async fn test_exec_with_publickey_no_server() {
+        let result = RawSshSession::exec_with_publickey("127.0.0.1", 1, "user", b"key", "ls").await;
+        assert!(result.is_err());
     }
 }
