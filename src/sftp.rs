@@ -648,7 +648,7 @@ const SSH_FX_EOF: u32 = 1;
 use bytes::{BufMut, BytesMut};
 
 /// SFTP file attributes
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct SftpAttrs {
     pub size: Option<u64>,
     pub uid: Option<u32>,
@@ -2036,5 +2036,129 @@ mod tests {
             "127.0.0.1", 1, "user", b"key",
         ).await;
         assert!(result.is_err());
+    }
+
+    /// Test SftpClient write_file + read_file + stat + remove against our SFTP server.
+    #[test]
+    fn test_sftp_client_full_cycle_with_sftp_server() {
+        use crate::server::test_server::*;
+        use crate::server::host_key::HostKeyPair;
+        use crate::server::sftp_server::MemoryFs;
+        use std::sync::Arc;
+
+        let (port_tx, port_rx) = std::sync::mpsc::channel::<u16>();
+        let memory_fs = Arc::new(MemoryFs::new());
+        let fs_for_server = memory_fs.clone();
+
+        let server = std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all().build().unwrap();
+            rt.block_on(async {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                port_tx.send(listener.local_addr().unwrap().port()).unwrap();
+                let host_key = HostKeyPair::generate_ed25519();
+                let filter = AlgorithmFilter::default();
+                let (stream, _) = listener.accept().await.unwrap();
+                let (mut io, ch) = server_handshake(stream, &host_key, &filter).await
+                    .expect("Server handshake failed");
+
+                // Run SFTP server loop
+                let _ = run_sftp_server(&mut io, ch, fs_for_server).await;
+            });
+        });
+
+        let client = std::thread::spawn(move || {
+            let port = port_rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all().build().unwrap();
+            rt.block_on(async {
+                // Connect using password auth (our test server accepts any)
+                let mut sftp = SftpClient::connect_with_password(
+                    "127.0.0.1", port, "test", "test",
+                ).await.unwrap();
+
+                // Write a file
+                let test_data = b"SFTP server test data 1234567890!";
+                sftp.write_file("/test_file.txt", test_data, 0o644).await.unwrap();
+
+                // Stat the file
+                let attrs = sftp.stat("/test_file.txt").await.unwrap();
+                assert_eq!(attrs.size, Some(test_data.len() as u64));
+
+                // Read the file back
+                let read_data = sftp.read_file("/test_file.txt").await.unwrap();
+                assert_eq!(read_data, test_data);
+
+                // Remove the file
+                sftp.remove("/test_file.txt").await.unwrap();
+
+                // Stat after remove should fail
+                let stat_result = sftp.stat("/test_file.txt").await;
+                assert!(stat_result.is_err());
+
+                sftp.disconnect().await.unwrap();
+            });
+        });
+
+        client.join().expect("Client panicked");
+        // Server exits when client disconnects
+        let _ = server.join();
+    }
+
+    /// Test SftpClient::write_file_stream against our SFTP server.
+    #[test]
+    fn test_sftp_client_write_file_stream_with_sftp_server() {
+        use crate::server::test_server::*;
+        use crate::server::host_key::HostKeyPair;
+        use crate::server::sftp_server::MemoryFs;
+        use std::sync::Arc;
+
+        let (port_tx, port_rx) = std::sync::mpsc::channel::<u16>();
+        let memory_fs = Arc::new(MemoryFs::new());
+        let fs_for_server = memory_fs.clone();
+        let fs_for_verify = memory_fs.clone();
+
+        let server = std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all().build().unwrap();
+            rt.block_on(async {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                port_tx.send(listener.local_addr().unwrap().port()).unwrap();
+                let host_key = HostKeyPair::generate_ed25519();
+                let filter = AlgorithmFilter::default();
+                let (stream, _) = listener.accept().await.unwrap();
+                let (mut io, ch) = server_handshake(stream, &host_key, &filter).await
+                    .expect("Server handshake failed");
+                let _ = run_sftp_server(&mut io, ch, fs_for_server).await;
+            });
+        });
+
+        let test_data = b"Streaming write test data for SFTP!";
+        let test_data_clone = test_data.to_vec();
+        let client = std::thread::spawn(move || {
+            let port = port_rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all().build().unwrap();
+            rt.block_on(async {
+                let mut sftp = SftpClient::connect_with_password(
+                    "127.0.0.1", port, "test", "test",
+                ).await.unwrap();
+
+                let mut cursor = std::io::Cursor::new(test_data_clone);
+                let bytes_written = sftp.write_file_stream(
+                    "/stream_test.txt", &mut cursor, 0o644,
+                ).await.unwrap();
+
+                assert_eq!(bytes_written, test_data.len() as u64);
+                sftp.disconnect().await.unwrap();
+            });
+        });
+
+        client.join().expect("Client panicked");
+        let _ = server.join();
+
+        // Verify via MemoryFs
+        let stored = fs_for_verify.get_file("/stream_test.txt").unwrap();
+        assert_eq!(stored, test_data);
     }
 }

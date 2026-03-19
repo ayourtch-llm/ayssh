@@ -6,8 +6,10 @@
 
 pub mod encrypted_io;
 pub mod host_key;
+pub mod sftp_server;
 pub mod test_server;
 
 pub use encrypted_io::ServerEncryptedIO;
 pub use host_key::HostKeyPair;
+pub use sftp_server::{SftpHandler, SftpServerSession, MemoryFs};
 pub use test_server::{TestSshServer, AlgorithmFilter, server_handshake};

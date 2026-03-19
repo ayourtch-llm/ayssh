@@ -559,8 +559,8 @@ pub async fn server_handshake_with_auth(
                     if msg.len() >= 9 + req_len {
                         let req_type = std::str::from_utf8(&msg[9..9+req_len]).unwrap_or("");
                         debug!("CHANNEL_REQUEST type={}", req_type);
-                        if req_type == "shell" || req_type == "exec" {
-                            break; // Shell/exec received, ready for data
+                        if req_type == "shell" || req_type == "exec" || req_type == "subsystem" {
+                            break; // Shell/exec/subsystem received, ready for data
                         }
                     }
                 }
@@ -582,6 +582,18 @@ pub async fn server_handshake_with_auth(
 }
 
 use tokio::io::AsyncWriteExt;
+
+/// Run an SFTP server on an already-established SSH channel.
+/// Call this after server_handshake when the channel request type is "subsystem"
+/// with name "sftp".
+pub async fn run_sftp_server(
+    io: &mut super::encrypted_io::ServerEncryptedIO,
+    client_channel: u32,
+    handler: std::sync::Arc<super::sftp_server::MemoryFs>,
+) -> Result<(), SshError> {
+    let server = super::sftp_server::SftpServerSession::new(handler);
+    server.run(io, client_channel).await
+}
 
 /// Handle SCP upload (scp -t) on the server side.
 /// Reads the file data sent by the client and returns it.
