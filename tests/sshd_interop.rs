@@ -967,6 +967,108 @@ fn test_cipher_mac_combos_against_real_sshd() {
     assert!(passed >= 6, "At least 6 cipher×MAC combos should work against sshd");
 }
 
+/// Test SSH agent-based authentication against real sshd.
+/// Requires ssh-agent running with a key loaded.
+#[test]
+fn test_agent_auth_against_real_sshd() {
+    skip_if_no_sshd!();
+    let _lock = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+
+    // Check if agent is available
+    let agent_result = ayssh::agent::AgentClient::from_env();
+    if agent_result.is_err() {
+        eprintln!("SKIPPED: SSH_AUTH_SOCK not set");
+        return;
+    }
+
+    // Start sshd with ed25519 key in authorized_keys (matching what's in the agent)
+    let sshd_path = find_sshd().unwrap();
+    let tmpdir = tempfile::TempDir::new().unwrap();
+    let tmppath = tmpdir.path();
+
+    let host_key_path = tmppath.join("host_key");
+    std::process::Command::new("ssh-keygen")
+        .args(["-t", "ed25519", "-f"])
+        .arg(&host_key_path)
+        .args(["-N", "", "-q"])
+        .status().unwrap();
+
+    let auth_keys_path = tmppath.join("authorized_keys");
+    let pubkey = std::fs::read_to_string("tests/keys/test_ed25519.pub").unwrap();
+    std::fs::write(&auth_keys_path, pubkey.trim()).unwrap();
+
+    let port = find_free_port();
+    let config_path = tmppath.join("sshd_config");
+    let pid_path = tmppath.join("sshd.pid");
+    std::fs::write(&config_path, format!(
+        "Port {}\nListenAddress 127.0.0.1\nHostKey {}\nAuthorizedKeysFile {}\n\
+         PubkeyAuthentication yes\nPasswordAuthentication no\n\
+         KbdInteractiveAuthentication no\nStrictModes no\nPidFile {}\nLogLevel ERROR\n",
+        port, host_key_path.display(), auth_keys_path.display(), pid_path.display(),
+    )).unwrap();
+
+    let mut child = std::process::Command::new(&sshd_path)
+        .args(["-D", "-e", "-f"])
+        .arg(&config_path)
+        .stderr(std::process::Stdio::piped())
+        .spawn().unwrap();
+
+    let start = std::time::Instant::now();
+    while start.elapsed() < Duration::from_secs(5) {
+        if std::net::TcpStream::connect(format!("127.0.0.1:{}", port)).is_ok() { break; }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    let current_user = std::env::var("USER")
+        .or_else(|_| std::env::var("LOGNAME"))
+        .unwrap_or_else(|_| "test".to_string());
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all().build().unwrap();
+
+    let result = rt.block_on(async {
+        // Connect agent
+        let mut agent = agent_result.unwrap();
+        agent.connect().await?;
+
+        // Check agent has keys
+        let keys = agent.request_identities().await?;
+        eprintln!("[agent_test] Agent has {} keys", keys.len());
+        if keys.is_empty() {
+            return Err(ayssh::error::SshError::AuthenticationFailed(
+                "No keys in agent".into()
+            ));
+        }
+
+        // Connect to sshd
+        let stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port)).await?;
+        let mut transport = ayssh::transport::Transport::new(stream);
+        transport.handshake().await?;
+        transport.send_service_request("ssh-userauth").await?;
+        transport.recv_service_accept().await?;
+
+        // Authenticate using agent
+        let mut auth = ayssh::auth::Authenticator::new(&mut transport, current_user)
+            .with_agent(agent)
+            .with_method_order(vec!["publickey".to_string()]);
+
+        let result = auth.authenticate().await?;
+        Ok::<ayssh::auth::AuthenticationResult, ayssh::error::SshError>(result)
+    });
+
+    let _ = child.kill();
+    let _ = child.wait();
+
+    match result {
+        Ok(ayssh::auth::AuthenticationResult::Success) => {
+            eprintln!("[sshd_interop] SSH agent auth SUCCESS");
+        }
+        other => {
+            panic!("SSH agent auth failed: {:?}", other);
+        }
+    }
+}
+
 /// Test RSA-8192 public key authentication (large key).
 #[test]
 fn test_rsa_8192_auth_against_real_sshd() {

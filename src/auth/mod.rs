@@ -115,6 +115,8 @@ pub struct Authenticator<'a> {
     /// Optional callback invoked between auth attempts on failure.
     /// Receives context about what failed and what's next, returns a verdict.
     fallback_handler: Option<Box<dyn Fn(&AuthFallbackContext) -> AuthFallbackVerdict + Send>>,
+    /// SSH agent client for agent-based pubkey auth
+    agent: Option<crate::agent::AgentClient>,
 }
 
 impl<'a> Authenticator<'a> {
@@ -130,6 +132,7 @@ impl<'a> Authenticator<'a> {
             method_order: Vec::new(),
             keyboard_interactive_handler: None,
             fallback_handler: None,
+            agent: None,
         }
     }
 
@@ -172,6 +175,13 @@ impl<'a> Authenticator<'a> {
         self
     }
 
+    /// Sets the SSH agent for agent-based public key authentication.
+    /// The agent must already be connected (call `agent.connect().await` first).
+    pub fn with_agent(mut self, agent: crate::agent::AgentClient) -> Self {
+        self.agent = Some(agent);
+        self
+    }
+
     /// Sets the fallback handler called between auth method attempts.
     /// The handler receives context about the failed attempt and remaining methods,
     /// and returns a verdict (Continue, TryMethod, or Abort).
@@ -210,7 +220,7 @@ impl<'a> Authenticator<'a> {
     fn has_credentials_for(&self, method: &str) -> bool {
         match method {
             SSH_AUTH_METHOD_PASSWORD => self.password.is_some(),
-            SSH_AUTH_METHOD_PUBLICKEY => self.private_key.is_some(),
+            SSH_AUTH_METHOD_PUBLICKEY => self.private_key.is_some() || self.agent.is_some(),
             SSH_AUTH_METHOD_KEYBOARD_INTERACTIVE => self.keyboard_interactive_handler.is_some(),
             _ => false,
         }
@@ -252,8 +262,13 @@ impl<'a> Authenticator<'a> {
                     self.try_password_auth(&pwd).await?
                 }
                 SSH_AUTH_METHOD_PUBLICKEY => {
-                    let key = self.private_key.clone().unwrap();
-                    self.try_publickey_auth(&key).await?
+                    if let Some(ref key) = self.private_key.clone() {
+                        self.try_publickey_auth(key).await?
+                    } else if self.agent.is_some() {
+                        self.try_agent_auth().await?
+                    } else {
+                        continue;
+                    }
                 }
                 SSH_AUTH_METHOD_KEYBOARD_INTERACTIVE => {
                     // keyboard-interactive has its own internal loop
@@ -451,6 +466,112 @@ impl<'a> Authenticator<'a> {
         let response = self.transport.recv_message().await?;
         let msg = Message::from(response);
         self.process_auth_response(msg)
+    }
+
+    /// Try public key authentication using the SSH agent.
+    /// Lists keys from the agent, probes each one, and asks the agent to sign if accepted.
+    async fn try_agent_auth(&mut self) -> Result<AuthenticationResult, SshError> {
+        let agent = self.agent.as_mut()
+            .ok_or_else(|| SshError::AuthenticationFailed("No agent configured".into()))?;
+
+        // Get keys from the agent
+        let identities = agent.request_identities().await?;
+        if identities.is_empty() {
+            return Ok(AuthenticationResult::Failure {
+                partial_success: Vec::new(),
+                available_methods: Vec::new(),
+            });
+        }
+
+        for identity in &identities {
+            // Detect algorithm from key blob (first string in the blob is the algorithm name)
+            let algo = if identity.key_blob.len() > 4 {
+                let algo_len = u32::from_be_bytes([
+                    identity.key_blob[0], identity.key_blob[1],
+                    identity.key_blob[2], identity.key_blob[3],
+                ]) as usize;
+                if identity.key_blob.len() >= 4 + algo_len {
+                    String::from_utf8_lossy(&identity.key_blob[4..4 + algo_len]).to_string()
+                } else {
+                    continue;
+                }
+            } else {
+                continue;
+            };
+
+            debug!("Trying agent key: {} ({})", algo, identity.comment);
+
+            // Send probe (no signature)
+            let mut msg = Message::new();
+            msg.write_byte(MessageType::UserauthRequest.value());
+            msg.write_string(self.username.as_bytes());
+            msg.write_string(b"ssh-connection");
+            msg.write_string(b"publickey");
+            msg.write_bool(false); // no signature (probe)
+            msg.write_string(algo.as_bytes());
+            msg.write_string(&identity.key_blob);
+
+            self.transport.send_message(&msg.as_bytes()).await?;
+            let response = self.transport.recv_message().await?;
+            let resp_msg = Message::from(response);
+
+            match resp_msg.msg_type() {
+                Some(MessageType::UserauthInfoRequest) => {
+                    // PK_OK — server wants a signature
+                    debug!("Agent key accepted by server, requesting signature");
+
+                    let session_id = self.transport.session_id()
+                        .ok_or_else(|| SshError::ProtocolError("Session ID not available".into()))?
+                        .to_vec();
+
+                    // Build the data to sign per RFC 4252 Section 7
+                    let signature_data = create_signature_data(
+                        &session_id,
+                        &self.username,
+                        "ssh-connection",
+                        "publickey",
+                        true,
+                        &algo,
+                        &identity.key_blob,
+                    );
+
+                    // Ask agent to sign
+                    // Flag 2 = SSH_AGENT_RSA_SHA2_256 (for RSA keys)
+                    let flags = if algo == "ssh-rsa" { 2u32 } else { 0u32 };
+                    let agent = self.agent.as_mut().unwrap();
+                    let sig = agent.sign(&identity.key_blob, &signature_data, flags).await?;
+
+                    // Send signed auth request
+                    let mut msg = Message::new();
+                    msg.write_byte(MessageType::UserauthRequest.value());
+                    msg.write_string(self.username.as_bytes());
+                    msg.write_string(b"ssh-connection");
+                    msg.write_string(b"publickey");
+                    msg.write_bool(true); // has signature
+                    msg.write_string(algo.as_bytes());
+                    msg.write_string(&identity.key_blob);
+                    msg.write_string(&sig.signature_blob);
+
+                    self.transport.send_message(&msg.as_bytes()).await?;
+                    let response = self.transport.recv_message().await?;
+                    let resp_msg = Message::from(response);
+                    return self.process_auth_response(resp_msg);
+                }
+                Some(MessageType::UserauthSuccess) => {
+                    return Ok(AuthenticationResult::Success);
+                }
+                Some(MessageType::UserauthFailure) => {
+                    debug!("Server rejected agent key {}", algo);
+                    continue; // try next key
+                }
+                _ => continue,
+            }
+        }
+
+        Ok(AuthenticationResult::Failure {
+            partial_success: Vec::new(),
+            available_methods: Vec::new(),
+        })
     }
 
     /// Processes authentication response

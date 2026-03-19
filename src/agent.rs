@@ -1,20 +1,38 @@
-//! SSH Agent Protocol Stub
+//! SSH Agent Protocol
 //!
-//! Implements basic SSH agent protocol message types for communicating
-//! with an ssh-agent process via the `SSH_AUTH_SOCK` Unix domain socket.
+//! Implements the SSH agent protocol for communicating with an ssh-agent
+//! process via the `SSH_AUTH_SOCK` Unix domain socket.
 //!
-//! Currently implemented:
+//! Supports:
 //! - `SSH_AGENTC_REQUEST_IDENTITIES` (11) — list keys held by the agent
 //! - `SSH_AGENTC_SIGN_REQUEST` (13) — request the agent to sign data
 //!
-//! TODO:
-//! - Wire this into `Authenticator` for agent-based public key auth
-//! - Handle agent forwarding over SSH channels
-//! - Support key constraints (lifetime, confirm)
+//! # Example
+//! ```no_run
+//! # async fn example() -> Result<(), ayssh::error::SshError> {
+//! use ayssh::agent::AgentClient;
+//!
+//! let mut agent = AgentClient::from_env()?;
+//! agent.connect().await?;
+//!
+//! let keys = agent.request_identities().await?;
+//! for key in &keys {
+//!     println!("Key: {} ({})", hex::encode(&key.key_blob[..8]), key.comment);
+//! }
+//!
+//! if !keys.is_empty() {
+//!     let sig = agent.sign(&keys[0].key_blob, b"data to sign", 0).await?;
+//!     println!("Signature: {} bytes", sig.signature_blob.len());
+//! }
+//! # Ok(())
+//! # }
+//! ```
 
 use crate::error::SshError;
 use bytes::{BufMut, BytesMut};
 use std::path::PathBuf;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::UnixStream;
 
 // Agent protocol message types (from draft-miller-ssh-agent)
 /// Client request: list identities held by the agent
@@ -44,21 +62,22 @@ pub struct AgentSignature {
     pub signature_blob: Vec<u8>,
 }
 
-/// SSH agent client stub.
+/// SSH agent client.
 ///
-/// Connects to the agent via the `SSH_AUTH_SOCK` environment variable.
-/// All methods are currently synchronous stubs that construct/parse
-/// protocol messages but do not yet perform I/O.
-#[derive(Debug)]
+/// Connects to the agent via the `SSH_AUTH_SOCK` Unix domain socket.
+/// Use `connect()` to establish the connection, then `request_identities()`
+/// and `sign()` to interact with the agent.
 pub struct AgentClient {
     /// Path to the agent socket
     socket_path: PathBuf,
+    /// Connected Unix stream (None until connect() is called)
+    stream: Option<UnixStream>,
 }
 
 impl AgentClient {
     /// Create a new agent client from the `SSH_AUTH_SOCK` environment variable.
     ///
-    /// Returns `Err` if the variable is not set.
+    /// Returns `Err` if the variable is not set. Call `connect()` before using.
     pub fn from_env() -> Result<Self, SshError> {
         let path = std::env::var("SSH_AUTH_SOCK")
             .map_err(|_| SshError::AuthenticationFailed(
@@ -66,17 +85,86 @@ impl AgentClient {
             ))?;
         Ok(Self {
             socket_path: PathBuf::from(path),
+            stream: None,
         })
     }
 
     /// Create a new agent client with an explicit socket path.
     pub fn new(socket_path: PathBuf) -> Self {
-        Self { socket_path }
+        Self { socket_path, stream: None }
     }
 
     /// Get the agent socket path.
     pub fn socket_path(&self) -> &std::path::Path {
         &self.socket_path
+    }
+
+    /// Returns true if connected to the agent socket.
+    pub fn is_connected(&self) -> bool {
+        self.stream.is_some()
+    }
+
+    /// Connect to the SSH agent Unix domain socket.
+    pub async fn connect(&mut self) -> Result<(), SshError> {
+        let stream = UnixStream::connect(&self.socket_path).await
+            .map_err(|e| SshError::ConnectionError(
+                format!("Failed to connect to SSH agent at {:?}: {}", self.socket_path, e)
+            ))?;
+        self.stream = Some(stream);
+        Ok(())
+    }
+
+    /// Send a message to the agent and read the response.
+    /// The message should include the 4-byte length prefix.
+    async fn send_recv(&mut self, message: &[u8]) -> Result<Vec<u8>, SshError> {
+        let stream = self.stream.as_mut().ok_or_else(|| {
+            SshError::ConnectionError("Not connected to SSH agent — call connect() first".to_string())
+        })?;
+
+        // Send
+        stream.write_all(message).await
+            .map_err(|e| SshError::IoError(e))?;
+
+        // Read 4-byte length prefix
+        let mut len_buf = [0u8; 4];
+        stream.read_exact(&mut len_buf).await
+            .map_err(|e| SshError::IoError(e))?;
+        let response_len = u32::from_be_bytes(len_buf) as usize;
+
+        if response_len > 256 * 1024 {
+            return Err(SshError::ProtocolError(
+                format!("Agent response too large: {} bytes", response_len)
+            ));
+        }
+
+        // Read payload
+        let mut payload = vec![0u8; response_len];
+        stream.read_exact(&mut payload).await
+            .map_err(|e| SshError::IoError(e))?;
+
+        Ok(payload)
+    }
+
+    /// Request the list of identities (keys) held by the agent.
+    pub async fn request_identities(&mut self) -> Result<Vec<AgentIdentity>, SshError> {
+        let request = Self::build_request_identities();
+        let response = self.send_recv(&request).await?;
+        Self::parse_identities_answer(&response)
+    }
+
+    /// Request the agent to sign data with a specific key.
+    ///
+    /// `key_blob` must be one of the blobs returned by `request_identities()`.
+    /// `flags` is typically 0 (or `SSH_AGENT_RSA_SHA2_256 = 2` for RSA-SHA2-256).
+    pub async fn sign(
+        &mut self,
+        key_blob: &[u8],
+        data: &[u8],
+        flags: u32,
+    ) -> Result<AgentSignature, SshError> {
+        let request = Self::build_sign_request(key_blob, data, flags);
+        let response = self.send_recv(&request).await?;
+        Self::parse_sign_response(&response)
     }
 
     /// Build an `SSH_AGENTC_REQUEST_IDENTITIES` message.
@@ -194,6 +282,15 @@ impl AgentClient {
         Ok(AgentSignature {
             signature_blob: data[5..5 + sig_len].to_vec(),
         })
+    }
+}
+
+impl std::fmt::Debug for AgentClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentClient")
+            .field("socket_path", &self.socket_path)
+            .field("connected", &self.stream.is_some())
+            .finish()
     }
 }
 
