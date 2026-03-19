@@ -31,7 +31,9 @@ const SSH_FXP_OPENDIR: u8 = 11;
 const SSH_FXP_READDIR: u8 = 12;
 const SSH_FXP_REMOVE: u8 = 13;
 const SSH_FXP_MKDIR: u8 = 14;
+const SSH_FXP_FSTAT: u8 = 8;
 const SSH_FXP_RENAME: u8 = 18;
+const SSH_FXP_REALPATH: u8 = 16;
 const SSH_FXP_STATUS: u8 = 101;
 const SSH_FXP_HANDLE: u8 = 102;
 const SSH_FXP_DATA: u8 = 103;
@@ -81,6 +83,29 @@ pub trait SftpHandler: Send + Sync {
     fn rename(&self, old_path: &str, new_path: &str) -> Result<(), u32> {
         Err(SSH_FX_FAILURE)
     }
+
+    /// Stat an open file handle (FSTAT).
+    fn fstat(&self, handle: &[u8]) -> Result<SftpAttrs, u32> {
+        Err(SSH_FX_FAILURE)
+    }
+
+    /// Resolve a path to its canonical form (REALPATH).
+    /// Default: returns the path unchanged.
+    fn realpath(&self, path: &str) -> Result<String, u32> {
+        Ok(path.to_string())
+    }
+
+    /// Open a directory for reading. Returns a handle.
+    fn opendir(&self, path: &str) -> Result<Vec<u8>, u32> {
+        Err(SSH_FX_FAILURE)
+    }
+
+    /// Read directory entries from an open directory handle.
+    /// Returns a list of (filename, longname, attrs) entries.
+    /// Return Err(SSH_FX_EOF) when all entries have been returned.
+    fn readdir(&self, handle: &[u8]) -> Result<Vec<(String, String, SftpAttrs)>, u32> {
+        Err(SSH_FX_EOF)
+    }
 }
 
 // ==========================================================================
@@ -100,8 +125,16 @@ struct MemoryFile {
 #[derive(Debug, Clone)]
 pub struct MemoryFs {
     files: Arc<Mutex<HashMap<String, MemoryFile>>>,
-    handles: Arc<Mutex<HashMap<u32, String>>>, // handle_id → path
+    handles: Arc<Mutex<HashMap<u32, String>>>,       // file handle_id → path
+    dir_handles: Arc<Mutex<HashMap<u32, DirHandle>>>, // dir handle_id → state
     next_handle: Arc<Mutex<u32>>,
+}
+
+/// State for an open directory listing.
+#[derive(Debug, Clone)]
+struct DirHandle {
+    path: String,
+    returned: bool, // true after entries have been returned (next call → EOF)
 }
 
 impl MemoryFs {
@@ -110,6 +143,7 @@ impl MemoryFs {
         Self {
             files: Arc::new(Mutex::new(HashMap::new())),
             handles: Arc::new(Mutex::new(HashMap::new())),
+            dir_handles: Arc::new(Mutex::new(HashMap::new())),
             next_handle: Arc::new(Mutex::new(1)),
         }
     }
@@ -211,6 +245,7 @@ impl SftpHandler for MemoryFs {
         if handle.len() != 4 { return Err(SSH_FX_FAILURE); }
         let handle_id = u32::from_be_bytes([handle[0], handle[1], handle[2], handle[3]]);
         self.handles.lock().unwrap().remove(&handle_id);
+        self.dir_handles.lock().unwrap().remove(&handle_id);
         Ok(())
     }
 
@@ -245,6 +280,93 @@ impl SftpHandler for MemoryFs {
         } else {
             Err(SSH_FX_NO_SUCH_FILE)
         }
+    }
+
+    fn fstat(&self, handle: &[u8]) -> Result<SftpAttrs, u32> {
+        if handle.len() != 4 { return Err(SSH_FX_FAILURE); }
+        let handle_id = u32::from_be_bytes([handle[0], handle[1], handle[2], handle[3]]);
+
+        let handles = self.handles.lock().unwrap();
+        let path = handles.get(&handle_id).ok_or(SSH_FX_FAILURE)?;
+
+        let files = self.files.lock().unwrap();
+        let file = files.get(path).ok_or(SSH_FX_NO_SUCH_FILE)?;
+        Ok(SftpAttrs {
+            size: Some(file.data.len() as u64),
+            permissions: Some(file.permissions),
+            ..Default::default()
+        })
+    }
+
+    fn realpath(&self, path: &str) -> Result<String, u32> {
+        // Normalize: collapse "." and resolve relative to "/"
+        if path == "." || path.is_empty() {
+            Ok("/".to_string())
+        } else if path.starts_with('/') {
+            Ok(path.to_string())
+        } else {
+            Ok(format!("/{}", path))
+        }
+    }
+
+    fn opendir(&self, path: &str) -> Result<Vec<u8>, u32> {
+        let handle_id = self.alloc_handle();
+        self.dir_handles.lock().unwrap().insert(handle_id, DirHandle {
+            path: path.to_string(),
+            returned: false,
+        });
+        Ok(handle_id.to_be_bytes().to_vec())
+    }
+
+    fn readdir(&self, handle: &[u8]) -> Result<Vec<(String, String, SftpAttrs)>, u32> {
+        if handle.len() != 4 { return Err(SSH_FX_FAILURE); }
+        let handle_id = u32::from_be_bytes([handle[0], handle[1], handle[2], handle[3]]);
+
+        let mut dir_handles = self.dir_handles.lock().unwrap();
+        let dir_handle = dir_handles.get_mut(&handle_id).ok_or(SSH_FX_FAILURE)?;
+
+        if dir_handle.returned {
+            return Err(SSH_FX_EOF); // Already returned entries
+        }
+        dir_handle.returned = true;
+
+        let files = self.files.lock().unwrap();
+        let prefix = if dir_handle.path == "/" { String::new() } else { dir_handle.path.clone() };
+
+        let mut entries = Vec::new();
+
+        // Add "." and ".." entries
+        entries.push((".".to_string(), "drwxr-xr-x 1 0 0 0 Jan 1 00:00 .".to_string(),
+            SftpAttrs { permissions: Some(0o40755), ..Default::default() }));
+        entries.push(("..".to_string(), "drwxr-xr-x 1 0 0 0 Jan 1 00:00 ..".to_string(),
+            SftpAttrs { permissions: Some(0o40755), ..Default::default() }));
+
+        for (path, file) in files.iter() {
+            // Check if this file is in the requested directory
+            let name = if prefix.is_empty() {
+                // Root listing: show files at top level
+                if path.starts_with('/') && !path[1..].contains('/') {
+                    &path[1..]
+                } else {
+                    continue;
+                }
+            } else if let Some(rest) = path.strip_prefix(&format!("{}/", prefix)) {
+                if rest.contains('/') { continue; } // skip nested
+                rest
+            } else {
+                continue;
+            };
+
+            let longname = format!("-rw-r--r-- 1 0 0 {} Jan 1 00:00 {}",
+                file.data.len(), name);
+            entries.push((name.to_string(), longname, SftpAttrs {
+                size: Some(file.data.len() as u64),
+                permissions: Some(file.permissions),
+                ..Default::default()
+            }));
+        }
+
+        Ok(entries)
     }
 }
 
@@ -328,9 +450,13 @@ impl<H: SftpHandler + 'static> SftpServerSession<H> {
             SSH_FXP_READ => self.handle_read(pkt),
             SSH_FXP_WRITE => self.handle_write(pkt),
             SSH_FXP_STAT => self.handle_stat(pkt),
+            SSH_FXP_FSTAT => self.handle_fstat(pkt),
             SSH_FXP_REMOVE => self.handle_remove(pkt),
             SSH_FXP_MKDIR => self.handle_mkdir(pkt),
             SSH_FXP_RENAME => self.handle_rename(pkt),
+            SSH_FXP_REALPATH => self.handle_realpath(pkt),
+            SSH_FXP_OPENDIR => self.handle_opendir(pkt),
+            SSH_FXP_READDIR => self.handle_readdir(pkt),
             _ => self.make_status(0, SSH_FX_FAILURE, "Unsupported operation"),
         }
     }
@@ -512,6 +638,109 @@ impl<H: SftpHandler + 'static> SftpServerSession<H> {
         match self.handler.rename(&old_path, &new_path) {
             Ok(()) => self.make_status(id, SSH_FX_OK, ""),
             Err(code) => self.make_status(id, code, "Rename failed"),
+        }
+    }
+
+    fn handle_fstat(&self, pkt: &[u8]) -> Vec<u8> {
+        if pkt.len() < 5 { return self.make_status(0, SSH_FX_FAILURE, "Truncated"); }
+        let id = u32::from_be_bytes([pkt[1], pkt[2], pkt[3], pkt[4]]);
+
+        let (handle, _) = match self.read_string_bytes(pkt, 5) {
+            Some(v) => v,
+            None => return self.make_status(id, SSH_FX_FAILURE, "Bad handle"),
+        };
+
+        match self.handler.fstat(&handle) {
+            Ok(attrs) => {
+                let mut resp = BytesMut::new();
+                resp.put_u8(SSH_FXP_ATTRS);
+                resp.put_u32(id);
+                Self::encode_attrs(&mut resp, &attrs);
+                resp.to_vec()
+            }
+            Err(code) => self.make_status(id, code, "Fstat failed"),
+        }
+    }
+
+    fn handle_realpath(&self, pkt: &[u8]) -> Vec<u8> {
+        if pkt.len() < 5 { return self.make_status(0, SSH_FX_FAILURE, "Truncated"); }
+        let id = u32::from_be_bytes([pkt[1], pkt[2], pkt[3], pkt[4]]);
+
+        let (path, _) = match self.read_string(pkt, 5) {
+            Some(v) => v,
+            None => return self.make_status(id, SSH_FX_FAILURE, "Bad path"),
+        };
+
+        match self.handler.realpath(&path) {
+            Ok(resolved) => {
+                // SSH_FXP_NAME response with single entry
+                let mut resp = BytesMut::new();
+                resp.put_u8(SSH_FXP_NAME);
+                resp.put_u32(id);
+                resp.put_u32(1); // count = 1
+                // filename
+                resp.put_u32(resolved.len() as u32);
+                resp.put_slice(resolved.as_bytes());
+                // longname (same as filename for realpath)
+                resp.put_u32(resolved.len() as u32);
+                resp.put_slice(resolved.as_bytes());
+                // attrs (empty)
+                resp.put_u32(0); // flags = 0
+                resp.to_vec()
+            }
+            Err(code) => self.make_status(id, code, "Realpath failed"),
+        }
+    }
+
+    fn handle_opendir(&self, pkt: &[u8]) -> Vec<u8> {
+        if pkt.len() < 5 { return self.make_status(0, SSH_FX_FAILURE, "Truncated"); }
+        let id = u32::from_be_bytes([pkt[1], pkt[2], pkt[3], pkt[4]]);
+
+        let (path, _) = match self.read_string(pkt, 5) {
+            Some(v) => v,
+            None => return self.make_status(id, SSH_FX_FAILURE, "Bad path"),
+        };
+
+        match self.handler.opendir(&path) {
+            Ok(handle) => {
+                let mut resp = BytesMut::new();
+                resp.put_u8(SSH_FXP_HANDLE);
+                resp.put_u32(id);
+                resp.put_u32(handle.len() as u32);
+                resp.put_slice(&handle);
+                resp.to_vec()
+            }
+            Err(code) => self.make_status(id, code, "Opendir failed"),
+        }
+    }
+
+    fn handle_readdir(&self, pkt: &[u8]) -> Vec<u8> {
+        if pkt.len() < 5 { return self.make_status(0, SSH_FX_FAILURE, "Truncated"); }
+        let id = u32::from_be_bytes([pkt[1], pkt[2], pkt[3], pkt[4]]);
+
+        let (handle, _) = match self.read_string_bytes(pkt, 5) {
+            Some(v) => v,
+            None => return self.make_status(id, SSH_FX_FAILURE, "Bad handle"),
+        };
+
+        match self.handler.readdir(&handle) {
+            Ok(entries) => {
+                let mut resp = BytesMut::new();
+                resp.put_u8(SSH_FXP_NAME);
+                resp.put_u32(id);
+                resp.put_u32(entries.len() as u32);
+
+                for (filename, longname, attrs) in &entries {
+                    resp.put_u32(filename.len() as u32);
+                    resp.put_slice(filename.as_bytes());
+                    resp.put_u32(longname.len() as u32);
+                    resp.put_slice(longname.as_bytes());
+                    Self::encode_attrs(&mut resp, attrs);
+                }
+
+                resp.to_vec()
+            }
+            Err(code) => self.make_status(id, code, if code == SSH_FX_EOF { "EOF" } else { "Readdir failed" }),
         }
     }
 
@@ -802,5 +1031,154 @@ mod tests {
         let resp = server.handle_packet(&pkt);
         assert_eq!(resp[0], SSH_FXP_STATUS);
         assert_eq!(u32::from_be_bytes([resp[5], resp[6], resp[7], resp[8]]), SSH_FX_NO_SUCH_FILE);
+    }
+
+    #[test]
+    fn test_memory_fs_fstat() {
+        let fs = MemoryFs::new();
+        let handle = fs.open("/f.txt", sftp_flags::SSH_FXF_WRITE | sftp_flags::SSH_FXF_CREAT, &SftpAttrs::default()).unwrap();
+        fs.write(&handle, 0, b"test data").unwrap();
+        let attrs = fs.fstat(&handle).unwrap();
+        assert_eq!(attrs.size, Some(9));
+    }
+
+    #[test]
+    fn test_memory_fs_realpath() {
+        let fs = MemoryFs::new();
+        assert_eq!(fs.realpath(".").unwrap(), "/");
+        assert_eq!(fs.realpath("").unwrap(), "/");
+        assert_eq!(fs.realpath("/home/user").unwrap(), "/home/user");
+        assert_eq!(fs.realpath("relative").unwrap(), "/relative");
+    }
+
+    #[test]
+    fn test_memory_fs_opendir_readdir() {
+        let fs = MemoryFs::new();
+        fs.add_file("/file1.txt", b"data1", 0o644);
+        fs.add_file("/file2.txt", b"data2", 0o755);
+        fs.add_file("/subdir/file3.txt", b"nested", 0o644);
+
+        let handle = fs.opendir("/").unwrap();
+
+        // First readdir returns entries
+        let entries = fs.readdir(&handle).unwrap();
+        let filenames: Vec<&str> = entries.iter().map(|(n, _, _)| n.as_str()).collect();
+        assert!(filenames.contains(&"."));
+        assert!(filenames.contains(&".."));
+        assert!(filenames.contains(&"file1.txt"));
+        assert!(filenames.contains(&"file2.txt"));
+        // subdir/file3.txt should not appear in root listing
+        assert!(!filenames.contains(&"file3.txt"));
+
+        // Second readdir returns EOF
+        assert_eq!(fs.readdir(&handle), Err(SSH_FX_EOF));
+
+        fs.close(&handle).unwrap();
+    }
+
+    #[test]
+    fn test_sftp_server_realpath() {
+        let handler = Arc::new(MemoryFs::new());
+        let server = SftpServerSession::new(handler);
+
+        let mut pkt = vec![SSH_FXP_REALPATH];
+        pkt.extend_from_slice(&1u32.to_be_bytes()); // id
+        let path = b".";
+        pkt.extend_from_slice(&(path.len() as u32).to_be_bytes());
+        pkt.extend_from_slice(path);
+
+        let resp = server.handle_packet(&pkt);
+        assert_eq!(resp[0], SSH_FXP_NAME);
+        // count = 1
+        assert_eq!(u32::from_be_bytes([resp[5], resp[6], resp[7], resp[8]]), 1);
+        // filename should be "/"
+        let name_len = u32::from_be_bytes([resp[9], resp[10], resp[11], resp[12]]) as usize;
+        assert_eq!(&resp[13..13+name_len], b"/");
+    }
+
+    #[test]
+    fn test_sftp_server_fstat() {
+        let fs = Arc::new(MemoryFs::new());
+        let server = SftpServerSession::new(fs.clone());
+
+        // Create and write a file
+        let path = "/fstat_test.txt";
+        let flags = sftp_flags::SSH_FXF_WRITE | sftp_flags::SSH_FXF_CREAT;
+        let mut pkt = vec![SSH_FXP_OPEN];
+        pkt.extend_from_slice(&1u32.to_be_bytes());
+        pkt.extend_from_slice(&(path.len() as u32).to_be_bytes());
+        pkt.extend_from_slice(path.as_bytes());
+        pkt.extend_from_slice(&flags.to_be_bytes());
+        pkt.extend_from_slice(&0u32.to_be_bytes());
+
+        let resp = server.handle_packet(&pkt);
+        assert_eq!(resp[0], SSH_FXP_HANDLE);
+        let handle_len = u32::from_be_bytes([resp[5], resp[6], resp[7], resp[8]]) as usize;
+        let handle = resp[9..9+handle_len].to_vec();
+
+        // Write data
+        let data = b"fstat test data!";
+        let mut pkt = vec![SSH_FXP_WRITE];
+        pkt.extend_from_slice(&2u32.to_be_bytes());
+        pkt.extend_from_slice(&(handle.len() as u32).to_be_bytes());
+        pkt.extend_from_slice(&handle);
+        pkt.extend_from_slice(&0u64.to_be_bytes());
+        pkt.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        pkt.extend_from_slice(data);
+        server.handle_packet(&pkt);
+
+        // FSTAT
+        let mut pkt = vec![SSH_FXP_FSTAT];
+        pkt.extend_from_slice(&3u32.to_be_bytes());
+        pkt.extend_from_slice(&(handle.len() as u32).to_be_bytes());
+        pkt.extend_from_slice(&handle);
+
+        let resp = server.handle_packet(&pkt);
+        assert_eq!(resp[0], SSH_FXP_ATTRS);
+        // Parse size from attrs
+        let flags = u32::from_be_bytes([resp[5], resp[6], resp[7], resp[8]]);
+        assert!(flags & 0x01 != 0); // size flag set
+        let size = u64::from_be_bytes(resp[9..17].try_into().unwrap());
+        assert_eq!(size, data.len() as u64);
+    }
+
+    #[test]
+    fn test_sftp_server_opendir_readdir() {
+        let fs = Arc::new(MemoryFs::new());
+        fs.add_file("/dir_test.txt", b"hello", 0o644);
+        let server = SftpServerSession::new(fs);
+
+        // OPENDIR
+        let path = "/";
+        let mut pkt = vec![SSH_FXP_OPENDIR];
+        pkt.extend_from_slice(&1u32.to_be_bytes());
+        pkt.extend_from_slice(&(path.len() as u32).to_be_bytes());
+        pkt.extend_from_slice(path.as_bytes());
+
+        let resp = server.handle_packet(&pkt);
+        assert_eq!(resp[0], SSH_FXP_HANDLE);
+        let handle_len = u32::from_be_bytes([resp[5], resp[6], resp[7], resp[8]]) as usize;
+        let handle = resp[9..9+handle_len].to_vec();
+
+        // READDIR — should return entries
+        let mut pkt = vec![SSH_FXP_READDIR];
+        pkt.extend_from_slice(&2u32.to_be_bytes());
+        pkt.extend_from_slice(&(handle.len() as u32).to_be_bytes());
+        pkt.extend_from_slice(&handle);
+
+        let resp = server.handle_packet(&pkt);
+        assert_eq!(resp[0], SSH_FXP_NAME);
+        let count = u32::from_be_bytes([resp[5], resp[6], resp[7], resp[8]]);
+        assert!(count >= 3); // at least ".", "..", and "dir_test.txt"
+
+        // READDIR again — should return EOF
+        let mut pkt = vec![SSH_FXP_READDIR];
+        pkt.extend_from_slice(&3u32.to_be_bytes());
+        pkt.extend_from_slice(&(handle.len() as u32).to_be_bytes());
+        pkt.extend_from_slice(&handle);
+
+        let resp = server.handle_packet(&pkt);
+        assert_eq!(resp[0], SSH_FXP_STATUS);
+        assert_eq!(u32::from_be_bytes([resp[5], resp[6], resp[7], resp[8]]), SSH_FX_EOF);
     }
 }
