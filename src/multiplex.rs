@@ -100,6 +100,75 @@ impl MultiplexedSession {
     pub fn mark_closed(&mut self) {
         self.is_open = false;
     }
+
+    /// Receive data on this session's channel.
+    ///
+    /// Acquires the transport lock and reads messages, returning only data
+    /// for this channel. Messages for other channels are dropped (a production
+    /// implementation would route them to the correct session).
+    pub async fn receive(&self, timeout: std::time::Duration) -> Result<Vec<u8>, SshError> {
+        if !self.is_open {
+            return Err(SshError::ChannelError("Session channel is closed".to_string()));
+        }
+
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let now = tokio::time::Instant::now();
+            if now >= deadline {
+                return Ok(vec![]);
+            }
+            let remaining = deadline - now;
+
+            let mut transport = self.transport.lock().await;
+            match tokio::time::timeout(remaining, transport.recv_message()).await {
+                Ok(Ok(msg)) if !msg.is_empty() => {
+                    match msg[0] {
+                        94 => { // CHANNEL_DATA
+                            if msg.len() > 9 {
+                                // Check if this is for our channel
+                                let recipient = u32::from_be_bytes([msg[1], msg[2], msg[3], msg[4]]);
+                                if recipient == self.local_channel_id {
+                                    let data_len = u32::from_be_bytes([msg[5], msg[6], msg[7], msg[8]]) as usize;
+                                    if msg.len() >= 9 + data_len {
+                                        return Ok(msg[9..9 + data_len].to_vec());
+                                    }
+                                }
+                                // Not our channel — drop the lock and try again
+                            }
+                        }
+                        93 => continue, // WINDOW_ADJUST
+                        96 => { // EOF
+                            let recipient = u32::from_be_bytes([msg[1], msg[2], msg[3], msg[4]]);
+                            if recipient == self.local_channel_id {
+                                return Err(SshError::ChannelError("Channel EOF".into()));
+                            }
+                        }
+                        97 => { // CLOSE
+                            let recipient = u32::from_be_bytes([msg[1], msg[2], msg[3], msg[4]]);
+                            if recipient == self.local_channel_id {
+                                return Err(SshError::ChannelError("Channel closed".into()));
+                            }
+                        }
+                        _ => continue,
+                    }
+                }
+                Ok(Ok(_)) => continue,
+                Ok(Err(e)) => return Err(e),
+                Err(_) => return Ok(vec![]), // timeout
+            }
+        }
+    }
+
+    /// Close this session's channel.
+    pub async fn close(&mut self) -> Result<(), SshError> {
+        if !self.is_open {
+            return Ok(());
+        }
+        let mut transport = self.transport.lock().await;
+        transport.send_channel_close(self.remote_channel_id).await?;
+        self.is_open = false;
+        Ok(())
+    }
 }
 
 /// A multiplexed connection managing multiple sessions over one transport.
@@ -181,6 +250,33 @@ impl MultiplexedConnection {
     /// Get a reference to the shared transport.
     pub fn shared_transport(&self) -> &SharedTransport {
         &self.transport
+    }
+
+    /// Open a session and request a shell on it.
+    /// Returns a MultiplexedSession ready for send/receive.
+    pub async fn open_shell(&mut self) -> Result<MultiplexedSession, SshError> {
+        let session = self.open_session().await?;
+
+        // Request shell on this channel
+        {
+            let mut transport = self.transport.lock().await;
+            transport.send_channel_request(session.remote_channel_id(), "shell", true).await?;
+            let _ = transport.recv_message().await?; // channel success
+        }
+
+        Ok(session)
+    }
+
+    /// Close a specific session by its local channel ID.
+    pub async fn close_session(&mut self, local_channel_id: u32) -> Result<(), SshError> {
+        if let Some(info) = self.sessions.get_mut(&local_channel_id) {
+            if info.is_open {
+                let mut transport = self.transport.lock().await;
+                transport.send_channel_close(info.remote_channel_id).await?;
+                info.is_open = false;
+            }
+        }
+        Ok(())
     }
 }
 
