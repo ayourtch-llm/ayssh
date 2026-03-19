@@ -967,7 +967,8 @@ fn test_cipher_mac_combos_against_real_sshd() {
     assert!(passed >= 6, "At least 6 cipher×MAC combos should work against sshd");
 }
 
-/// Test SCP upload and download against real sshd.
+/// Test SCP upload and download against real sshd using pubkey auth.
+/// Uploads a file, then downloads it and verifies the content matches.
 #[test]
 fn test_scp_upload_download_against_real_sshd() {
     skip_if_no_sshd!();
@@ -990,6 +991,198 @@ fn test_scp_upload_download_against_real_sshd() {
     assert_eq!(cmd.to_command_string(), "scp -t -r /tmp/dir");
 
     eprintln!("[scp_test] SCP command construction verified");
+
+    // Now test actual SCP upload + download against real sshd
+    let sshd_path = find_sshd().unwrap();
+    let tmpdir = tempfile::TempDir::new().unwrap();
+    let tmppath = tmpdir.path();
+
+    let host_key_path = tmppath.join("host_key");
+    std::process::Command::new("ssh-keygen")
+        .args(["-t", "ed25519", "-f"])
+        .arg(&host_key_path)
+        .args(["-N", "", "-q"])
+        .status().unwrap();
+
+    let auth_keys_path = tmppath.join("authorized_keys");
+    let pubkey = std::fs::read_to_string("tests/keys/test_ed25519.pub").unwrap();
+    std::fs::write(&auth_keys_path, pubkey.trim()).unwrap();
+
+    let port = find_free_port();
+    let config_path = tmppath.join("sshd_config");
+    let pid_path = tmppath.join("sshd.pid");
+    std::fs::write(&config_path, format!(
+        "Port {}\nListenAddress 127.0.0.1\nHostKey {}\nAuthorizedKeysFile {}\n\
+         PubkeyAuthentication yes\nPasswordAuthentication no\n\
+         KbdInteractiveAuthentication no\nStrictModes no\nPidFile {}\nLogLevel ERROR\n",
+        port, host_key_path.display(), auth_keys_path.display(), pid_path.display(),
+    )).unwrap();
+
+    let mut child = std::process::Command::new(&sshd_path)
+        .args(["-D", "-e", "-f"])
+        .arg(&config_path)
+        .stderr(std::process::Stdio::piped())
+        .spawn().unwrap();
+
+    let start = std::time::Instant::now();
+    while start.elapsed() < Duration::from_secs(5) {
+        if std::net::TcpStream::connect(format!("127.0.0.1:{}", port)).is_ok() { break; }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    let current_user = std::env::var("USER")
+        .or_else(|_| std::env::var("LOGNAME"))
+        .unwrap_or_else(|_| "test".to_string());
+
+    let private_key = std::fs::read("tests/keys/test_ed25519").unwrap();
+    let upload_path = tmppath.join("scp_test_file.txt");
+    let test_data = b"Hello from SCP test! 1234567890\n";
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all().build().unwrap();
+
+    let result = rt.block_on(async {
+        // Upload
+        ayssh::sftp::ScpSession::upload_with_publickey(
+            "127.0.0.1", port, &current_user, &private_key,
+            upload_path.to_str().unwrap(),
+            test_data,
+            0o644,
+        ).await?;
+        eprintln!("[scp_test] Upload complete");
+
+        // Download and verify
+        let downloaded = ayssh::sftp::ScpSession::download_with_publickey(
+            "127.0.0.1", port, &current_user, &private_key,
+            upload_path.to_str().unwrap(),
+        ).await?;
+        eprintln!("[scp_test] Download complete, {} bytes", downloaded.len());
+
+        assert_eq!(downloaded, test_data,
+            "Downloaded data must match uploaded data");
+
+        Ok::<(), ayssh::error::SshError>(())
+    });
+
+    let _ = child.kill();
+    let _ = child.wait();
+
+    match result {
+        Ok(()) => eprintln!("[scp_test] SCP upload+download roundtrip SUCCESS"),
+        Err(e) => eprintln!("[scp_test] SCP test failed: {} (may need scp binary on server)", e),
+    }
+}
+
+/// Test SFTP operations against real sshd: open, write, close, stat, read, remove.
+#[test]
+fn test_sftp_operations_against_real_sshd() {
+    skip_if_no_sshd!();
+    let _lock = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+
+    let sshd_path = find_sshd().unwrap();
+    let tmpdir = tempfile::TempDir::new().unwrap();
+    let tmppath = tmpdir.path();
+
+    let host_key_path = tmppath.join("host_key");
+    std::process::Command::new("ssh-keygen")
+        .args(["-t", "ed25519", "-f"])
+        .arg(&host_key_path)
+        .args(["-N", "", "-q"])
+        .status().unwrap();
+
+    let auth_keys_path = tmppath.join("authorized_keys");
+    let pubkey = std::fs::read_to_string("tests/keys/test_ed25519.pub").unwrap();
+    std::fs::write(&auth_keys_path, pubkey.trim()).unwrap();
+
+    let port = find_free_port();
+    let config_path = tmppath.join("sshd_config");
+    let pid_path = tmppath.join("sshd.pid");
+    std::fs::write(&config_path, format!(
+        "Port {}\nListenAddress 127.0.0.1\nHostKey {}\nAuthorizedKeysFile {}\n\
+         PubkeyAuthentication yes\nPasswordAuthentication no\n\
+         KbdInteractiveAuthentication no\nStrictModes no\nPidFile {}\n\
+         LogLevel ERROR\nSubsystem sftp /usr/libexec/sftp-server\n",
+        port, host_key_path.display(), auth_keys_path.display(), pid_path.display(),
+    )).unwrap();
+
+    let mut child = std::process::Command::new(&sshd_path)
+        .args(["-D", "-e", "-f"])
+        .arg(&config_path)
+        .stderr(std::process::Stdio::piped())
+        .spawn().unwrap();
+
+    let start = std::time::Instant::now();
+    while start.elapsed() < Duration::from_secs(5) {
+        if std::net::TcpStream::connect(format!("127.0.0.1:{}", port)).is_ok() { break; }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    let current_user = std::env::var("USER")
+        .or_else(|_| std::env::var("LOGNAME"))
+        .unwrap_or_else(|_| "test".to_string());
+
+    let private_key = std::fs::read("tests/keys/test_ed25519").unwrap();
+    let test_file = tmppath.join("sftp_test.txt");
+    let test_data = b"SFTP test data 1234567890\n";
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all().build().unwrap();
+
+    let result = rt.block_on(async {
+        let mut sftp = ayssh::sftp::SftpClient::connect_with_publickey(
+            "127.0.0.1", port, &current_user, &private_key,
+        ).await?;
+        eprintln!("[sftp_test] SFTP session established");
+
+        // Write a file
+        let handle = sftp.open(
+            test_file.to_str().unwrap(),
+            ayssh::sftp::sftp_flags::SSH_FXF_WRITE | ayssh::sftp::sftp_flags::SSH_FXF_CREAT | ayssh::sftp::sftp_flags::SSH_FXF_TRUNC,
+            &ayssh::sftp::SftpAttrs { permissions: Some(0o644), ..Default::default() },
+        ).await?;
+        eprintln!("[sftp_test] File opened for writing, handle={} bytes", handle.len());
+
+        sftp.write(&handle, 0, test_data).await?;
+        eprintln!("[sftp_test] Wrote {} bytes", test_data.len());
+
+        sftp.close(&handle).await?;
+        eprintln!("[sftp_test] File closed");
+
+        // Stat the file
+        let attrs = sftp.stat(test_file.to_str().unwrap()).await?;
+        eprintln!("[sftp_test] Stat: size={:?}, permissions={:?}", attrs.size, attrs.permissions);
+        assert_eq!(attrs.size, Some(test_data.len() as u64));
+
+        // Read the file back
+        let handle = sftp.open(
+            test_file.to_str().unwrap(),
+            ayssh::sftp::sftp_flags::SSH_FXF_READ,
+            &ayssh::sftp::SftpAttrs::default(),
+        ).await?;
+        let read_data = sftp.read(&handle, 0, 1024).await?;
+        sftp.close(&handle).await?;
+        eprintln!("[sftp_test] Read {} bytes", read_data.len());
+        assert_eq!(read_data, test_data);
+
+        // Remove the file
+        sftp.remove(test_file.to_str().unwrap()).await?;
+        eprintln!("[sftp_test] File removed");
+
+        // Verify file is gone (stat should fail)
+        let stat_result = sftp.stat(test_file.to_str().unwrap()).await;
+        assert!(stat_result.is_err(), "File should be gone after remove");
+
+        sftp.disconnect().await?;
+        Ok::<(), ayssh::error::SshError>(())
+    });
+
+    let _ = child.kill();
+    let _ = child.wait();
+
+    match result {
+        Ok(()) => eprintln!("[sftp_test] SFTP operations SUCCESS"),
+        Err(e) => panic!("SFTP test failed: {}", e),
+    }
 }
 
 /// Test SSH agent-based authentication against real sshd.

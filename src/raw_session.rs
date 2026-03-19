@@ -172,7 +172,7 @@ impl RawSshSession {
     // --- Internal helpers ---
 
     /// TCP connect + SSH handshake + service request.
-    async fn connect_and_handshake(host: &str, port: u16) -> Result<Transport, SshError> {
+    pub(crate) async fn connect_and_handshake(host: &str, port: u16) -> Result<Transport, SshError> {
         let addr = format!("{}:{}", host, port);
         info!("Connecting to {}...", addr);
 
@@ -212,7 +212,7 @@ impl RawSshSession {
     }
 
     /// Authenticate with public key.
-    async fn authenticate_publickey(
+    pub(crate) async fn authenticate_publickey(
         transport: &mut Transport,
         username: &str,
         private_key: &[u8],
@@ -329,6 +329,45 @@ impl RawSshSession {
         let response = transport.recv_message().await?;
         if !response.is_empty() && response[0] == 100 {
             // CHANNEL_FAILURE
+            return Err(SshError::ChannelError("Exec request rejected".to_string()));
+        }
+        debug!("Exec channel ready for command: {}", command);
+
+        Ok(Self::from_parts(transport, channel_id))
+    }
+
+    /// Open a new connection with public key auth and execute a command.
+    pub async fn exec_with_publickey(
+        host: &str,
+        port: u16,
+        username: &str,
+        private_key: &[u8],
+        command: &str,
+    ) -> Result<Self, SshError> {
+        let mut transport = Self::connect_and_handshake(host, port).await?;
+        Self::authenticate_publickey(&mut transport, username, private_key).await?;
+        Self::open_exec_channel(transport, command).await
+    }
+
+    /// Open an exec channel on an already-authenticated transport.
+    async fn open_exec_channel(mut transport: Transport, command: &str) -> Result<Self, SshError> {
+        let session = crate::session::Session::open(&mut transport).await?;
+        let channel_id = session.remote_channel_id();
+        info!("Exec channel opened (remote_id={})", channel_id);
+
+        let mut exec_msg = bytes::BytesMut::new();
+        exec_msg.put_u8(crate::protocol::MessageType::ChannelRequest as u8);
+        exec_msg.put_u32(channel_id);
+        let req_type = b"exec";
+        exec_msg.put_u32(req_type.len() as u32);
+        exec_msg.put_slice(req_type);
+        exec_msg.put_u8(1); // want reply
+        exec_msg.put_u32(command.len() as u32);
+        exec_msg.put_slice(command.as_bytes());
+        transport.send_message(&exec_msg).await?;
+
+        let response = transport.recv_message().await?;
+        if !response.is_empty() && response[0] == 100 {
             return Err(SshError::ChannelError("Exec request rejected".to_string()));
         }
         debug!("Exec channel ready for command: {}", command);
