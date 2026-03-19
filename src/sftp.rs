@@ -131,6 +131,136 @@ pub enum SftpOp {
     },
 }
 
+/// SCP file transfer over a RawSshSession exec channel.
+///
+/// Implements the SCP protocol for single-file upload and download.
+pub struct ScpSession {
+    session: crate::raw_session::RawSshSession,
+}
+
+impl ScpSession {
+    /// Upload a file via SCP to the remote host.
+    ///
+    /// Opens an exec channel with `scp -t <remote_path>`, sends the file data,
+    /// and waits for confirmation.
+    pub async fn upload(
+        host: &str,
+        port: u16,
+        username: &str,
+        password: &str,
+        remote_path: &str,
+        data: &[u8],
+        mode: u32,
+    ) -> Result<(), SshError> {
+        let cmd = ScpCommand::upload(remote_path);
+        let mut session = crate::raw_session::RawSshSession::exec_with_password(
+            host, port, username, password, &cmd.to_command_string(),
+        ).await?;
+
+        // Wait for initial OK from scp -t
+        let resp = session.receive(std::time::Duration::from_secs(10)).await?;
+        if !resp.is_empty() && resp[0] != 0 {
+            return Err(SshError::ProtocolError(format!(
+                "SCP error: {}", String::from_utf8_lossy(&resp)
+            )));
+        }
+
+        // Extract filename from path
+        let filename = remote_path.rsplit('/').next().unwrap_or(remote_path);
+
+        // Send file header: C<mode> <size> <filename>\n
+        let header = format!("C{:04o} {} {}\n", mode, data.len(), filename);
+        session.send(header.as_bytes()).await?;
+
+        // Wait for OK
+        let resp = session.receive(std::time::Duration::from_secs(10)).await?;
+        if !resp.is_empty() && resp[0] != 0 {
+            return Err(SshError::ProtocolError(format!(
+                "SCP header rejected: {}", String::from_utf8_lossy(&resp)
+            )));
+        }
+
+        // Send file data
+        session.send(data).await?;
+
+        // Send completion marker (single \0)
+        session.send(&[0]).await?;
+
+        // Wait for final OK
+        let resp = session.receive(std::time::Duration::from_secs(10)).await?;
+        if !resp.is_empty() && resp[0] != 0 {
+            return Err(SshError::ProtocolError(format!(
+                "SCP transfer failed: {}", String::from_utf8_lossy(&resp)
+            )));
+        }
+
+        let _ = session.disconnect().await;
+        Ok(())
+    }
+
+    /// Download a file via SCP from the remote host.
+    ///
+    /// Opens an exec channel with `scp -f <remote_path>`, reads the file data,
+    /// and returns it.
+    pub async fn download(
+        host: &str,
+        port: u16,
+        username: &str,
+        password: &str,
+        remote_path: &str,
+    ) -> Result<Vec<u8>, SshError> {
+        let cmd = ScpCommand::download(remote_path);
+        let mut session = crate::raw_session::RawSshSession::exec_with_password(
+            host, port, username, password, &cmd.to_command_string(),
+        ).await?;
+
+        // Send ready signal
+        session.send(&[0]).await?;
+
+        // Read file header: C<mode> <size> <filename>\n
+        let header_data = session.receive(std::time::Duration::from_secs(10)).await?;
+        let header = String::from_utf8_lossy(&header_data);
+
+        if !header.starts_with('C') {
+            return Err(SshError::ProtocolError(format!(
+                "SCP: expected file header (C...), got: {}", header.trim()
+            )));
+        }
+
+        // Parse size from "C0644 <size> <filename>\n"
+        let parts: Vec<&str> = header.trim().splitn(3, ' ').collect();
+        if parts.len() < 3 {
+            return Err(SshError::ProtocolError(format!(
+                "SCP: malformed header: {}", header.trim()
+            )));
+        }
+        let file_size: usize = parts[1].parse().map_err(|_| {
+            SshError::ProtocolError(format!("SCP: invalid file size: {}", parts[1]))
+        })?;
+
+        // Send OK
+        session.send(&[0]).await?;
+
+        // Read file data
+        let mut data = Vec::with_capacity(file_size);
+        while data.len() < file_size {
+            let chunk = session.receive(std::time::Duration::from_secs(30)).await?;
+            if chunk.is_empty() {
+                return Err(SshError::ProtocolError("SCP: timeout reading file data".into()));
+            }
+            data.extend_from_slice(&chunk);
+        }
+        // Trim to exact size (may have read trailing \0)
+        data.truncate(file_size);
+
+        // Send final OK
+        session.send(&[0]).await?;
+
+        let _ = session.disconnect().await;
+        Ok(data)
+    }
+}
+
 /// SFTP open flags (from SSH_FXF_*)
 pub mod sftp_flags {
     pub const SSH_FXF_READ: u32 = 0x00000001;
