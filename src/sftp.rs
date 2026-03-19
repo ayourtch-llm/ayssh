@@ -423,6 +423,18 @@ pub struct SftpClient {
 }
 
 impl SftpClient {
+    /// Connect with password auth and open an SFTP session.
+    pub async fn connect_with_password(
+        host: &str,
+        port: u16,
+        username: &str,
+        password: &str,
+    ) -> Result<Self, SshError> {
+        let mut transport = crate::raw_session::RawSshSession::connect_and_handshake(host, port).await?;
+        crate::raw_session::RawSshSession::authenticate_password(&mut transport, username, password).await?;
+        Self::open_sftp_subsystem(transport).await
+    }
+
     /// Connect with public key auth and open an SFTP session.
     pub async fn connect_with_publickey(
         host: &str,
@@ -432,12 +444,15 @@ impl SftpClient {
     ) -> Result<Self, SshError> {
         let mut transport = crate::raw_session::RawSshSession::connect_and_handshake(host, port).await?;
         crate::raw_session::RawSshSession::authenticate_publickey(&mut transport, username, private_key).await?;
+        Self::open_sftp_subsystem(transport).await
+    }
 
-        // Open channel
+    /// Open the SFTP subsystem on an already-authenticated transport.
+    async fn open_sftp_subsystem(mut transport: crate::transport::Transport) -> Result<Self, SshError> {
         let session_obj = crate::session::Session::open(&mut transport).await?;
         let channel_id = session_obj.remote_channel_id();
 
-        // Request "sftp" subsystem (not exec, not shell)
+        // Request "sftp" subsystem
         let mut subsys_msg = BytesMut::new();
         subsys_msg.put_u8(crate::protocol::MessageType::ChannelRequest as u8);
         subsys_msg.put_u32(channel_id);
@@ -450,7 +465,6 @@ impl SftpClient {
         subsys_msg.put_slice(subsys_name);
         transport.send_message(&subsys_msg).await?;
 
-        // Wait for channel success
         let resp = transport.recv_message().await?;
         if !resp.is_empty() && resp[0] == 100 {
             return Err(SshError::ChannelError("SFTP subsystem request rejected".into()));
@@ -461,9 +475,7 @@ impl SftpClient {
             request_id: 0,
         };
 
-        // Send SSH_FXP_INIT (version 3)
         client.send_init().await?;
-
         Ok(client)
     }
 
