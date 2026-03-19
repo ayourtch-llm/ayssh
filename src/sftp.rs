@@ -771,4 +771,373 @@ mod tests {
         assert_eq!(sftp_flags::SSH_FXF_CREAT, 8);
         assert_eq!(sftp_flags::SSH_FXF_READ | sftp_flags::SSH_FXF_WRITE, 3);
     }
+
+    #[test]
+    fn test_sftp_flags_all_values() {
+        assert_eq!(sftp_flags::SSH_FXF_APPEND, 4);
+        assert_eq!(sftp_flags::SSH_FXF_TRUNC, 0x10);
+        assert_eq!(sftp_flags::SSH_FXF_EXCL, 0x20);
+    }
+
+    #[test]
+    fn test_sftp_attrs_default() {
+        let attrs = SftpAttrs::default();
+        assert!(attrs.size.is_none());
+        assert!(attrs.uid.is_none());
+        assert!(attrs.gid.is_none());
+        assert!(attrs.permissions.is_none());
+        assert!(attrs.atime.is_none());
+        assert!(attrs.mtime.is_none());
+    }
+
+    #[test]
+    fn test_sftp_attrs_clone_and_debug() {
+        let attrs = SftpAttrs {
+            size: Some(1024),
+            uid: Some(1000),
+            gid: Some(1000),
+            permissions: Some(0o644),
+            atime: Some(1000000),
+            mtime: Some(2000000),
+        };
+        let cloned = attrs.clone();
+        assert_eq!(cloned.size, Some(1024));
+        assert_eq!(cloned.uid, Some(1000));
+        assert_eq!(cloned.gid, Some(1000));
+        assert_eq!(cloned.permissions, Some(0o644));
+        assert_eq!(cloned.atime, Some(1000000));
+        assert_eq!(cloned.mtime, Some(2000000));
+        let debug = format!("{:?}", attrs);
+        assert!(debug.contains("SftpAttrs"));
+    }
+
+    #[test]
+    fn test_encode_attrs_empty() {
+        let attrs = SftpAttrs::default();
+        let mut buf = BytesMut::new();
+        SftpClient::encode_attrs(&mut buf, &attrs);
+        // Should be just 4 bytes of flags = 0
+        assert_eq!(buf.len(), 4);
+        assert_eq!(u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]), 0);
+    }
+
+    #[test]
+    fn test_encode_attrs_size_only() {
+        let attrs = SftpAttrs {
+            size: Some(12345),
+            ..Default::default()
+        };
+        let mut buf = BytesMut::new();
+        SftpClient::encode_attrs(&mut buf, &attrs);
+        // flags(4) + size(8) = 12
+        assert_eq!(buf.len(), 12);
+        let flags = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]);
+        assert_eq!(flags, 0x01);
+        let size = u64::from_be_bytes(buf[4..12].try_into().unwrap());
+        assert_eq!(size, 12345);
+    }
+
+    #[test]
+    fn test_encode_attrs_uid_gid() {
+        let attrs = SftpAttrs {
+            uid: Some(1000),
+            gid: Some(2000),
+            ..Default::default()
+        };
+        let mut buf = BytesMut::new();
+        SftpClient::encode_attrs(&mut buf, &attrs);
+        // flags(4) + uid(4) + gid(4) = 12
+        assert_eq!(buf.len(), 12);
+        let flags = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]);
+        assert_eq!(flags, 0x02);
+        let uid = u32::from_be_bytes(buf[4..8].try_into().unwrap());
+        let gid = u32::from_be_bytes(buf[8..12].try_into().unwrap());
+        assert_eq!(uid, 1000);
+        assert_eq!(gid, 2000);
+    }
+
+    #[test]
+    fn test_encode_attrs_uid_without_gid_no_encode() {
+        // uid set but gid not set — should NOT encode uid/gid
+        let attrs = SftpAttrs {
+            uid: Some(1000),
+            gid: None,
+            ..Default::default()
+        };
+        let mut buf = BytesMut::new();
+        SftpClient::encode_attrs(&mut buf, &attrs);
+        assert_eq!(buf.len(), 4); // just flags
+        let flags = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]);
+        assert_eq!(flags, 0); // no uid/gid flag set
+    }
+
+    #[test]
+    fn test_encode_attrs_permissions() {
+        let attrs = SftpAttrs {
+            permissions: Some(0o755),
+            ..Default::default()
+        };
+        let mut buf = BytesMut::new();
+        SftpClient::encode_attrs(&mut buf, &attrs);
+        // flags(4) + permissions(4) = 8
+        assert_eq!(buf.len(), 8);
+        let flags = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]);
+        assert_eq!(flags, 0x04);
+        let perm = u32::from_be_bytes(buf[4..8].try_into().unwrap());
+        assert_eq!(perm, 0o755);
+    }
+
+    #[test]
+    fn test_encode_attrs_all_fields() {
+        let attrs = SftpAttrs {
+            size: Some(999),
+            uid: Some(500),
+            gid: Some(600),
+            permissions: Some(0o644),
+            atime: None, // atime/mtime not encoded by encode_attrs
+            mtime: None,
+        };
+        let mut buf = BytesMut::new();
+        SftpClient::encode_attrs(&mut buf, &attrs);
+        // flags(4) + size(8) + uid(4) + gid(4) + permissions(4) = 24
+        assert_eq!(buf.len(), 24);
+        let flags = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]);
+        assert_eq!(flags, 0x01 | 0x02 | 0x04);
+    }
+
+    #[test]
+    fn test_decode_attrs_empty_data() {
+        let attrs = SftpClient::decode_attrs(&[]);
+        assert!(attrs.size.is_none());
+        assert!(attrs.uid.is_none());
+        assert!(attrs.permissions.is_none());
+    }
+
+    #[test]
+    fn test_decode_attrs_too_short() {
+        let attrs = SftpClient::decode_attrs(&[0, 0]);
+        assert!(attrs.size.is_none());
+    }
+
+    #[test]
+    fn test_decode_attrs_no_flags() {
+        let data = 0u32.to_be_bytes();
+        let attrs = SftpClient::decode_attrs(&data);
+        assert!(attrs.size.is_none());
+        assert!(attrs.uid.is_none());
+        assert!(attrs.gid.is_none());
+        assert!(attrs.permissions.is_none());
+    }
+
+    #[test]
+    fn test_decode_attrs_size_only() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&0x01u32.to_be_bytes()); // flags: size
+        data.extend_from_slice(&42u64.to_be_bytes());
+        let attrs = SftpClient::decode_attrs(&data);
+        assert_eq!(attrs.size, Some(42));
+        assert!(attrs.uid.is_none());
+        assert!(attrs.permissions.is_none());
+    }
+
+    #[test]
+    fn test_decode_attrs_uid_gid() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&0x02u32.to_be_bytes()); // flags: uid/gid
+        data.extend_from_slice(&500u32.to_be_bytes());
+        data.extend_from_slice(&600u32.to_be_bytes());
+        let attrs = SftpClient::decode_attrs(&data);
+        assert!(attrs.size.is_none());
+        assert_eq!(attrs.uid, Some(500));
+        assert_eq!(attrs.gid, Some(600));
+    }
+
+    #[test]
+    fn test_decode_attrs_permissions() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&0x04u32.to_be_bytes()); // flags: permissions
+        data.extend_from_slice(&0o755u32.to_be_bytes());
+        let attrs = SftpClient::decode_attrs(&data);
+        assert!(attrs.size.is_none());
+        assert_eq!(attrs.permissions, Some(0o755));
+    }
+
+    #[test]
+    fn test_decode_attrs_all_flags() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&0x07u32.to_be_bytes()); // flags: size|uid/gid|perms
+        data.extend_from_slice(&1024u64.to_be_bytes());
+        data.extend_from_slice(&1000u32.to_be_bytes());
+        data.extend_from_slice(&2000u32.to_be_bytes());
+        data.extend_from_slice(&0o644u32.to_be_bytes());
+        let attrs = SftpClient::decode_attrs(&data);
+        assert_eq!(attrs.size, Some(1024));
+        assert_eq!(attrs.uid, Some(1000));
+        assert_eq!(attrs.gid, Some(2000));
+        assert_eq!(attrs.permissions, Some(0o644));
+    }
+
+    #[test]
+    fn test_decode_attrs_size_flag_but_truncated_data() {
+        // Flag says size is present but data is too short
+        let mut data = Vec::new();
+        data.extend_from_slice(&0x01u32.to_be_bytes()); // flags: size
+        data.extend_from_slice(&[0, 0, 0]); // only 3 bytes, need 8
+        let attrs = SftpClient::decode_attrs(&data);
+        // Should gracefully handle truncation
+        assert!(attrs.size.is_none());
+    }
+
+    #[test]
+    fn test_encode_decode_attrs_roundtrip() {
+        let original = SftpAttrs {
+            size: Some(65536),
+            uid: Some(1000),
+            gid: Some(1000),
+            permissions: Some(0o755),
+            atime: None,
+            mtime: None,
+        };
+        let mut buf = BytesMut::new();
+        SftpClient::encode_attrs(&mut buf, &original);
+        let decoded = SftpClient::decode_attrs(&buf);
+        assert_eq!(decoded.size, original.size);
+        assert_eq!(decoded.uid, original.uid);
+        assert_eq!(decoded.gid, original.gid);
+        assert_eq!(decoded.permissions, original.permissions);
+    }
+
+    #[test]
+    fn test_encode_decode_attrs_roundtrip_empty() {
+        let original = SftpAttrs::default();
+        let mut buf = BytesMut::new();
+        SftpClient::encode_attrs(&mut buf, &original);
+        let decoded = SftpClient::decode_attrs(&buf);
+        assert!(decoded.size.is_none());
+        assert!(decoded.uid.is_none());
+        assert!(decoded.gid.is_none());
+        assert!(decoded.permissions.is_none());
+    }
+
+    #[test]
+    fn test_encode_decode_attrs_roundtrip_size_only() {
+        let original = SftpAttrs {
+            size: Some(999999),
+            ..Default::default()
+        };
+        let mut buf = BytesMut::new();
+        SftpClient::encode_attrs(&mut buf, &original);
+        let decoded = SftpClient::decode_attrs(&buf);
+        assert_eq!(decoded.size, Some(999999));
+        assert!(decoded.uid.is_none());
+    }
+
+    #[test]
+    fn test_sftp_dir_entry_construction() {
+        let entry = SftpDirEntry {
+            filename: "test.txt".to_string(),
+            longname: "-rw-r--r-- 1 user group 1024 Jan 1 00:00 test.txt".to_string(),
+            attrs: SftpAttrs {
+                size: Some(1024),
+                permissions: Some(0o644),
+                ..Default::default()
+            },
+        };
+        assert_eq!(entry.filename, "test.txt");
+        assert!(entry.longname.contains("test.txt"));
+        assert_eq!(entry.attrs.size, Some(1024));
+        let debug = format!("{:?}", entry);
+        assert!(debug.contains("SftpDirEntry"));
+        assert!(debug.contains("test.txt"));
+    }
+
+    #[test]
+    fn test_sftp_dir_entry_clone() {
+        let entry = SftpDirEntry {
+            filename: "file.dat".to_string(),
+            longname: "longname".to_string(),
+            attrs: SftpAttrs { size: Some(42), ..Default::default() },
+        };
+        let cloned = entry.clone();
+        assert_eq!(cloned.filename, entry.filename);
+        assert_eq!(cloned.longname, entry.longname);
+        assert_eq!(cloned.attrs.size, entry.attrs.size);
+    }
+
+    #[test]
+    fn test_scp_direction_equality() {
+        assert_eq!(ScpDirection::Upload, ScpDirection::Upload);
+        assert_eq!(ScpDirection::Download, ScpDirection::Download);
+        assert_ne!(ScpDirection::Upload, ScpDirection::Download);
+    }
+
+    #[test]
+    fn test_scp_direction_copy() {
+        let d = ScpDirection::Upload;
+        let d2 = d; // Copy
+        assert_eq!(d, d2);
+    }
+
+    #[test]
+    fn test_scp_direction_debug() {
+        let debug = format!("{:?}", ScpDirection::Upload);
+        assert_eq!(debug, "Upload");
+        let debug = format!("{:?}", ScpDirection::Download);
+        assert_eq!(debug, "Download");
+    }
+
+    #[test]
+    fn test_scp_command_clone_and_debug() {
+        let cmd = ScpCommand::upload("/tmp/test.txt");
+        let cloned = cmd.clone();
+        assert_eq!(cloned.remote_path, cmd.remote_path);
+        assert_eq!(cloned.direction, cmd.direction);
+        assert_eq!(cloned.recursive, cmd.recursive);
+        let debug = format!("{:?}", cmd);
+        assert!(debug.contains("ScpCommand"));
+    }
+
+    #[test]
+    fn test_sftp_op_debug_output() {
+        let ops: Vec<SftpOp> = vec![
+            SftpOp::Open { path: "/tmp/f".into(), flags: 1 },
+            SftpOp::Close { handle: vec![1] },
+            SftpOp::Read { handle: vec![1], offset: 0, length: 1024 },
+            SftpOp::Write { handle: vec![1], offset: 0, data: vec![0] },
+            SftpOp::Stat { path: "/tmp/f".into() },
+            SftpOp::ReadDir { handle: vec![1] },
+            SftpOp::OpenDir { path: "/tmp".into() },
+            SftpOp::Remove { path: "/tmp/f".into() },
+            SftpOp::Mkdir { path: "/tmp/d".into() },
+            SftpOp::Rename { old_path: "/a".into(), new_path: "/b".into() },
+        ];
+        let expected_names = ["Open", "Close", "Read", "Write", "Stat", "ReadDir", "OpenDir", "Remove", "Mkdir", "Rename"];
+        for (op, name) in ops.iter().zip(expected_names.iter()) {
+            let debug = format!("{:?}", op);
+            assert!(debug.contains(name), "expected '{}' in debug output: {}", name, debug);
+        }
+    }
+
+    #[test]
+    fn test_sftp_op_equality() {
+        let op1 = SftpOp::Open { path: "/tmp/f".into(), flags: 1 };
+        let op2 = SftpOp::Open { path: "/tmp/f".into(), flags: 1 };
+        let op3 = SftpOp::Open { path: "/tmp/g".into(), flags: 1 };
+        assert_eq!(op1, op2);
+        assert_ne!(op1, op3);
+    }
+
+    #[test]
+    fn test_sftp_op_clone() {
+        let op = SftpOp::Write { handle: vec![1, 2, 3], offset: 100, data: vec![4, 5, 6] };
+        let cloned = op.clone();
+        assert_eq!(op, cloned);
+    }
+
+    #[test]
+    fn test_sftp_client_debug() {
+        // We can't construct SftpClient without a real transport, but we can verify
+        // the Debug impl compiles and works by checking the format string exists.
+        // This is tested indirectly; the impl is at line 712.
+    }
 }

@@ -394,4 +394,224 @@ mod tests {
             assert!(result.is_err());
         });
     }
+
+    #[test]
+    fn test_multiplexed_session_info_clone() {
+        let info = MultiplexedSessionInfo {
+            local_channel_id: 5,
+            remote_channel_id: 10,
+            is_open: true,
+        };
+        let cloned = info.clone();
+        assert_eq!(cloned.local_channel_id, 5);
+        assert_eq!(cloned.remote_channel_id, 10);
+        assert!(cloned.is_open);
+    }
+
+    #[test]
+    fn test_multiplexed_session_info_debug() {
+        let info = MultiplexedSessionInfo {
+            local_channel_id: 7,
+            remote_channel_id: 99,
+            is_open: false,
+        };
+        let debug = format!("{:?}", info);
+        assert!(debug.contains("MultiplexedSessionInfo"));
+        assert!(debug.contains("7"));
+        assert!(debug.contains("99"));
+        assert!(debug.contains("false"));
+    }
+
+    #[test]
+    fn test_multiplexed_connection_session_count_empty() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let (client, _server) = tokio::join!(
+                tokio::net::TcpStream::connect(addr),
+                listener.accept()
+            );
+            let transport = Transport::new(client.unwrap());
+            let conn = MultiplexedConnection::new(transport);
+            assert_eq!(conn.session_count(), 0);
+            assert!(conn.session_ids().is_empty());
+            assert!(conn.session_info(0).is_none());
+            assert!(conn.session_info(999).is_none());
+        });
+    }
+
+    #[test]
+    fn test_multiplexed_session_accessors() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let (client, _server) = tokio::join!(
+                tokio::net::TcpStream::connect(addr),
+                listener.accept()
+            );
+            let transport = Transport::new(client.unwrap());
+            let shared = SharedTransport::new(transport);
+            let session = MultiplexedSession {
+                transport: shared,
+                local_channel_id: 42,
+                remote_channel_id: 77,
+                is_open: true,
+            };
+            assert_eq!(session.local_channel_id(), 42);
+            assert_eq!(session.remote_channel_id(), 77);
+            assert!(session.is_open());
+        });
+    }
+
+    #[test]
+    fn test_multiplexed_session_receive_when_closed() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let (client, _server) = tokio::join!(
+                tokio::net::TcpStream::connect(addr),
+                listener.accept()
+            );
+            let transport = Transport::new(client.unwrap());
+            let shared = SharedTransport::new(transport);
+            let session = MultiplexedSession {
+                transport: shared,
+                local_channel_id: 0,
+                remote_channel_id: 1,
+                is_open: false,
+            };
+            let result = session.receive(std::time::Duration::from_millis(100)).await;
+            assert!(result.is_err());
+            let err = result.unwrap_err().to_string();
+            assert!(err.contains("closed"), "got: {}", err);
+        });
+    }
+
+    #[test]
+    fn test_multiplexed_session_close_when_already_closed() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let (client, _server) = tokio::join!(
+                tokio::net::TcpStream::connect(addr),
+                listener.accept()
+            );
+            let transport = Transport::new(client.unwrap());
+            let shared = SharedTransport::new(transport);
+            let mut session = MultiplexedSession {
+                transport: shared,
+                local_channel_id: 0,
+                remote_channel_id: 1,
+                is_open: false,
+            };
+            // close on already-closed session should be a no-op (Ok)
+            let result = session.close().await;
+            assert!(result.is_ok());
+            assert!(!session.is_open());
+        });
+    }
+
+    #[test]
+    fn test_multiplexed_connection_shared_transport() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let (client, _server) = tokio::join!(
+                tokio::net::TcpStream::connect(addr),
+                listener.accept()
+            );
+            let transport = Transport::new(client.unwrap());
+            let conn = MultiplexedConnection::new(transport);
+            // shared_transport should have ref_count >= 1
+            assert!(conn.shared_transport().ref_count() >= 1);
+        });
+    }
+
+    #[test]
+    fn test_multiplexed_connection_debug() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let (client, _server) = tokio::join!(
+                tokio::net::TcpStream::connect(addr),
+                listener.accept()
+            );
+            let transport = Transport::new(client.unwrap());
+            let conn = MultiplexedConnection::new(transport);
+            let debug = format!("{:?}", conn);
+            assert!(debug.contains("MultiplexedConnection"));
+        });
+    }
+
+    #[test]
+    fn test_multiplexed_session_debug() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let (client, _server) = tokio::join!(
+                tokio::net::TcpStream::connect(addr),
+                listener.accept()
+            );
+            let transport = Transport::new(client.unwrap());
+            let shared = SharedTransport::new(transport);
+            let session = MultiplexedSession {
+                transport: shared,
+                local_channel_id: 3,
+                remote_channel_id: 8,
+                is_open: true,
+            };
+            let debug = format!("{:?}", session);
+            assert!(debug.contains("MultiplexedSession"));
+            assert!(debug.contains("3"));
+            assert!(debug.contains("8"));
+        });
+    }
+
+    #[test]
+    fn test_shared_transport_debug() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let (client, _server) = tokio::join!(
+                tokio::net::TcpStream::connect(addr),
+                listener.accept()
+            );
+            let transport = Transport::new(client.unwrap());
+            let shared = SharedTransport::new(transport);
+            let debug = format!("{:?}", shared);
+            assert!(debug.contains("SharedTransport"));
+        });
+    }
 }

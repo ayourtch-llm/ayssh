@@ -380,4 +380,293 @@ mod tests {
         let client = AgentClient::new(PathBuf::from("/tmp/test.sock"));
         assert_eq!(client.socket_path(), std::path::Path::new("/tmp/test.sock"));
     }
+
+    #[test]
+    fn test_agent_client_is_connected_initially_false() {
+        let client = AgentClient::new(PathBuf::from("/tmp/test.sock"));
+        assert!(!client.is_connected());
+    }
+
+    #[test]
+    fn test_agent_client_debug() {
+        let client = AgentClient::new(PathBuf::from("/tmp/test.sock"));
+        let debug = format!("{:?}", client);
+        assert!(debug.contains("AgentClient"));
+        assert!(debug.contains("/tmp/test.sock"));
+        assert!(debug.contains("false")); // not connected
+    }
+
+    #[test]
+    fn test_parse_identities_answer_multiple_keys() {
+        let key1 = b"ssh-rsa-key-blob-1";
+        let comment1 = b"user@host1";
+        let key2 = b"ssh-ed25519-key-blob-2";
+        let comment2 = b"user@host2";
+        let key3 = b"ecdsa-key-blob-3";
+        let comment3 = b"user@host3";
+
+        let mut data = vec![12]; // msg type = IDENTITIES_ANSWER
+        data.extend_from_slice(&3u32.to_be_bytes()); // nkeys = 3
+
+        for (key, comment) in &[(key1.as_slice(), comment1.as_slice()),
+                                  (key2.as_slice(), comment2.as_slice()),
+                                  (key3.as_slice(), comment3.as_slice())] {
+            data.extend_from_slice(&(key.len() as u32).to_be_bytes());
+            data.extend_from_slice(key);
+            data.extend_from_slice(&(comment.len() as u32).to_be_bytes());
+            data.extend_from_slice(comment);
+        }
+
+        let identities = AgentClient::parse_identities_answer(&data).unwrap();
+        assert_eq!(identities.len(), 3);
+        assert_eq!(identities[0].key_blob, key1.to_vec());
+        assert_eq!(identities[0].comment, "user@host1");
+        assert_eq!(identities[1].key_blob, key2.to_vec());
+        assert_eq!(identities[1].comment, "user@host2");
+        assert_eq!(identities[2].key_blob, key3.to_vec());
+        assert_eq!(identities[2].comment, "user@host3");
+    }
+
+    #[test]
+    fn test_parse_identities_answer_empty_data() {
+        let result = AgentClient::parse_identities_answer(&[]);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Empty"), "got: {}", err);
+    }
+
+    #[test]
+    fn test_parse_identities_answer_wrong_message_type() {
+        let data = vec![99, 0, 0, 0, 0]; // wrong msg type
+        let result = AgentClient::parse_identities_answer(&data);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("99"), "got: {}", err);
+    }
+
+    #[test]
+    fn test_parse_identities_answer_truncated_header() {
+        // Just the msg type byte, no nkeys field
+        let data = vec![12, 0, 0];
+        let result = AgentClient::parse_identities_answer(&data);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Truncated"), "got: {}", err);
+    }
+
+    #[test]
+    fn test_parse_identities_answer_truncated_key_blob_length() {
+        // msg_type(12) || nkeys(1) || only 2 bytes of key blob length
+        let mut data = vec![12];
+        data.extend_from_slice(&1u32.to_be_bytes()); // nkeys = 1
+        data.push(0); data.push(0); // only 2 bytes, need 4
+        let result = AgentClient::parse_identities_answer(&data);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Truncated key blob length"), "got: {}", err);
+    }
+
+    #[test]
+    fn test_parse_identities_answer_truncated_key_blob() {
+        // msg_type(12) || nkeys(1) || blob_len(10) || only 5 bytes of blob
+        let mut data = vec![12];
+        data.extend_from_slice(&1u32.to_be_bytes()); // nkeys = 1
+        data.extend_from_slice(&10u32.to_be_bytes()); // blob_len = 10
+        data.extend_from_slice(&[1, 2, 3, 4, 5]); // only 5 bytes
+        let result = AgentClient::parse_identities_answer(&data);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Truncated key blob"), "got: {}", err);
+    }
+
+    #[test]
+    fn test_parse_identities_answer_truncated_comment_length() {
+        // msg_type(12) || nkeys(1) || blob || only 2 bytes of comment length
+        let key_blob = b"key";
+        let mut data = vec![12];
+        data.extend_from_slice(&1u32.to_be_bytes());
+        data.extend_from_slice(&(key_blob.len() as u32).to_be_bytes());
+        data.extend_from_slice(key_blob);
+        data.push(0); data.push(0); // only 2 bytes of comment length
+        let result = AgentClient::parse_identities_answer(&data);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Truncated comment length"), "got: {}", err);
+    }
+
+    #[test]
+    fn test_parse_identities_answer_truncated_comment() {
+        let key_blob = b"key";
+        let mut data = vec![12];
+        data.extend_from_slice(&1u32.to_be_bytes());
+        data.extend_from_slice(&(key_blob.len() as u32).to_be_bytes());
+        data.extend_from_slice(key_blob);
+        data.extend_from_slice(&10u32.to_be_bytes()); // comment_len = 10
+        data.extend_from_slice(b"short"); // only 5 bytes
+        let result = AgentClient::parse_identities_answer(&data);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Truncated comment"), "got: {}", err);
+    }
+
+    #[test]
+    fn test_parse_sign_response_empty() {
+        let result = AgentClient::parse_sign_response(&[]);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Empty"), "got: {}", err);
+    }
+
+    #[test]
+    fn test_parse_sign_response_wrong_message_type() {
+        let data = vec![99, 0, 0, 0, 4, 1, 2, 3, 4];
+        let result = AgentClient::parse_sign_response(&data);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("99"), "got: {}", err);
+    }
+
+    #[test]
+    fn test_parse_sign_response_truncated_header() {
+        // Just msg type + 2 bytes (need 5 total)
+        let data = vec![SSH_AGENT_SIGN_RESPONSE, 0, 0];
+        let result = AgentClient::parse_sign_response(&data);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Truncated sign response"), "got: {}", err);
+    }
+
+    #[test]
+    fn test_parse_sign_response_truncated_signature_blob() {
+        let mut data = vec![SSH_AGENT_SIGN_RESPONSE];
+        data.extend_from_slice(&20u32.to_be_bytes()); // sig_len = 20
+        data.extend_from_slice(&[1, 2, 3]); // only 3 bytes
+        let result = AgentClient::parse_sign_response(&data);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Truncated signature blob"), "got: {}", err);
+    }
+
+    #[test]
+    fn test_parse_sign_response_zero_length_signature() {
+        let mut data = vec![SSH_AGENT_SIGN_RESPONSE];
+        data.extend_from_slice(&0u32.to_be_bytes()); // sig_len = 0
+        let result = AgentClient::parse_sign_response(&data).unwrap();
+        assert!(result.signature_blob.is_empty());
+    }
+
+    #[test]
+    fn test_build_sign_request_flags_zero() {
+        let msg = AgentClient::build_sign_request(b"mykey", b"mydata", 0);
+        // Check flags at the end of the message
+        let len = msg.len();
+        let flags = u32::from_be_bytes([msg[len-4], msg[len-3], msg[len-2], msg[len-1]]);
+        assert_eq!(flags, 0);
+    }
+
+    #[test]
+    fn test_build_sign_request_flags_rsa_sha2_256() {
+        let msg = AgentClient::build_sign_request(b"mykey", b"mydata", 2);
+        let len = msg.len();
+        let flags = u32::from_be_bytes([msg[len-4], msg[len-3], msg[len-2], msg[len-1]]);
+        assert_eq!(flags, 2);
+    }
+
+    #[test]
+    fn test_build_sign_request_flags_rsa_sha2_512() {
+        let msg = AgentClient::build_sign_request(b"mykey", b"mydata", 4);
+        let len = msg.len();
+        let flags = u32::from_be_bytes([msg[len-4], msg[len-3], msg[len-2], msg[len-1]]);
+        assert_eq!(flags, 4);
+    }
+
+    #[test]
+    fn test_build_sign_request_structure() {
+        let key = b"testkey";
+        let data = b"testdata";
+        let msg = AgentClient::build_sign_request(key, data, 0);
+        // [0..4] = msg_len, [4] = type(13), [5..9] = key_len, [9..16] = key, [16..20] = data_len, [20..28] = data, [28..32] = flags
+        assert_eq!(msg[4], SSH_AGENTC_SIGN_REQUEST);
+        let key_len = u32::from_be_bytes([msg[5], msg[6], msg[7], msg[8]]) as usize;
+        assert_eq!(key_len, key.len());
+        assert_eq!(&msg[9..9+key_len], key);
+        let data_offset = 9 + key_len;
+        let data_len = u32::from_be_bytes([msg[data_offset], msg[data_offset+1], msg[data_offset+2], msg[data_offset+3]]) as usize;
+        assert_eq!(data_len, data.len());
+        assert_eq!(&msg[data_offset+4..data_offset+4+data_len], data);
+    }
+
+    #[test]
+    fn test_build_sign_request_empty_key_and_data() {
+        let msg = AgentClient::build_sign_request(b"", b"", 0);
+        let msg_len = u32::from_be_bytes([msg[0], msg[1], msg[2], msg[3]]) as usize;
+        // 1 (type) + 4 (key_len) + 0 (key) + 4 (data_len) + 0 (data) + 4 (flags) = 13
+        assert_eq!(msg_len, 13);
+        assert_eq!(msg.len(), 4 + 13);
+    }
+
+    #[test]
+    fn test_agent_identity_clone_and_debug() {
+        let id = AgentIdentity {
+            key_blob: vec![1, 2, 3],
+            comment: "test@host".to_string(),
+        };
+        let cloned = id.clone();
+        assert_eq!(cloned.key_blob, id.key_blob);
+        assert_eq!(cloned.comment, id.comment);
+        let debug = format!("{:?}", id);
+        assert!(debug.contains("AgentIdentity"));
+    }
+
+    #[test]
+    fn test_agent_signature_clone_and_debug() {
+        let sig = AgentSignature {
+            signature_blob: vec![10, 20, 30],
+        };
+        let cloned = sig.clone();
+        assert_eq!(cloned.signature_blob, sig.signature_blob);
+        let debug = format!("{:?}", sig);
+        assert!(debug.contains("AgentSignature"));
+    }
+
+    #[tokio::test]
+    async fn test_agent_connect_nonexistent_socket() {
+        let mut client = AgentClient::new(PathBuf::from("/tmp/nonexistent_ssh_agent_sock_12345"));
+        let result = client.connect().await;
+        assert!(result.is_err());
+        assert!(!client.is_connected());
+    }
+
+    #[tokio::test]
+    async fn test_agent_send_recv_not_connected() {
+        let mut client = AgentClient::new(PathBuf::from("/tmp/test.sock"));
+        let request = AgentClient::build_request_identities();
+        let result = client.send_recv(&request).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Not connected"), "got: {}", err);
+    }
+
+    #[tokio::test]
+    async fn test_agent_connect_to_real_agent_if_available() {
+        if std::env::var("SSH_AUTH_SOCK").is_ok() {
+            let mut client = AgentClient::from_env().unwrap();
+            let result = client.connect().await;
+            if result.is_ok() {
+                assert!(client.is_connected());
+                // Try listing identities
+                let identities = client.request_identities().await;
+                assert!(identities.is_ok(), "request_identities failed: {:?}", identities.err());
+            }
+        }
+    }
+
+    #[test]
+    fn test_protocol_constants() {
+        assert_eq!(SSH_AGENTC_REQUEST_IDENTITIES, 11);
+        assert_eq!(SSH_AGENT_IDENTITIES_ANSWER, 12);
+        assert_eq!(SSH_AGENTC_SIGN_REQUEST, 13);
+        assert_eq!(SSH_AGENT_SIGN_RESPONSE, 14);
+        assert_eq!(SSH_AGENT_FAILURE, 5);
+    }
 }
