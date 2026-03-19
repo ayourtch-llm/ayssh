@@ -955,6 +955,20 @@ impl Transport {
         self.send_message(&msg).await
     }
 
+    /// Send channel window adjust message to replenish the remote's send window.
+    /// This tells the server it can send more data on this channel.
+    pub async fn send_channel_window_adjust(
+        &mut self,
+        channel_id: u32,
+        bytes_to_add: u32,
+    ) -> Result<(), crate::error::SshError> {
+        let mut msg = bytes::BytesMut::new();
+        msg.put_u8(protocol::MessageType::ChannelWindowAdjust as u8);
+        msg.put_u32(channel_id);
+        msg.put_u32(bytes_to_add);
+        self.send_message(&msg).await
+    }
+
     /// Send channel close message
     pub async fn send_channel_close(&mut self, channel_id: u32) -> Result<(), crate::error::SshError> {
         let mut msg = bytes::BytesMut::new();

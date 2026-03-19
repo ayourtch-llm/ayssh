@@ -131,6 +131,13 @@ impl RawSshSession {
                                     [msg[5], msg[6], msg[7], msg[8]]
                                 ) as usize;
                                 if msg.len() >= 9 + data_len {
+                                    // Send WINDOW_ADJUST to replenish the server's send window.
+                                    // Without this, the server stops sending after the initial
+                                    // window (~1MB) is consumed — causing large file transfers
+                                    // to truncate.
+                                    let _ = self.transport.send_channel_window_adjust(
+                                        self.channel_id, data_len as u32,
+                                    ).await;
                                     return Ok(msg[9..9 + data_len].to_vec());
                                 }
                             }

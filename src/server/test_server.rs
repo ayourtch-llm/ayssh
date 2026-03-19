@@ -595,6 +595,21 @@ pub async fn run_sftp_server(
     server.run(io, client_channel).await
 }
 
+/// Read the next CHANNEL_DATA message, skipping WINDOW_ADJUST and other protocol messages.
+async fn recv_channel_data(
+    io: &mut super::encrypted_io::ServerEncryptedIO,
+) -> Result<Vec<u8>, SshError> {
+    loop {
+        let msg = io.recv_message().await?;
+        if msg.is_empty() { continue; }
+        match msg[0] {
+            94 => return Ok(msg), // CHANNEL_DATA
+            93 => continue,       // WINDOW_ADJUST — skip
+            _ => continue,        // skip other protocol messages
+        }
+    }
+}
+
 /// Handle SCP upload (scp -t) on the server side.
 /// Reads the file data sent by the client and returns it.
 pub async fn handle_scp_upload(
@@ -610,10 +625,7 @@ pub async fn handle_scp_upload(
     io.send_message(&ok_msg).await?;
 
     // Read file header: "C<mode> <size> <filename>\n"
-    let header_msg = io.recv_message().await?;
-    if header_msg.is_empty() || header_msg[0] != 94 {
-        return Err(SshError::ProtocolError("Expected CHANNEL_DATA with SCP header".into()));
-    }
+    let header_msg = recv_channel_data(io).await?;
     let data_len = u32::from_be_bytes([header_msg[5], header_msg[6], header_msg[7], header_msg[8]]) as usize;
     let header_bytes = &header_msg[9..9 + data_len];
     let header = String::from_utf8_lossy(header_bytes).to_string();
@@ -637,15 +649,13 @@ pub async fn handle_scp_upload(
     ok2.put_u32(1); ok2.put_u8(0);
     io.send_message(&ok2).await?;
 
-    // Read file data (may come in multiple CHANNEL_DATA messages)
+    // Read file data (may come in multiple CHANNEL_DATA messages).
+    // Skip WINDOW_ADJUST (93) and other protocol messages.
     let mut file_data = Vec::with_capacity(file_size);
     while file_data.len() < file_size + 1 { // +1 for trailing \0
-        let msg = io.recv_message().await?;
-        if msg.is_empty() { continue; }
-        if msg[0] == 94 {
-            let len = u32::from_be_bytes([msg[5], msg[6], msg[7], msg[8]]) as usize;
-            file_data.extend_from_slice(&msg[9..9 + len]);
-        }
+        let msg = recv_channel_data(io).await?;
+        let len = u32::from_be_bytes([msg[5], msg[6], msg[7], msg[8]]) as usize;
+        file_data.extend_from_slice(&msg[9..9 + len]);
     }
     // Trim to file_size (remove trailing \0)
     file_data.truncate(file_size);
@@ -669,10 +679,7 @@ pub async fn handle_scp_download(
     mode: u32,
 ) -> Result<(), SshError> {
     // Wait for initial ready signal (\0) from client
-    let ready_msg = io.recv_message().await?;
-    if ready_msg.is_empty() || ready_msg[0] != 94 {
-        return Err(SshError::ProtocolError("Expected ready signal from SCP client".into()));
-    }
+    let ready_msg = recv_channel_data(io).await?;
 
     // Send file header: "C<mode> <size> <filename>\n"
     let header = format!("C{:04o} {} {}\n", mode, data.len(), filename);
@@ -683,11 +690,8 @@ pub async fn handle_scp_download(
     header_msg.put_slice(header.as_bytes());
     io.send_message(&header_msg).await?;
 
-    // Wait for OK
-    let ok_msg = io.recv_message().await?;
-    if ok_msg.is_empty() || ok_msg[0] != 94 {
-        return Err(SshError::ProtocolError("Expected OK from SCP client".into()));
-    }
+    // Wait for OK (skip WINDOW_ADJUST)
+    let _ok_msg = recv_channel_data(io).await?;
 
     // Send file data
     let mut data_msg = BytesMut::new();

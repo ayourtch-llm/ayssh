@@ -591,7 +591,9 @@ impl ScpSession {
             return Err(SshError::ProtocolError("SCP header rejected".into()));
         }
 
-        // Stream from reader in 32KB chunks
+        // Stream from reader in 32KB chunks.
+        // Between sends, drain any incoming WINDOW_ADJUST messages to prevent
+        // the SSH channel window from filling up and blocking the connection.
         let mut total = 0u64;
         let mut buf = vec![0u8; 32768];
         loop {
@@ -599,6 +601,21 @@ impl ScpSession {
             if n == 0 { break; }
             session.send(&buf[..n]).await?;
             total += n as u64;
+
+            // Drain any pending WINDOW_ADJUST or other protocol messages
+            // without blocking. This keeps the channel flowing for large transfers.
+            loop {
+                match tokio::time::timeout(
+                    std::time::Duration::from_millis(0),
+                    session.transport_mut().recv_message(),
+                ).await {
+                    Ok(Ok(msg)) if !msg.is_empty() && msg[0] == 93 => {
+                        // SSH_MSG_CHANNEL_WINDOW_ADJUST — consumed, continue draining
+                        continue;
+                    }
+                    _ => break, // no message pending, or error, or non-window-adjust
+                }
+            }
         }
 
         session.send(&[0]).await?;
@@ -2160,5 +2177,67 @@ mod tests {
         // Verify via MemoryFs
         let stored = fs_for_verify.get_file("/stream_test.txt").unwrap();
         assert_eq!(stored, test_data);
+    }
+
+    /// Regression test: SCP upload of data larger than the SSH channel window (~1MB).
+    /// Before the fix, upload_stream would send ~1MB then stop because the channel
+    /// window was exhausted and WINDOW_ADJUST messages were never consumed.
+    #[test]
+    fn test_scp_upload_stream_large_file() {
+        use crate::server::test_server::*;
+        use crate::server::host_key::HostKeyPair;
+
+        let (port_tx, port_rx) = std::sync::mpsc::channel::<u16>();
+        let (data_tx, data_rx) = std::sync::mpsc::channel::<(String, Vec<u8>)>();
+
+        // 2MB of patterned data — larger than the default 1MB channel window
+        let file_size: usize = 2 * 1024 * 1024;
+        let test_data: Vec<u8> = (0..file_size).map(|i| (i % 251) as u8).collect();
+
+        let server = std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all().build().unwrap();
+            rt.block_on(async {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                port_tx.send(listener.local_addr().unwrap().port()).unwrap();
+                let host_key = HostKeyPair::generate_ed25519();
+                let filter = AlgorithmFilter::default();
+                let (stream, _) = listener.accept().await.unwrap();
+                let (mut io, ch) = server_handshake(stream, &host_key, &filter).await
+                    .expect("Server handshake failed");
+                let (filename, file_data) = handle_scp_upload(&mut io, ch).await
+                    .expect("SCP upload failed");
+                data_tx.send((filename, file_data)).unwrap();
+            });
+        });
+
+        let upload_data = test_data.clone();
+        let client = std::thread::spawn(move || {
+            let port = port_rx.recv_timeout(std::time::Duration::from_secs(30)).unwrap();
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all().build().unwrap();
+            rt.block_on(async {
+                let mut cursor = std::io::Cursor::new(upload_data);
+                let bytes_written = ScpSession::upload_stream(
+                    "127.0.0.1", port, "test", "test",
+                    "/tmp/large_file.bin",
+                    &mut cursor,
+                    file_size as u64,
+                    0o644,
+                ).await.expect("upload_stream failed");
+
+                assert_eq!(bytes_written, file_size as u64,
+                    "Expected {} bytes written, got {}", file_size, bytes_written);
+            });
+        });
+
+        client.join().expect("Client panicked");
+        server.join().expect("Server panicked");
+
+        let (filename, data) = data_rx.recv_timeout(std::time::Duration::from_secs(30)).unwrap();
+        assert_eq!(filename, "large_file.bin");
+        assert_eq!(data.len(), file_size,
+            "Server received {} bytes, expected {}", data.len(), file_size);
+        assert_eq!(data, test_data, "Data mismatch");
     }
 }
