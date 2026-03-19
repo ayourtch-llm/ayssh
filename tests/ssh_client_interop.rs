@@ -133,6 +133,20 @@ where
             close.put_u32(ch);
             let _ = io.send_message(&close).await;
 
+            // Wait for client to acknowledge (read their CLOSE/EOF/disconnect).
+            // Without this, the TCP socket can be reset before the ssh client
+            // reads INTEROP_OK from its buffer, causing empty stdout.
+            for _ in 0..10 {
+                match tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    io.recv_message(),
+                ).await {
+                    Ok(Ok(msg)) if !msg.is_empty() && msg[0] == 97 => break, // CLOSE
+                    Ok(Ok(_)) => continue,
+                    _ => break,
+                }
+            }
+
             eprintln!("[server] Connection handled successfully");
         });
     });
