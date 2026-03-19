@@ -1140,4 +1140,59 @@ mod tests {
         // the Debug impl compiles and works by checking the format string exists.
         // This is tested indirectly; the impl is at line 712.
     }
+
+    /// Test ScpSession::upload error path — no server at port 1
+    #[tokio::test]
+    async fn test_scp_upload_no_server() {
+        let result = ScpSession::upload(
+            "127.0.0.1", 1, "user", "pass", "/tmp/test.txt", b"hello", 0o644,
+        ).await;
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("connect") || err_msg.contains("Connect") || err_msg.contains("refused") || err_msg.contains("Connection"),
+            "Unexpected error: {}", err_msg
+        );
+    }
+
+    /// Test ScpSession::download error path — no server at port 1
+    #[tokio::test]
+    async fn test_scp_download_no_server() {
+        let result = ScpSession::download(
+            "127.0.0.1", 1, "user", "pass", "/tmp/test.txt",
+        ).await;
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("connect") || err_msg.contains("Connect") || err_msg.contains("refused") || err_msg.contains("Connection"),
+            "Unexpected error: {}", err_msg
+        );
+    }
+
+    /// Test ScpSession::upload_with_publickey error path — no server at port 1
+    #[tokio::test]
+    async fn test_scp_upload_publickey_no_server() {
+        let result = ScpSession::upload_with_publickey(
+            "127.0.0.1", 1, "user", b"key", "/tmp/test.txt", b"hello", 0o644,
+        ).await;
+        assert!(result.is_err());
+    }
+
+    /// Test ScpSession::download_with_publickey error path — no server at port 1
+    #[tokio::test]
+    async fn test_scp_download_publickey_no_server() {
+        let result = ScpSession::download_with_publickey(
+            "127.0.0.1", 1, "user", b"key", "/tmp/test.txt",
+        ).await;
+        assert!(result.is_err());
+    }
+
+    /// Test SftpClient::connect_with_publickey error path — no server at port 1
+    #[tokio::test]
+    async fn test_sftp_client_connect_no_server() {
+        let result = SftpClient::connect_with_publickey(
+            "127.0.0.1", 1, "user", b"key",
+        ).await;
+        assert!(result.is_err());
+    }
 }

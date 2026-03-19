@@ -742,4 +742,213 @@ mod tests {
             assert!(debug.contains("SharedTransport"));
         });
     }
+
+    /// Test open_shell via test server — opens session + requests shell in one call
+    #[test]
+    fn test_multiplexed_open_shell_with_test_server() {
+        use crate::server::test_server::*;
+        use crate::server::host_key::HostKeyPair;
+        use bytes::BufMut;
+
+        let (port_tx, port_rx) = std::sync::mpsc::channel::<u16>();
+
+        let server = std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all().build().unwrap();
+            rt.block_on(async {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                port_tx.send(listener.local_addr().unwrap().port()).unwrap();
+                let host_key = HostKeyPair::generate_ed25519();
+                let filter = AlgorithmFilter::default();
+                let (stream, _) = listener.accept().await.unwrap();
+                let (mut io, ch) = server_handshake(stream, &host_key, &filter).await
+                    .expect("Server handshake failed");
+
+                // Send test data on the channel
+                let mut msg = bytes::BytesMut::new();
+                msg.put_u8(94); msg.put_u32(ch);
+                let data = b"SHELL_OK\n";
+                msg.put_u32(data.len() as u32); msg.put_slice(data);
+                io.send_message(&msg).await.unwrap();
+
+                let mut eof = bytes::BytesMut::new();
+                eof.put_u8(96); eof.put_u32(ch);
+                let _ = io.send_message(&eof).await;
+                let mut close = bytes::BytesMut::new();
+                close.put_u8(97); close.put_u32(ch);
+                let _ = io.send_message(&close).await;
+            });
+        });
+
+        let client = std::thread::spawn(move || {
+            let port = port_rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all().build().unwrap();
+            rt.block_on(async {
+                // Connect and authenticate manually
+                let stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port)).await.unwrap();
+                let mut transport = Transport::new(stream);
+                transport.handshake().await.unwrap();
+                transport.send_service_request("ssh-userauth").await.unwrap();
+                transport.recv_service_accept().await.unwrap();
+
+                let mut auth = crate::auth::Authenticator::new(&mut transport, "test".to_string())
+                    .with_password("test".to_string());
+                auth.available_methods.insert("password".to_string());
+                auth.authenticate().await.unwrap();
+
+                // Create multiplexed connection and open_shell (session + shell in one call)
+                let mut conn = MultiplexedConnection::new(transport);
+                assert_eq!(conn.session_count(), 0);
+
+                let session = conn.open_shell().await.unwrap();
+                assert!(session.is_open());
+                assert_eq!(conn.session_count(), 1);
+
+                // Receive data via the shell session
+                let data = session.receive(std::time::Duration::from_secs(5)).await.unwrap();
+                let text = String::from_utf8_lossy(&data);
+                assert!(text.contains("SHELL_OK"), "Got: {:?}", text);
+            });
+        });
+
+        server.join().expect("Server panicked");
+        client.join().expect("Client panicked");
+    }
+
+    /// Test close_session on an open session via test server
+    #[test]
+    fn test_multiplexed_close_session_with_test_server() {
+        use crate::server::test_server::*;
+        use crate::server::host_key::HostKeyPair;
+        use bytes::BufMut;
+
+        let (port_tx, port_rx) = std::sync::mpsc::channel::<u16>();
+
+        let server = std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all().build().unwrap();
+            rt.block_on(async {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                port_tx.send(listener.local_addr().unwrap().port()).unwrap();
+                let host_key = HostKeyPair::generate_ed25519();
+                let filter = AlgorithmFilter::default();
+                let (stream, _) = listener.accept().await.unwrap();
+                let (mut io, ch) = server_handshake(stream, &host_key, &filter).await
+                    .expect("Server handshake failed");
+
+                // Wait for channel close from client, then close our side
+                for _ in 0..10 {
+                    match io.recv_message().await {
+                        Ok(msg) if !msg.is_empty() && msg[0] == 97 => break, // CHANNEL_CLOSE
+                        Ok(_) => continue,
+                        Err(_) => break,
+                    }
+                }
+            });
+        });
+
+        let client = std::thread::spawn(move || {
+            let port = port_rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all().build().unwrap();
+            rt.block_on(async {
+                let stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port)).await.unwrap();
+                let mut transport = Transport::new(stream);
+                transport.handshake().await.unwrap();
+                transport.send_service_request("ssh-userauth").await.unwrap();
+                transport.recv_service_accept().await.unwrap();
+
+                let mut auth = crate::auth::Authenticator::new(&mut transport, "test".to_string())
+                    .with_password("test".to_string());
+                auth.available_methods.insert("password".to_string());
+                auth.authenticate().await.unwrap();
+
+                let mut conn = MultiplexedConnection::new(transport);
+                let session = conn.open_session().await.unwrap();
+                let local_id = session.local_channel_id();
+                assert_eq!(conn.session_count(), 1);
+
+                // Close the session
+                conn.close_session(local_id).await.unwrap();
+
+                // Verify session is marked closed
+                let info = conn.session_info(local_id).unwrap();
+                assert!(!info.is_open);
+                assert_eq!(conn.session_count(), 0);
+
+                // close_session on already-closed session should be a no-op
+                conn.close_session(local_id).await.unwrap();
+            });
+        });
+
+        server.join().expect("Server panicked");
+        client.join().expect("Client panicked");
+    }
+
+    /// Test MultiplexedSession::close on an open session via test server
+    #[test]
+    fn test_multiplexed_session_close_open_with_test_server() {
+        use crate::server::test_server::*;
+        use crate::server::host_key::HostKeyPair;
+        use bytes::BufMut;
+
+        let (port_tx, port_rx) = std::sync::mpsc::channel::<u16>();
+
+        let server = std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all().build().unwrap();
+            rt.block_on(async {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                port_tx.send(listener.local_addr().unwrap().port()).unwrap();
+                let host_key = HostKeyPair::generate_ed25519();
+                let filter = AlgorithmFilter::default();
+                let (stream, _) = listener.accept().await.unwrap();
+                let (mut io, _ch) = server_handshake(stream, &host_key, &filter).await
+                    .expect("Server handshake failed");
+
+                // Wait for channel close from client
+                for _ in 0..10 {
+                    match io.recv_message().await {
+                        Ok(msg) if !msg.is_empty() && msg[0] == 97 => break, // CHANNEL_CLOSE
+                        Ok(_) => continue,
+                        Err(_) => break,
+                    }
+                }
+            });
+        });
+
+        let client = std::thread::spawn(move || {
+            let port = port_rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all().build().unwrap();
+            rt.block_on(async {
+                let stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port)).await.unwrap();
+                let mut transport = Transport::new(stream);
+                transport.handshake().await.unwrap();
+                transport.send_service_request("ssh-userauth").await.unwrap();
+                transport.recv_service_accept().await.unwrap();
+
+                let mut auth = crate::auth::Authenticator::new(&mut transport, "test".to_string())
+                    .with_password("test".to_string());
+                auth.available_methods.insert("password".to_string());
+                auth.authenticate().await.unwrap();
+
+                let mut conn = MultiplexedConnection::new(transport);
+                let mut session = conn.open_session().await.unwrap();
+                assert!(session.is_open());
+
+                // Close via MultiplexedSession::close (sends CHANNEL_CLOSE)
+                session.close().await.unwrap();
+                assert!(!session.is_open());
+
+                // close again should be no-op
+                session.close().await.unwrap();
+                assert!(!session.is_open());
+            });
+        });
+
+        server.join().expect("Server panicked");
+        client.join().expect("Client panicked");
+    }
 }

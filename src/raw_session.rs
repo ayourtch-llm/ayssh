@@ -627,4 +627,177 @@ mod tests {
         let result = RawSshSession::exec_with_publickey("127.0.0.1", 1, "user", b"key", "ls").await;
         assert!(result.is_err());
     }
+
+    /// Test connect_with_keyboard_interactive error path (no server at port 1)
+    #[tokio::test]
+    async fn test_connect_with_keyboard_interactive_no_server() {
+        let result = RawSshSession::connect_with_keyboard_interactive(
+            "127.0.0.1", 1, "user",
+            |_challenge| Ok(vec!["password".to_string()]),
+        ).await;
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        // Should be a connection error since there's no server
+        assert!(
+            err_msg.contains("connect") || err_msg.contains("Connect") || err_msg.contains("refused") || err_msg.contains("Connection"),
+            "Unexpected error: {}", err_msg
+        );
+    }
+
+    /// Test authenticate_password with invalid credentials against test server
+    #[test]
+    fn test_authenticate_password_rejected_by_server() {
+        use crate::server::test_server::*;
+        use crate::server::host_key::HostKeyPair;
+
+        let (port_tx, port_rx) = std::sync::mpsc::channel::<u16>();
+
+        let server = std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all().build().unwrap();
+            rt.block_on(async {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                port_tx.send(listener.local_addr().unwrap().port()).unwrap();
+                let host_key = HostKeyPair::generate_ed25519();
+                let filter = AlgorithmFilter::default();
+                let auth = AuthBehavior::RejectPassword {
+                    available_methods: "publickey".to_string(),
+                };
+                let (stream, _) = listener.accept().await.unwrap();
+                let _result = server_handshake_with_auth(stream, &host_key, &filter, &auth).await;
+                // Server returns (io, 0) after rejecting — that's fine
+            });
+        });
+
+        let client = std::thread::spawn(move || {
+            let port = port_rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all().build().unwrap();
+            rt.block_on(async {
+                let mut transport = RawSshSession::connect_and_handshake("127.0.0.1", port).await.unwrap();
+                let result = RawSshSession::authenticate_password(&mut transport, "baduser", "badpass").await;
+                assert!(result.is_err(), "Expected auth failure, got Ok");
+                let err_msg = result.unwrap_err().to_string();
+                assert!(
+                    err_msg.contains("uthentication") || err_msg.contains("auth") || err_msg.contains("failed"),
+                    "Unexpected error: {}", err_msg
+                );
+            });
+        });
+
+        server.join().expect("Server panicked");
+        client.join().expect("Client panicked");
+    }
+
+    /// Test authenticate_publickey with invalid credentials against test server
+    #[test]
+    fn test_authenticate_publickey_rejected_by_server() {
+        use crate::server::test_server::*;
+        use crate::server::host_key::HostKeyPair;
+
+        let (port_tx, port_rx) = std::sync::mpsc::channel::<u16>();
+
+        let server = std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all().build().unwrap();
+            rt.block_on(async {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                port_tx.send(listener.local_addr().unwrap().port()).unwrap();
+                let host_key = HostKeyPair::generate_ed25519();
+                let filter = AlgorithmFilter::default();
+                let auth = AuthBehavior::RejectPassword {
+                    available_methods: "password".to_string(),
+                };
+                let (stream, _) = listener.accept().await.unwrap();
+                let _result = server_handshake_with_auth(stream, &host_key, &filter, &auth).await;
+            });
+        });
+
+        let client = std::thread::spawn(move || {
+            let port = port_rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all().build().unwrap();
+            rt.block_on(async {
+                let mut transport = RawSshSession::connect_and_handshake("127.0.0.1", port).await.unwrap();
+                // Use a bogus key — the server will reject regardless
+                let bogus_key = b"not-a-real-private-key";
+                let result = RawSshSession::authenticate_publickey(&mut transport, "baduser", bogus_key).await;
+                assert!(result.is_err(), "Expected auth failure, got Ok");
+            });
+        });
+
+        server.join().expect("Server panicked");
+        client.join().expect("Client panicked");
+    }
+
+    /// Test open_exec_channel via exec_with_password against the test server
+    #[test]
+    fn test_exec_channel_with_test_server() {
+        use crate::server::test_server::*;
+        use crate::server::host_key::HostKeyPair;
+        use bytes::BufMut;
+
+        let (port_tx, port_rx) = std::sync::mpsc::channel::<u16>();
+
+        let server = std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all().build().unwrap();
+            rt.block_on(async {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                port_tx.send(listener.local_addr().unwrap().port()).unwrap();
+                let host_key = HostKeyPair::generate_ed25519();
+                let filter = AlgorithmFilter::default();
+                let (stream, _) = listener.accept().await.unwrap();
+                let (mut io, ch) = server_handshake(stream, &host_key, &filter).await
+                    .expect("Server handshake failed");
+
+                // Server sends back exec output
+                let mut msg = bytes::BytesMut::new();
+                msg.put_u8(94); msg.put_u32(ch);
+                let data = b"EXEC_OUTPUT_OK\n";
+                msg.put_u32(data.len() as u32); msg.put_slice(data);
+                io.send_message(&msg).await.unwrap();
+
+                let mut eof = bytes::BytesMut::new();
+                eof.put_u8(96); eof.put_u32(ch);
+                let _ = io.send_message(&eof).await;
+                let mut close = bytes::BytesMut::new();
+                close.put_u8(97); close.put_u32(ch);
+                let _ = io.send_message(&close).await;
+            });
+        });
+
+        let client = std::thread::spawn(move || {
+            let port = port_rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all().build().unwrap();
+            rt.block_on(async {
+                // exec_with_password exercises open_exec_channel internally
+                let mut session = RawSshSession::exec_with_password(
+                    "127.0.0.1", port, "test", "test", "echo hello",
+                ).await.unwrap();
+
+                assert!(session.channel_id() < 100);
+
+                // Read the exec output
+                let data = session.receive(Duration::from_secs(5)).await.unwrap();
+                let text = String::from_utf8_lossy(&data);
+                assert!(text.contains("EXEC_OUTPUT_OK"), "Got: {:?}", text);
+
+                // Drain EOF/CLOSE
+                for _ in 0..5 {
+                    match session.receive(Duration::from_millis(500)).await {
+                        Ok(d) if d.is_empty() => break,
+                        Err(_) => break,
+                        _ => continue,
+                    }
+                }
+
+                let _ = session.disconnect().await;
+            });
+        });
+
+        server.join().expect("Server panicked");
+        client.join().expect("Client panicked");
+    }
 }
