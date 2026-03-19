@@ -80,8 +80,13 @@ where
     F: FnOnce(u16) + Send + 'static,
 {
     use std::sync::mpsc;
-    let (port_tx, port_rx) = mpsc::channel::<u16>();
     let (err_tx, err_rx) = mpsc::channel::<String>();
+
+    // Use std TcpListener for bind (synchronous, no tokio needed).
+    // This guarantees the port is listening BEFORE the server thread starts.
+    let std_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    std_listener.set_nonblocking(true).unwrap();
+    let port = std_listener.local_addr().unwrap().port();
 
     let server = std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -89,9 +94,8 @@ where
             .build()
             .unwrap();
         rt.block_on(async {
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let port = listener.local_addr().unwrap().port();
-            port_tx.send(port).unwrap();
+            // Convert std listener to tokio listener — port is already listening
+            let listener = tokio::net::TcpListener::from_std(std_listener).unwrap();
 
             let accept_result = tokio::time::timeout(
                 std::time::Duration::from_secs(15),
@@ -133,9 +137,9 @@ where
         });
     });
 
-    let port = port_rx.recv_timeout(Duration::from_secs(10)).unwrap();
-    // Wait for server to be ready to accept
-    std::thread::sleep(Duration::from_millis(10));
+    // Port is already listening (std::net::TcpListener::bind happened on THIS
+    // thread before spawning the server). The kernel's listen backlog accepts
+    // connections immediately — no race with tokio's accept() scheduling.
     test_fn(port);
     let _ = server.join(); // never panics — errors come via err_rx
 
