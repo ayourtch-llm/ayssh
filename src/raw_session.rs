@@ -82,7 +82,7 @@ impl RawSshSession {
         response_handler: F,
     ) -> Result<Self, SshError>
     where
-        F: Fn(&crate::auth::keyboard::Challenge) -> Result<Vec<String>, SshError> + Send + 'static,
+        F: Fn(&crate::auth::keyboard::Challenge) -> Result<Vec<String>, SshError> + Send + Sync + 'static,
     {
         let mut transport = Self::connect_and_handshake(host, port).await?;
         Self::authenticate_keyboard_interactive(&mut transport, username, response_handler).await?;
@@ -239,7 +239,7 @@ impl RawSshSession {
         response_handler: F,
     ) -> Result<(), SshError>
     where
-        F: Fn(&crate::auth::keyboard::Challenge) -> Result<Vec<String>, SshError> + Send + 'static,
+        F: Fn(&crate::auth::keyboard::Challenge) -> Result<Vec<String>, SshError> + Send + Sync + 'static,
     {
         let mut auth = crate::auth::Authenticator::new(transport, username.to_string())
             .with_keyboard_interactive_handler(response_handler)

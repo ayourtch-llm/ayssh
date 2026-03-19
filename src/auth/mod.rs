@@ -111,10 +111,10 @@ pub struct Authenticator<'a> {
     /// Ordered list of methods to try
     method_order: Vec<String>,
     /// Keyboard-interactive responses handler
-    keyboard_interactive_handler: Option<Box<dyn Fn(&keyboard::Challenge) -> Result<Vec<String>, SshError> + Send>>,
+    keyboard_interactive_handler: Option<Box<dyn Fn(&keyboard::Challenge) -> Result<Vec<String>, SshError> + Send + Sync>>,
     /// Optional callback invoked between auth attempts on failure.
     /// Receives context about what failed and what's next, returns a verdict.
-    fallback_handler: Option<Box<dyn Fn(&AuthFallbackContext) -> AuthFallbackVerdict + Send>>,
+    fallback_handler: Option<Box<dyn Fn(&AuthFallbackContext) -> AuthFallbackVerdict + Send + Sync>>,
     /// SSH agent client for agent-based pubkey auth
     agent: Option<crate::agent::AgentClient>,
 }
@@ -169,7 +169,7 @@ impl<'a> Authenticator<'a> {
     /// Sets the keyboard-interactive response handler
     pub fn with_keyboard_interactive_handler<F>(mut self, handler: F) -> Self
     where
-        F: Fn(&keyboard::Challenge) -> Result<Vec<String>, SshError> + Send + 'static,
+        F: Fn(&keyboard::Challenge) -> Result<Vec<String>, SshError> + Send + Sync + 'static,
     {
         self.keyboard_interactive_handler = Some(Box::new(handler));
         self
@@ -187,7 +187,7 @@ impl<'a> Authenticator<'a> {
     /// and returns a verdict (Continue, TryMethod, or Abort).
     pub fn with_fallback_handler<F>(mut self, handler: F) -> Self
     where
-        F: Fn(&AuthFallbackContext) -> AuthFallbackVerdict + Send + 'static,
+        F: Fn(&AuthFallbackContext) -> AuthFallbackVerdict + Send + Sync + 'static,
     {
         self.fallback_handler = Some(Box::new(handler));
         self
