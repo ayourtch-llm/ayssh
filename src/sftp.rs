@@ -131,6 +131,106 @@ pub enum SftpOp {
     },
 }
 
+// ============================================================================
+// Streaming types
+// ============================================================================
+
+/// A streaming reader for data from an SSH channel.
+///
+/// Wraps a `RawSshSession` and provides chunk-by-chunk async reading
+/// with content length tracking. Use `read_chunk()` in a loop, or
+/// `read_all()` to collect everything.
+pub struct SshChannelReader {
+    session: crate::raw_session::RawSshSession,
+    total_size: u64,
+    bytes_read: u64,
+    done: bool,
+}
+
+impl SshChannelReader {
+    fn new(session: crate::raw_session::RawSshSession, content_length: usize) -> Self {
+        Self {
+            session,
+            total_size: content_length as u64,
+            bytes_read: 0,
+            done: false,
+        }
+    }
+
+    /// The total content length.
+    pub fn content_length(&self) -> u64 {
+        self.total_size
+    }
+
+    /// Bytes read so far.
+    pub fn bytes_read(&self) -> u64 {
+        self.bytes_read
+    }
+
+    /// Bytes remaining.
+    pub fn remaining(&self) -> u64 {
+        self.total_size.saturating_sub(self.bytes_read)
+    }
+
+    /// Whether all data has been read.
+    pub fn is_done(&self) -> bool {
+        self.done || self.bytes_read >= self.total_size
+    }
+
+    /// Read the next chunk of data. Returns empty vec on EOF.
+    pub async fn read_chunk(&mut self) -> Result<Vec<u8>, SshError> {
+        if self.is_done() {
+            return Ok(vec![]);
+        }
+
+        let chunk = self.session.receive(std::time::Duration::from_secs(30)).await?;
+        if chunk.is_empty() {
+            self.done = true;
+            return Ok(vec![]);
+        }
+
+        let usable = (chunk.len() as u64).min(self.remaining()) as usize;
+        self.bytes_read += usable as u64;
+
+        if self.bytes_read >= self.total_size {
+            self.done = true;
+        }
+
+        Ok(chunk[..usable].to_vec())
+    }
+
+    /// Read all remaining data into a Vec.
+    pub async fn read_all(&mut self) -> Result<Vec<u8>, SshError> {
+        let mut data = Vec::with_capacity(self.remaining() as usize);
+        loop {
+            let chunk = self.read_chunk().await?;
+            if chunk.is_empty() { break; }
+            data.extend_from_slice(&chunk);
+        }
+        Ok(data)
+    }
+
+    /// Consume this reader and return the underlying session.
+    pub fn into_session(self) -> crate::raw_session::RawSshSession {
+        self.session
+    }
+}
+
+impl std::fmt::Debug for SshChannelReader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SshChannelReader")
+            .field("total_size", &self.total_size)
+            .field("bytes_read", &self.bytes_read)
+            .field("remaining", &self.remaining())
+            .field("done", &self.done)
+            .finish()
+    }
+}
+
+// ============================================================================
+// SCP
+// ============================================================================
+
 /// SCP file transfer over a RawSshSession exec channel.
 ///
 /// Implements the SCP protocol for single-file upload and download.
@@ -358,6 +458,158 @@ impl ScpSession {
 
         let _ = session.disconnect().await;
         Ok(data)
+    }
+
+    // ========================================================================
+    // Streaming variants
+    // ========================================================================
+
+    /// Download a file via SCP, returning a streaming reader.
+    ///
+    /// The returned `SshChannelReader` implements `tokio::io::AsyncRead` and
+    /// streams data as it arrives — no buffering of the entire file in memory.
+    /// Returns (reader, filename, file_size).
+    pub async fn download_stream(
+        host: &str,
+        port: u16,
+        username: &str,
+        password: &str,
+        remote_path: &str,
+    ) -> Result<(SshChannelReader, String, u64), SshError> {
+        let cmd = ScpCommand::download(remote_path);
+        let session = crate::raw_session::RawSshSession::exec_with_password(
+            host, port, username, password, &cmd.to_command_string(),
+        ).await?;
+        Self::negotiate_download(session).await
+    }
+
+    /// Download with public key auth, returning a streaming reader.
+    pub async fn download_stream_with_publickey(
+        host: &str,
+        port: u16,
+        username: &str,
+        private_key: &[u8],
+        remote_path: &str,
+    ) -> Result<(SshChannelReader, String, u64), SshError> {
+        let cmd = ScpCommand::download(remote_path);
+        let session = crate::raw_session::RawSshSession::exec_with_publickey(
+            host, port, username, private_key, &cmd.to_command_string(),
+        ).await?;
+        Self::negotiate_download(session).await
+    }
+
+    /// Internal: SCP download header negotiation, returns streaming reader
+    async fn negotiate_download(
+        mut session: crate::raw_session::RawSshSession,
+    ) -> Result<(SshChannelReader, String, u64), SshError> {
+        session.send(&[0]).await?;
+
+        let header_data = session.receive(std::time::Duration::from_secs(10)).await?;
+        let header = String::from_utf8_lossy(&header_data).to_string();
+
+        if !header.starts_with('C') {
+            return Err(SshError::ProtocolError(format!("SCP: expected C header, got: {}", header)));
+        }
+
+        let parts: Vec<&str> = header.trim().splitn(3, ' ').collect();
+        if parts.len() < 3 {
+            return Err(SshError::ProtocolError(format!("SCP: malformed header: {}", header)));
+        }
+        let file_size: u64 = parts[1].parse().map_err(|_| {
+            SshError::ProtocolError(format!("SCP: invalid file size: {}", parts[1]))
+        })?;
+        let filename = parts[2].to_string();
+
+        session.send(&[0]).await?;
+
+        let reader = SshChannelReader::new(session, file_size as usize);
+        Ok((reader, filename, file_size))
+    }
+
+    /// Upload a file via SCP from a streaming reader (password auth).
+    ///
+    /// Reads from `body` and streams into the SSH channel. The file size must
+    /// be known upfront (SCP requires it in the header). Returns bytes written.
+    pub async fn upload_stream(
+        host: &str,
+        port: u16,
+        username: &str,
+        password: &str,
+        remote_path: &str,
+        body: &mut (dyn tokio::io::AsyncRead + Send + Unpin),
+        file_size: u64,
+        mode: u32,
+    ) -> Result<u64, SshError> {
+        let cmd = ScpCommand::upload(remote_path);
+        let session = crate::raw_session::RawSshSession::exec_with_password(
+            host, port, username, password, &cmd.to_command_string(),
+        ).await?;
+        Self::do_upload_stream(session, remote_path, body, file_size, mode).await
+    }
+
+    /// Upload from a streaming reader with public key auth.
+    pub async fn upload_stream_with_publickey(
+        host: &str,
+        port: u16,
+        username: &str,
+        private_key: &[u8],
+        remote_path: &str,
+        body: &mut (dyn tokio::io::AsyncRead + Send + Unpin),
+        file_size: u64,
+        mode: u32,
+    ) -> Result<u64, SshError> {
+        let cmd = ScpCommand::upload(remote_path);
+        let session = crate::raw_session::RawSshSession::exec_with_publickey(
+            host, port, username, private_key, &cmd.to_command_string(),
+        ).await?;
+        Self::do_upload_stream(session, remote_path, body, file_size, mode).await
+    }
+
+    /// Internal: perform SCP upload from a reader
+    async fn do_upload_stream(
+        mut session: crate::raw_session::RawSshSession,
+        remote_path: &str,
+        body: &mut (dyn tokio::io::AsyncRead + Send + Unpin),
+        file_size: u64,
+        mode: u32,
+    ) -> Result<u64, SshError> {
+        use tokio::io::AsyncReadExt;
+
+        let resp = session.receive(std::time::Duration::from_secs(10)).await?;
+        if !resp.is_empty() && resp[0] != 0 {
+            return Err(SshError::ProtocolError(format!(
+                "SCP error: {}", String::from_utf8_lossy(&resp)
+            )));
+        }
+
+        let filename = remote_path.rsplit('/').next().unwrap_or(remote_path);
+        let header = format!("C{:04o} {} {}\n", mode, file_size, filename);
+        session.send(header.as_bytes()).await?;
+
+        let resp = session.receive(std::time::Duration::from_secs(10)).await?;
+        if !resp.is_empty() && resp[0] != 0 {
+            return Err(SshError::ProtocolError("SCP header rejected".into()));
+        }
+
+        // Stream from reader in 32KB chunks
+        let mut total = 0u64;
+        let mut buf = vec![0u8; 32768];
+        loop {
+            let n = body.read(&mut buf).await.map_err(|e| SshError::IoError(e))?;
+            if n == 0 { break; }
+            session.send(&buf[..n]).await?;
+            total += n as u64;
+        }
+
+        session.send(&[0]).await?;
+
+        let resp = session.receive(std::time::Duration::from_secs(10)).await?;
+        if !resp.is_empty() && resp[0] != 0 {
+            return Err(SshError::ProtocolError("SCP transfer failed".into()));
+        }
+
+        let _ = session.disconnect().await;
+        Ok(total)
     }
 }
 
@@ -718,6 +970,83 @@ impl SftpClient {
     /// Disconnect the SFTP session.
     pub async fn disconnect(&mut self) -> Result<(), SshError> {
         self.session.disconnect().await
+    }
+
+    // ========================================================================
+    // High-level streaming API
+    // ========================================================================
+
+    /// Read an entire file, returning the data as a `Vec<u8>`.
+    /// Convenience wrapper around open + read loop + close.
+    pub async fn read_file(&mut self, path: &str) -> Result<Vec<u8>, SshError> {
+        let attrs = self.stat(path).await?;
+        let file_size = attrs.size.unwrap_or(0) as usize;
+
+        let handle = self.open(path, sftp_flags::SSH_FXF_READ, &SftpAttrs::default()).await?;
+
+        let mut data = Vec::with_capacity(file_size);
+        let mut offset = 0u64;
+        let chunk_size = 32768u32;
+
+        loop {
+            let chunk = self.read(&handle, offset, chunk_size).await?;
+            if chunk.is_empty() { break; } // EOF
+            offset += chunk.len() as u64;
+            data.extend_from_slice(&chunk);
+        }
+
+        self.close(&handle).await?;
+        Ok(data)
+    }
+
+    /// Write an entire file from a byte slice.
+    /// Convenience wrapper around open + write loop + close.
+    pub async fn write_file(&mut self, path: &str, data: &[u8], mode: u32) -> Result<(), SshError> {
+        let handle = self.open(
+            path,
+            sftp_flags::SSH_FXF_WRITE | sftp_flags::SSH_FXF_CREAT | sftp_flags::SSH_FXF_TRUNC,
+            &SftpAttrs { permissions: Some(mode), ..Default::default() },
+        ).await?;
+
+        let chunk_size = 32768;
+        let mut offset = 0u64;
+        while offset < data.len() as u64 {
+            let end = ((offset as usize) + chunk_size).min(data.len());
+            self.write(&handle, offset, &data[offset as usize..end]).await?;
+            offset = end as u64;
+        }
+
+        self.close(&handle).await?;
+        Ok(())
+    }
+
+    /// Write a file from an async reader (streaming).
+    /// Returns the number of bytes written.
+    pub async fn write_file_stream(
+        &mut self,
+        path: &str,
+        body: &mut (dyn tokio::io::AsyncRead + Send + Unpin),
+        mode: u32,
+    ) -> Result<u64, SshError> {
+        use tokio::io::AsyncReadExt;
+
+        let handle = self.open(
+            path,
+            sftp_flags::SSH_FXF_WRITE | sftp_flags::SSH_FXF_CREAT | sftp_flags::SSH_FXF_TRUNC,
+            &SftpAttrs { permissions: Some(mode), ..Default::default() },
+        ).await?;
+
+        let mut offset = 0u64;
+        let mut buf = vec![0u8; 32768];
+        loop {
+            let n = body.read(&mut buf).await.map_err(|e| SshError::IoError(e))?;
+            if n == 0 { break; }
+            self.write(&handle, offset, &buf[..n]).await?;
+            offset += n as u64;
+        }
+
+        self.close(&handle).await?;
+        Ok(offset)
     }
 }
 
