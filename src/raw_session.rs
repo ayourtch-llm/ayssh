@@ -191,7 +191,7 @@ impl RawSshSession {
     }
 
     /// Authenticate with password.
-    async fn authenticate_password(
+    pub(crate) async fn authenticate_password(
         transport: &mut Transport,
         username: &str,
         password: &str,
@@ -350,7 +350,7 @@ impl RawSshSession {
     }
 
     /// Open an exec channel on an already-authenticated transport.
-    async fn open_exec_channel(mut transport: Transport, command: &str) -> Result<Self, SshError> {
+    pub(crate) async fn open_exec_channel(mut transport: Transport, command: &str) -> Result<Self, SshError> {
         let session = crate::session::Session::open(&mut transport).await?;
         let channel_id = session.remote_channel_id();
         info!("Exec channel opened (remote_id={})", channel_id);

@@ -1195,4 +1195,147 @@ mod tests {
         ).await;
         assert!(result.is_err());
     }
+
+    /// Test SCP upload roundtrip using our test server's SCP handler.
+    #[test]
+    fn test_scp_upload_with_test_server() {
+        use crate::server::test_server::*;
+        use crate::server::host_key::HostKeyPair;
+
+        let (port_tx, port_rx) = std::sync::mpsc::channel::<u16>();
+        let (data_tx, data_rx) = std::sync::mpsc::channel::<(String, Vec<u8>)>();
+
+        let server = std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all().build().unwrap();
+            rt.block_on(async {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                port_tx.send(listener.local_addr().unwrap().port()).unwrap();
+                let host_key = HostKeyPair::generate_ed25519();
+                let filter = AlgorithmFilter::default();
+                let (stream, _) = listener.accept().await.unwrap();
+                let (mut io, ch) = server_handshake(stream, &host_key, &filter).await
+                    .expect("Server handshake failed");
+
+                // Handle SCP upload
+                let (filename, file_data) = handle_scp_upload(&mut io, ch).await
+                    .expect("SCP upload handler failed");
+                data_tx.send((filename, file_data)).unwrap();
+            });
+        });
+
+        let client = std::thread::spawn(move || {
+            let port = port_rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all().build().unwrap();
+            rt.block_on(async {
+                let cmd = ScpCommand::upload("/tmp/test_file.txt");
+                let mut transport = crate::raw_session::RawSshSession::connect_and_handshake("127.0.0.1", port).await.unwrap();
+                crate::raw_session::RawSshSession::authenticate_password(&mut transport, "test", "test").await.unwrap();
+                let mut session = crate::raw_session::RawSshSession::open_exec_channel(transport, &cmd.to_command_string()).await.unwrap();
+
+                // Wait for initial OK
+                let resp = session.receive(std::time::Duration::from_secs(5)).await.unwrap();
+                assert!(!resp.is_empty() && resp[0] == 0, "Expected OK, got {:?}", resp);
+
+                // Send file header
+                let test_data = b"Hello SCP test server!";
+                let header = format!("C0644 {} test_file.txt\n", test_data.len());
+                session.send(header.as_bytes()).await.unwrap();
+
+                // Wait for OK
+                let resp = session.receive(std::time::Duration::from_secs(5)).await.unwrap();
+                assert!(!resp.is_empty() && resp[0] == 0);
+
+                // Send file data + \0
+                session.send(test_data).await.unwrap();
+                session.send(&[0]).await.unwrap();
+
+                // Wait for final OK
+                let resp = session.receive(std::time::Duration::from_secs(5)).await.unwrap();
+                assert!(!resp.is_empty() && resp[0] == 0);
+            });
+        });
+
+        client.join().expect("Client panicked");
+        server.join().expect("Server panicked");
+
+        // Verify the server received the correct data
+        let (filename, data) = data_rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        assert_eq!(filename, "test_file.txt");
+        assert_eq!(data, b"Hello SCP test server!");
+    }
+
+    /// Test SCP download roundtrip using our test server's SCP handler.
+    #[test]
+    fn test_scp_download_with_test_server() {
+        use crate::server::test_server::*;
+        use crate::server::host_key::HostKeyPair;
+
+        let (port_tx, port_rx) = std::sync::mpsc::channel::<u16>();
+        let test_content = b"Download test content 1234567890";
+
+        let content_for_server = test_content.to_vec();
+        let server = std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all().build().unwrap();
+            rt.block_on(async {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                port_tx.send(listener.local_addr().unwrap().port()).unwrap();
+                let host_key = HostKeyPair::generate_ed25519();
+                let filter = AlgorithmFilter::default();
+                let (stream, _) = listener.accept().await.unwrap();
+                let (mut io, ch) = server_handshake(stream, &host_key, &filter).await
+                    .expect("Server handshake failed");
+
+                // Handle SCP download
+                handle_scp_download(&mut io, ch, "downloaded.txt", &content_for_server, 0o644).await
+                    .expect("SCP download handler failed");
+            });
+        });
+
+        let client = std::thread::spawn(move || {
+            let port = port_rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all().build().unwrap();
+            rt.block_on(async {
+                let cmd = ScpCommand::download("/tmp/downloaded.txt");
+                let mut transport = crate::raw_session::RawSshSession::connect_and_handshake("127.0.0.1", port).await.unwrap();
+                crate::raw_session::RawSshSession::authenticate_password(&mut transport, "test", "test").await.unwrap();
+                let mut session = crate::raw_session::RawSshSession::open_exec_channel(transport, &cmd.to_command_string()).await.unwrap();
+
+                // Send ready signal
+                session.send(&[0]).await.unwrap();
+
+                // Read file header
+                let header_data = session.receive(std::time::Duration::from_secs(5)).await.unwrap();
+                let header = String::from_utf8_lossy(&header_data);
+                assert!(header.starts_with("C"), "Expected C header, got: {:?}", header);
+
+                // Parse size
+                let parts: Vec<&str> = header.trim().splitn(3, ' ').collect();
+                let file_size: usize = parts[1].parse().unwrap();
+                assert_eq!(file_size, test_content.len());
+
+                // Send OK
+                session.send(&[0]).await.unwrap();
+
+                // Read file data
+                let mut data = Vec::new();
+                while data.len() < file_size {
+                    let chunk = session.receive(std::time::Duration::from_secs(5)).await.unwrap();
+                    data.extend_from_slice(&chunk);
+                }
+                data.truncate(file_size);
+
+                assert_eq!(data, test_content);
+
+                // Send final OK
+                session.send(&[0]).await.unwrap();
+            });
+        });
+
+        client.join().expect("Client panicked");
+        server.join().expect("Server panicked");
+    }
 }

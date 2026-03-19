@@ -583,6 +583,122 @@ pub async fn server_handshake_with_auth(
 
 use tokio::io::AsyncWriteExt;
 
+/// Handle SCP upload (scp -t) on the server side.
+/// Reads the file data sent by the client and returns it.
+pub async fn handle_scp_upload(
+    io: &mut super::encrypted_io::ServerEncryptedIO,
+    client_channel: u32,
+) -> Result<(String, Vec<u8>), SshError> {
+    // Send initial OK (\0) to signal ready
+    let mut ok_msg = BytesMut::new();
+    ok_msg.put_u8(94); // CHANNEL_DATA
+    ok_msg.put_u32(client_channel);
+    ok_msg.put_u32(1);
+    ok_msg.put_u8(0); // \0 = OK
+    io.send_message(&ok_msg).await?;
+
+    // Read file header: "C<mode> <size> <filename>\n"
+    let header_msg = io.recv_message().await?;
+    if header_msg.is_empty() || header_msg[0] != 94 {
+        return Err(SshError::ProtocolError("Expected CHANNEL_DATA with SCP header".into()));
+    }
+    let data_len = u32::from_be_bytes([header_msg[5], header_msg[6], header_msg[7], header_msg[8]]) as usize;
+    let header_bytes = &header_msg[9..9 + data_len];
+    let header = String::from_utf8_lossy(header_bytes).to_string();
+
+    if !header.starts_with('C') {
+        return Err(SshError::ProtocolError(format!("SCP: expected C header, got: {}", header)));
+    }
+
+    // Parse "C<mode> <size> <filename>\n"
+    let parts: Vec<&str> = header.trim().splitn(3, ' ').collect();
+    if parts.len() < 3 {
+        return Err(SshError::ProtocolError(format!("SCP: malformed header: {}", header)));
+    }
+    let file_size: usize = parts[1].parse()
+        .map_err(|_| SshError::ProtocolError(format!("SCP: bad size: {}", parts[1])))?;
+    let filename = parts[2].to_string();
+
+    // Send OK for header
+    let mut ok2 = BytesMut::new();
+    ok2.put_u8(94); ok2.put_u32(client_channel);
+    ok2.put_u32(1); ok2.put_u8(0);
+    io.send_message(&ok2).await?;
+
+    // Read file data (may come in multiple CHANNEL_DATA messages)
+    let mut file_data = Vec::with_capacity(file_size);
+    while file_data.len() < file_size + 1 { // +1 for trailing \0
+        let msg = io.recv_message().await?;
+        if msg.is_empty() { continue; }
+        if msg[0] == 94 {
+            let len = u32::from_be_bytes([msg[5], msg[6], msg[7], msg[8]]) as usize;
+            file_data.extend_from_slice(&msg[9..9 + len]);
+        }
+    }
+    // Trim to file_size (remove trailing \0)
+    file_data.truncate(file_size);
+
+    // Send final OK
+    let mut ok3 = BytesMut::new();
+    ok3.put_u8(94); ok3.put_u32(client_channel);
+    ok3.put_u32(1); ok3.put_u8(0);
+    io.send_message(&ok3).await?;
+
+    Ok((filename, file_data))
+}
+
+/// Handle SCP download (scp -f) on the server side.
+/// Sends the given file data to the client.
+pub async fn handle_scp_download(
+    io: &mut super::encrypted_io::ServerEncryptedIO,
+    client_channel: u32,
+    filename: &str,
+    data: &[u8],
+    mode: u32,
+) -> Result<(), SshError> {
+    // Wait for initial ready signal (\0) from client
+    let ready_msg = io.recv_message().await?;
+    if ready_msg.is_empty() || ready_msg[0] != 94 {
+        return Err(SshError::ProtocolError("Expected ready signal from SCP client".into()));
+    }
+
+    // Send file header: "C<mode> <size> <filename>\n"
+    let header = format!("C{:04o} {} {}\n", mode, data.len(), filename);
+    let mut header_msg = BytesMut::new();
+    header_msg.put_u8(94); // CHANNEL_DATA
+    header_msg.put_u32(client_channel);
+    header_msg.put_u32(header.len() as u32);
+    header_msg.put_slice(header.as_bytes());
+    io.send_message(&header_msg).await?;
+
+    // Wait for OK
+    let ok_msg = io.recv_message().await?;
+    if ok_msg.is_empty() || ok_msg[0] != 94 {
+        return Err(SshError::ProtocolError("Expected OK from SCP client".into()));
+    }
+
+    // Send file data
+    let mut data_msg = BytesMut::new();
+    data_msg.put_u8(94);
+    data_msg.put_u32(client_channel);
+    data_msg.put_u32(data.len() as u32);
+    data_msg.put_slice(data);
+    io.send_message(&data_msg).await?;
+
+    // Send completion \0
+    let mut done_msg = BytesMut::new();
+    done_msg.put_u8(94);
+    done_msg.put_u32(client_channel);
+    done_msg.put_u32(1);
+    done_msg.put_u8(0);
+    io.send_message(&done_msg).await?;
+
+    // Wait for client's final OK
+    let _ = io.recv_message().await;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
