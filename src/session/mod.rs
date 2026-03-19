@@ -413,11 +413,12 @@ impl Session {
         //   uint32    sender channel
         //   uint32    initial window size
         //   uint32    maximum packet size
+        let local_channel_id = transport.allocate_channel_id();
         let mut msg = bytes::BytesMut::new();
         msg.put_u8(MessageType::ChannelOpen as u8);
         msg.put_u32(7); // channel type string length
         msg.put_slice(b"session"); // channel type
-        msg.put_u32(0); // sender channel (our local channel ID)
+        msg.put_u32(local_channel_id); // sender channel (our local channel ID)
         msg.put_u32(1048576); // initial window size (1MB)
         msg.put_u32(32768); // maximum packet size
 

@@ -11,6 +11,7 @@ use bytes::{BufMut, BytesMut};
 pub enum EcdsaCurve {
     Nistp256,
     Nistp384,
+    Nistp521,
 }
 
 /// A server host key pair (private + public)
@@ -55,6 +56,12 @@ impl HostKeyPair {
         Self::Ecdsa(EcdsaCurve::Nistp384, secret.to_bytes().to_vec())
     }
 
+    /// Generate a new ECDSA P-521 host key pair
+    pub fn generate_ecdsa_p521() -> Self {
+        let secret = p521::SecretKey::random(&mut rand::rngs::OsRng);
+        Self::Ecdsa(EcdsaCurve::Nistp521, secret.to_bytes().to_vec())
+    }
+
     /// Load an ECDSA key from OpenSSH private key format
     pub fn load_openssh_ecdsa(path: &std::path::Path) -> Result<Self, SshError> {
         let key_data = std::fs::read(path)
@@ -66,7 +73,7 @@ impl HostKeyPair {
                 let host_curve = match curve {
                     crate::auth::key::EcdsaCurve::Nistp256 => EcdsaCurve::Nistp256,
                     crate::auth::key::EcdsaCurve::Nistp384 => EcdsaCurve::Nistp384,
-                    _ => return Err(SshError::CryptoError("Unsupported ECDSA curve for host key".to_string())),
+                    crate::auth::key::EcdsaCurve::Nistp521 => EcdsaCurve::Nistp521,
                 };
                 Ok(Self::Ecdsa(host_curve, scalar))
             }
@@ -93,6 +100,7 @@ impl HostKeyPair {
             Self::Rsa(_) => "ssh-rsa",
             Self::Ecdsa(EcdsaCurve::Nistp256, _) => "ecdsa-sha2-nistp256",
             Self::Ecdsa(EcdsaCurve::Nistp384, _) => "ecdsa-sha2-nistp384",
+            Self::Ecdsa(EcdsaCurve::Nistp521, _) => "ecdsa-sha2-nistp521",
         }
     }
 
@@ -137,6 +145,13 @@ impl HostKeyPair {
                             .expect("Invalid P-384 host key");
                         let point = secret.public_key().to_encoded_point(false);
                         ("ecdsa-sha2-nistp384", "nistp384", point.as_bytes().to_vec())
+                    }
+                    EcdsaCurve::Nistp521 => {
+                        use p521::elliptic_curve::sec1::ToEncodedPoint;
+                        let secret = p521::SecretKey::from_slice(scalar)
+                            .expect("Invalid P-521 host key");
+                        let point = secret.public_key().to_encoded_point(false);
+                        ("ecdsa-sha2-nistp521", "nistp521", point.as_bytes().to_vec())
                     }
                 };
                 put_string(&mut buf, algo.as_bytes());
@@ -200,6 +215,14 @@ impl HostKeyPair {
                         let r = sig.r().to_bytes();
                         let s = sig.s().to_bytes();
                         ("ecdsa-sha2-nistp384", encode_rs_mpint(&r, &s))
+                    }
+                    EcdsaCurve::Nistp521 => {
+                        let signing_key = p521::ecdsa::SigningKey::from_slice(scalar)
+                            .map_err(|e| SshError::CryptoError(format!("P-521: {}", e)))?;
+                        let sig: p521::ecdsa::Signature = signing_key.sign(data);
+                        let r = sig.r().to_bytes();
+                        let s = sig.s().to_bytes();
+                        ("ecdsa-sha2-nistp521", encode_rs_mpint(&r, &s))
                     }
                 };
 
@@ -380,6 +403,30 @@ mod tests {
         let sig1 = key1.sign(data).unwrap();
         let sig2 = key2.sign(data).unwrap();
         assert_ne!(sig1, sig2);
+    }
+
+    #[test]
+    fn test_generate_ecdsa_p521() {
+        let key = HostKeyPair::generate_ecdsa_p521();
+        assert_eq!(key.algorithm_name(), "ecdsa-sha2-nistp521");
+
+        let blob = key.public_key_blob();
+        let alg_len = u32::from_be_bytes([blob[0], blob[1], blob[2], blob[3]]) as usize;
+        assert_eq!(alg_len, 19); // "ecdsa-sha2-nistp521"
+        assert_eq!(&blob[4..23], b"ecdsa-sha2-nistp521");
+    }
+
+    #[test]
+    fn test_ecdsa_p521_sign() {
+        let key = HostKeyPair::generate_ecdsa_p521();
+        let data = b"test exchange hash for P-521";
+        let sig = key.sign(data).unwrap();
+        let alg_len = u32::from_be_bytes([sig[0], sig[1], sig[2], sig[3]]) as usize;
+        assert_eq!(alg_len, 19); // "ecdsa-sha2-nistp521"
+        assert_eq!(&sig[4..23], b"ecdsa-sha2-nistp521");
+        // sig_blob follows
+        let sig_blob_len = u32::from_be_bytes([sig[23], sig[24], sig[25], sig[26]]) as usize;
+        assert!(sig_blob_len > 0);
     }
 
     #[test]

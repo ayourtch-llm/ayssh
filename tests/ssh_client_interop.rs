@@ -683,6 +683,62 @@ fn test_openssh_client_rapid_connections() {
     assert_eq!(passed, 3, "All 3 rapid connections should succeed");
 }
 
+/// Test that our server works when chacha20-poly1305 is the ONLY cipher allowed.
+/// This forces both client and server to use chacha20 — no fallback possible.
+#[test]
+fn test_openssh_client_chacha20_only() {
+    skip_if_no_ssh!();
+    let _lock = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let ssh_path = find_ssh().unwrap();
+
+    // Server only offers chacha20-poly1305@openssh.com
+    let filter = AlgorithmFilter {
+        kex: None,
+        cipher: Some("chacha20-poly1305@openssh.com".to_string()),
+        mac: None,
+    };
+
+    run_server_test(
+        HostKeyPair::generate_ed25519(),
+        filter,
+        move |port| {
+            let args = vec![
+                "-F".into(), "/dev/null".into(),
+                "-o".into(), "StrictHostKeyChecking=no".into(),
+                "-o".into(), "UserKnownHostsFile=/dev/null".into(),
+                "-o".into(), "LogLevel=ERROR".into(),
+                "-o".into(), "BatchMode=yes".into(),
+                "-o".into(), "ConnectTimeout=10".into(),
+                // Client also only offers chacha20
+                "-o".into(), "Ciphers=chacha20-poly1305@openssh.com".into(),
+                "-o".into(), "MACs=hmac-sha2-256,hmac-sha2-512,hmac-sha1".into(),
+                "-o".into(), "PreferredAuthentications=publickey".to_string(),
+                "-i".into(), "tests/keys/test_ed25519".into(),
+                "-p".into(), port.to_string(),
+                "-l".into(), "testuser".into(),
+                "127.0.0.1".into(),
+                "cat".into(),
+            ];
+
+            let output = Command::new(&ssh_path)
+                .args(&args)
+                .output()
+                .expect("Failed to run ssh");
+
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            eprintln!("[ssh_chacha20_only] exit={}, stdout={:?}, stderr={:?}",
+                output.status.code().unwrap_or(-1), stdout.trim(), stderr.trim());
+
+            assert!(
+                stdout.contains("INTEROP_OK"),
+                "ChaCha20-only: expected INTEROP_OK, got stdout={:?} stderr={:?}",
+                stdout, stderr
+            );
+        },
+    );
+}
+
 /// Test KEX × cipher combinations from real ssh client → our server.
 #[test]
 fn test_openssh_client_kex_cipher_combos() {

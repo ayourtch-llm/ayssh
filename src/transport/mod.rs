@@ -67,6 +67,11 @@ pub struct Transport {
     /// Whether kex-strict (CVE-2023-48795 / Terrapin mitigation) is active.
     /// When true, sequence numbers reset to 0 after NEWKEYS.
     kex_strict: bool,
+    /// Next channel ID to allocate (incremented on each allocation)
+    next_channel_id: u32,
+    /// Rekey threshold in bytes (default: 1 GB). When bytes_encrypted exceeds
+    /// this, should_rekey() returns true.
+    rekey_threshold: u64,
 }
 
 /// Encryption state for outgoing packets
@@ -79,6 +84,8 @@ pub(crate) struct EncryptionState {
     pub(crate) aead_counter: u64,
     pub(crate) enc_algorithm: String,
     pub(crate) mac_algorithm: String,
+    /// Total bytes encrypted since last key exchange
+    pub(crate) bytes_encrypted: u64,
 }
 
 /// Decryption state for incoming packets
@@ -121,6 +128,8 @@ impl Transport {
             preferred_cipher: None,
             preferred_mac: None,
             kex_strict: false,
+            next_channel_id: 0,
+            rekey_threshold: 1 << 30, // 1 GB default
         }
     }
 
@@ -172,6 +181,31 @@ impl Transport {
     /// Get mutable reference to channel manager
     pub fn channel_manager_mut(&mut self) -> &mut ChannelTransferManager {
         &mut self.channel_manager
+    }
+
+    /// Allocate a new unique channel ID and return it.
+    /// Each call returns a monotonically increasing value starting from 0.
+    pub fn allocate_channel_id(&mut self) -> u32 {
+        let id = self.next_channel_id;
+        self.next_channel_id = self.next_channel_id.wrapping_add(1);
+        id
+    }
+
+    /// Get the total number of bytes encrypted since the last key exchange.
+    /// Returns 0 if encryption is not yet established.
+    pub fn bytes_encrypted(&self) -> u64 {
+        self.encrypt_state.as_ref().map_or(0, |s| s.bytes_encrypted)
+    }
+
+    /// Check whether the transport should initiate a re-key.
+    /// Returns true when bytes encrypted exceeds the configured threshold.
+    pub fn should_rekey(&self) -> bool {
+        self.bytes_encrypted() > self.rekey_threshold
+    }
+
+    /// Set the rekey threshold in bytes. Default is 1 GB.
+    pub fn set_rekey_threshold(&mut self, threshold: u64) {
+        self.rekey_threshold = threshold;
     }
 
     /// Read exactly one unencrypted SSH binary packet from the stream.
@@ -538,6 +572,7 @@ impl Transport {
                 aead_counter: 0,
                 enc_algorithm: enc_c2s,
                 mac_algorithm: mac_c2s,
+                bytes_encrypted: 0,
             });
 
             self.decrypt_state = Some(DecryptionState {
@@ -1167,6 +1202,7 @@ pub(crate) fn encrypt_packet_cbc(payload: &[u8], state: &mut EncryptionState) ->
             ).map_err(|e| crate::error::SshError::CryptoError(e))?;
 
             state.sequence_number = state.sequence_number.wrapping_add(1);
+            state.bytes_encrypted += result.len() as u64;
             Ok(result)
         } else {
             // AES-GCM: length in cleartext as AAD
@@ -1185,6 +1221,7 @@ pub(crate) fn encrypt_packet_cbc(payload: &[u8], state: &mut EncryptionState) ->
             let mut result = Vec::with_capacity(4 + ciphertext_with_tag.len());
             result.extend_from_slice(length_bytes);
             result.extend_from_slice(&ciphertext_with_tag);
+            state.bytes_encrypted += result.len() as u64;
             Ok(result)
         }
     } else if etm {
@@ -1207,6 +1244,7 @@ pub(crate) fn encrypt_packet_cbc(payload: &[u8], state: &mut EncryptionState) ->
         result.extend_from_slice(length_bytes);
         result.extend_from_slice(&ciphertext);
         result.extend_from_slice(&mac);
+        state.bytes_encrypted += result.len() as u64;
         Ok(result)
     } else {
         // Standard mode: encrypt entire packet, MAC over seq || plaintext
@@ -1221,6 +1259,7 @@ pub(crate) fn encrypt_packet_cbc(payload: &[u8], state: &mut EncryptionState) ->
 
         let mut result = encrypted;
         result.extend_from_slice(&mac);
+        state.bytes_encrypted += result.len() as u64;
         Ok(result)
     }
 }
@@ -1288,6 +1327,7 @@ mod tests {
             aead_counter: 0,
             enc_algorithm: "aes128-ctr".to_string(),
             mac_algorithm: "hmac-sha1".to_string(),
+            bytes_encrypted: 0,
         };
 
         let encrypted = encrypt_packet_cbc(&payload, &mut enc_state).unwrap();
@@ -1368,6 +1408,7 @@ mod tests {
             aead_counter: 0,
             enc_algorithm: "aes128-gcm@openssh.com".to_string(),
             mac_algorithm: "hmac-sha1".to_string(), // ignored for AEAD
+            bytes_encrypted: 0,
         };
 
         let result = encrypt_packet_cbc(&payload, &mut enc_state).unwrap();
@@ -1394,6 +1435,7 @@ mod tests {
             aead_counter: 0,
             enc_algorithm: "aes128-ctr".to_string(),
             mac_algorithm: "hmac-sha2-256-etm@openssh.com".to_string(),
+            bytes_encrypted: 0,
         };
 
         let result = encrypt_packet_cbc(&payload, &mut enc_state).unwrap();
@@ -1402,5 +1444,57 @@ mod tests {
         let packet_length = u32::from_be_bytes([result[0], result[1], result[2], result[3]]) as usize;
         // Total = 4 + packet_length(encrypted) + 32(HMAC-SHA256 MAC)
         assert_eq!(result.len(), 4 + packet_length + 32);
+    }
+
+    #[test]
+    fn test_bytes_encrypted_tracking() {
+        let payload = vec![5, 0, 0, 0, 12, b's', b's', b'h', b'-', b'u', b's', b'e', b'r', b'a', b'u', b't', b'h'];
+        let mut enc_state = EncryptionState {
+            enc_key: vec![0x42; 16],
+            iv: vec![0x00; 16],
+            mac_key: vec![0xAB; 20],
+            sequence_number: 0,
+            aead_counter: 0,
+            enc_algorithm: "aes128-ctr".to_string(),
+            mac_algorithm: "hmac-sha1".to_string(),
+            bytes_encrypted: 0,
+        };
+
+        assert_eq!(enc_state.bytes_encrypted, 0);
+        let result = encrypt_packet_cbc(&payload, &mut enc_state).unwrap();
+        assert!(enc_state.bytes_encrypted > 0);
+        assert_eq!(enc_state.bytes_encrypted, result.len() as u64);
+
+        // Encrypt another packet — bytes should accumulate
+        let first_bytes = enc_state.bytes_encrypted;
+        let result2 = encrypt_packet_cbc(&payload, &mut enc_state).unwrap();
+        assert_eq!(enc_state.bytes_encrypted, first_bytes + result2.len() as u64);
+    }
+
+    #[test]
+    fn test_allocate_channel_id_sequential() {
+        // We can't easily create a Transport without a real TcpStream,
+        // but we can test the logic indirectly. Instead, test via a mock-like
+        // approach: create a pair of connected streams.
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let connect_fut = tokio::net::TcpStream::connect(addr);
+            let accept_fut = listener.accept();
+            let (client_stream, _server) = tokio::join!(connect_fut, accept_fut);
+            let mut transport = Transport::new(client_stream.unwrap());
+
+            let id0 = transport.allocate_channel_id();
+            let id1 = transport.allocate_channel_id();
+            let id2 = transport.allocate_channel_id();
+
+            assert_eq!(id0, 0);
+            assert_eq!(id1, 1);
+            assert_eq!(id2, 2);
+        });
     }
 }

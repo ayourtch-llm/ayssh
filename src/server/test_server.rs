@@ -330,6 +330,7 @@ pub async fn server_handshake_with_auth(
         aead_counter: 0,
         enc_algorithm: negotiated.enc_s2c.clone(),
         mac_algorithm: negotiated.mac_s2c.clone(),
+        bytes_encrypted: 0,
     });
     io.decrypt_state = Some(DecryptionState {
         dec_key: session_keys.enc_key_c2s.clone(),

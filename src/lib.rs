@@ -17,6 +17,7 @@
 //!     .with_username("user");
 //! ```
 
+pub mod agent;
 pub mod auth;
 pub mod channel;
 pub mod cisco_conn;
@@ -29,10 +30,12 @@ pub mod connection;
 pub mod crypto;
 pub mod error;
 pub mod known_hosts;
+pub mod multiplex;
 pub mod raw_session;
 pub mod keys;
 pub mod protocol;
 pub mod session;
+pub mod sftp;
 pub mod transport;
 pub mod utils;
 
