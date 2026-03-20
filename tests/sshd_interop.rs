@@ -1742,3 +1742,109 @@ fn test_kex_cipher_cross_product() {
     }
     assert!(passed >= 4, "At least 4 KEX×Cipher combos should work");
 }
+
+/// Test SCP large file download (2MB) against real sshd.
+/// This tests the WINDOW_ADJUST download fix with a real OpenSSH server.
+#[test]
+fn test_scp_large_download_against_real_sshd() {
+    skip_if_no_sshd!();
+    let _lock = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+
+    let sshd_path = find_sshd().unwrap();
+    let tmpdir = tempfile::TempDir::new().unwrap();
+    let tmppath = tmpdir.path();
+
+    // Generate host key
+    let host_key_path = tmppath.join("host_key");
+    std::process::Command::new("ssh-keygen")
+        .args(["-t", "ed25519", "-f"])
+        .arg(&host_key_path)
+        .args(["-N", "", "-q"])
+        .status().unwrap();
+
+    // Set up authorized_keys
+    let auth_keys_path = tmppath.join("authorized_keys");
+    let pubkey = std::fs::read_to_string("tests/keys/test_ed25519.pub").unwrap();
+    std::fs::write(&auth_keys_path, pubkey.trim()).unwrap();
+
+    let port = find_free_port();
+    let config_path = tmppath.join("sshd_config");
+    let pid_path = tmppath.join("sshd.pid");
+    std::fs::write(&config_path, format!(
+        "Port {}\nListenAddress 127.0.0.1\nHostKey {}\nAuthorizedKeysFile {}\n\
+         PubkeyAuthentication yes\nPasswordAuthentication no\n\
+         KbdInteractiveAuthentication no\nStrictModes no\nPidFile {}\nLogLevel ERROR\n",
+        port, host_key_path.display(), auth_keys_path.display(), pid_path.display(),
+    )).unwrap();
+
+    let mut child = std::process::Command::new(&sshd_path)
+        .args(["-D", "-e", "-f"])
+        .arg(&config_path)
+        .stderr(std::process::Stdio::piped())
+        .spawn().unwrap();
+
+    let start = std::time::Instant::now();
+    while start.elapsed() < Duration::from_secs(5) {
+        if std::net::TcpStream::connect(format!("127.0.0.1:{}", port)).is_ok() { break; }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    // Create a 2MB file with patterned data
+    let size = 2 * 1024 * 1024usize;
+    let original_data: Vec<u8> = (0..size).map(|i| (i % 251) as u8).collect();
+    let large_file_path = tmppath.join("large_test.bin");
+    std::fs::write(&large_file_path, &original_data).unwrap();
+
+    let current_user = std::env::var("USER")
+        .or_else(|_| std::env::var("LOGNAME"))
+        .unwrap_or_else(|_| "test".to_string());
+
+    let private_key = std::fs::read("tests/keys/test_ed25519").unwrap();
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all().build().unwrap();
+
+    let result = rt.block_on(async {
+        // Test download_with_publickey (buffered)
+        let downloaded = ayssh::sftp::ScpSession::download_with_publickey(
+            "127.0.0.1", port, &current_user, &private_key,
+            large_file_path.to_str().unwrap(),
+        ).await?;
+        eprintln!("[scp_large] download_with_publickey: {} bytes", downloaded.len());
+
+        assert_eq!(downloaded.len(), original_data.len(),
+            "Downloaded size mismatch: got {} expected {}", downloaded.len(), original_data.len());
+        assert_eq!(downloaded, original_data,
+            "Downloaded data does not match original 2MB pattern");
+        eprintln!("[scp_large] Buffered download verified!");
+
+        // Test download_stream_with_publickey (streaming)
+        let (mut reader, _filename, file_size) = ayssh::sftp::ScpSession::download_stream_with_publickey(
+            "127.0.0.1", port, &current_user, &private_key,
+            large_file_path.to_str().unwrap(),
+        ).await?;
+        eprintln!("[scp_large] download_stream: file_size={}", file_size);
+
+        assert_eq!(file_size, original_data.len() as u64,
+            "Stream file_size mismatch");
+
+        // Read the entire stream
+        let streamed = reader.read_all().await?;
+
+        assert_eq!(streamed.len(), original_data.len(),
+            "Streamed size mismatch: got {} expected {}", streamed.len(), original_data.len());
+        assert_eq!(streamed, original_data,
+            "Streamed data does not match original 2MB pattern");
+        eprintln!("[scp_large] Streaming download verified!");
+
+        Ok::<(), ayssh::error::SshError>(())
+    });
+
+    let _ = child.kill();
+    let _ = child.wait();
+
+    match result {
+        Ok(()) => eprintln!("[scp_large] SCP 2MB download test SUCCESS"),
+        Err(e) => panic!("SCP large download test failed: {}", e),
+    }
+}
