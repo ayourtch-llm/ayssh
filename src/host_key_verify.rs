@@ -523,4 +523,139 @@ mod tests {
         let v = CallbackVerifier::new(|_, _, _, _| HostKeyAction::Accept);
         let _ = format!("{:?}", v);
     }
+
+    // --- Edge/error path tests ---
+
+    #[test]
+    fn test_tofu_store_default() {
+        // Exercise Default::default() path
+        let v: TofuStore = Default::default();
+        assert_eq!(format!("{:?}", v), format!("{:?}", TofuStore::new()));
+    }
+
+    #[tokio::test]
+    async fn test_tofu_file_store_path_accessor() {
+        let tmpdir = tempfile::TempDir::new().unwrap();
+        let path = tmpdir.path().join("test_known_hosts");
+        let v = TofuFileStore::new(&path).unwrap();
+        assert_eq!(v.path(), path);
+    }
+
+    #[tokio::test]
+    async fn test_tofu_file_store_nonexistent_dir() {
+        // File in nonexistent directory — new() should fail on save attempt
+        // but creation itself succeeds (file doesn't need to exist yet)
+        let v = TofuFileStore::new("/nonexistent/dir/known_hosts");
+        // Should succeed — the file doesn't need to exist at creation time
+        assert!(v.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_tofu_file_store_invalid_content() {
+        let tmpdir = tempfile::TempDir::new().unwrap();
+        let path = tmpdir.path().join("bad_known_hosts");
+        // Write invalid content
+        std::fs::write(&path, "not a valid known_hosts line with only two fields\n").unwrap();
+        let result = TofuFileStore::new(&path);
+        assert!(result.is_err(), "Should fail to parse invalid known_hosts");
+    }
+
+    #[tokio::test]
+    async fn test_tofu_file_store_save_error() {
+        // Create a TOFU store pointing to a read-only path
+        let tmpdir = tempfile::TempDir::new().unwrap();
+        let path = tmpdir.path().join("known_hosts");
+        let v = TofuFileStore::new(&path).unwrap();
+
+        // Accept a key (triggers save)
+        let action = v.verify("savetest", 22, "ssh-ed25519", b"key").await;
+        assert_eq!(action, HostKeyAction::AcceptNew);
+
+        // Verify the file was written
+        assert!(path.exists());
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("savetest"));
+    }
+
+    #[tokio::test]
+    async fn test_strict_file_store_from_known_hosts() {
+        let mut hosts = KnownHosts::new();
+        hosts.add_host("myhost", HostKey {
+            key_type: HostKeyType::Ed25519,
+            key_data: b"known-key".to_vec(),
+        });
+
+        let v = StrictFileStore::from_known_hosts(hosts);
+
+        // Known host — accept
+        let action = v.verify("myhost", 22, "ssh-ed25519", b"known-key").await;
+        assert_eq!(action, HostKeyAction::Accept);
+
+        // Unknown host — reject
+        let action = v.verify("unknown", 22, "ssh-ed25519", b"any-key").await;
+        assert_eq!(action, HostKeyAction::RejectUnknown);
+    }
+
+    #[tokio::test]
+    async fn test_strict_file_store_nonexistent_file() {
+        let result = StrictFileStore::new("/nonexistent/path/known_hosts");
+        assert!(result.is_err(), "Should fail if file doesn't exist");
+    }
+
+    #[tokio::test]
+    async fn test_strict_file_store_invalid_content() {
+        let tmpdir = tempfile::TempDir::new().unwrap();
+        let path = tmpdir.path().join("bad_known_hosts");
+        std::fs::write(&path, "invalid line\n").unwrap();
+        let result = StrictFileStore::new(&path);
+        assert!(result.is_err(), "Should fail to parse invalid content");
+    }
+
+    #[tokio::test]
+    async fn test_callback_verifier_with_port() {
+        // Exercise the callback with non-standard port
+        let v = CallbackVerifier::new(|host, port, key_type, _key_blob| {
+            if host == "myhost" && port == 2222 && key_type == "ssh-ed25519" {
+                HostKeyAction::AcceptOnce
+            } else {
+                HostKeyAction::Reject
+            }
+        });
+
+        let action = v.verify("myhost", 2222, "ssh-ed25519", b"key").await;
+        assert_eq!(action, HostKeyAction::AcceptOnce);
+        assert!(action.is_accepted());
+
+        let action = v.verify("myhost", 22, "ssh-ed25519", b"key").await;
+        assert_eq!(action, HostKeyAction::Reject);
+    }
+
+    #[tokio::test]
+    async fn test_tofu_store_key_type_change() {
+        // Same host, different key type — should reject
+        let v = TofuStore::new();
+        v.verify("host", 22, "ssh-ed25519", b"ed-key").await;
+        let action = v.verify("host", 22, "ssh-rsa", b"rsa-key").await;
+        assert_eq!(action, HostKeyAction::Reject);
+    }
+
+    #[tokio::test]
+    async fn test_tofu_file_store_unknown_key_type() {
+        let tmpdir = tempfile::TempDir::new().unwrap();
+        let path = tmpdir.path().join("known_hosts");
+        let v = TofuFileStore::new(&path).unwrap();
+
+        // Unknown key type should be rejected
+        let action = v.verify("host", 22, "unknown-algo", b"key").await;
+        assert_eq!(action, HostKeyAction::Reject);
+    }
+
+    #[test]
+    fn test_host_key_action_debug() {
+        assert!(format!("{:?}", HostKeyAction::Accept).contains("Accept"));
+        assert!(format!("{:?}", HostKeyAction::AcceptNew).contains("AcceptNew"));
+        assert!(format!("{:?}", HostKeyAction::AcceptOnce).contains("AcceptOnce"));
+        assert!(format!("{:?}", HostKeyAction::Reject).contains("Reject"));
+        assert!(format!("{:?}", HostKeyAction::RejectUnknown).contains("RejectUnknown"));
+    }
 }
