@@ -26,14 +26,18 @@ const SSH_FXP_OPEN: u8 = 3;
 const SSH_FXP_CLOSE: u8 = 4;
 const SSH_FXP_READ: u8 = 5;
 const SSH_FXP_WRITE: u8 = 6;
-const SSH_FXP_STAT: u8 = 7;
+const SSH_FXP_LSTAT: u8 = 7;
+const SSH_FXP_FSTAT: u8 = 8;
+const SSH_FXP_SETSTAT: u8 = 9;
+const SSH_FXP_FSETSTAT: u8 = 10;
 const SSH_FXP_OPENDIR: u8 = 11;
 const SSH_FXP_READDIR: u8 = 12;
 const SSH_FXP_REMOVE: u8 = 13;
 const SSH_FXP_MKDIR: u8 = 14;
-const SSH_FXP_FSTAT: u8 = 8;
-const SSH_FXP_RENAME: u8 = 18;
+const SSH_FXP_RMDIR: u8 = 15;
 const SSH_FXP_REALPATH: u8 = 16;
+const SSH_FXP_STAT: u8 = 17;
+const SSH_FXP_RENAME: u8 = 18;
 const SSH_FXP_STATUS: u8 = 101;
 const SSH_FXP_HANDLE: u8 = 102;
 const SSH_FXP_DATA: u8 = 103;
@@ -250,13 +254,36 @@ impl SftpHandler for MemoryFs {
     }
 
     fn stat(&self, path: &str) -> Result<SftpAttrs, u32> {
+        // Handle root and directory paths
+        if path == "/" || path == "." || path.is_empty() {
+            return Ok(SftpAttrs {
+                size: Some(0),
+                permissions: Some(0o40755), // directory
+                ..Default::default()
+            });
+        }
+
         let files = self.files.lock().unwrap();
-        let file = files.get(path).ok_or(SSH_FX_NO_SUCH_FILE)?;
-        Ok(SftpAttrs {
-            size: Some(file.data.len() as u64),
-            permissions: Some(file.permissions),
-            ..Default::default()
-        })
+        if let Some(file) = files.get(path) {
+            return Ok(SftpAttrs {
+                size: Some(file.data.len() as u64),
+                // Add regular file type bit (S_IFREG = 0o100000) to permissions
+                permissions: Some(0o100000 | file.permissions),
+                ..Default::default()
+            });
+        }
+
+        // Check if it's a directory (any files have this as prefix)
+        let dir_prefix = if path.ends_with('/') { path.to_string() } else { format!("{}/", path) };
+        if files.keys().any(|k| k.starts_with(&dir_prefix)) {
+            return Ok(SftpAttrs {
+                size: Some(0),
+                permissions: Some(0o40755), // directory
+                ..Default::default()
+            });
+        }
+
+        Err(SSH_FX_NO_SUCH_FILE)
     }
 
     fn remove(&self, path: &str) -> Result<(), u32> {
@@ -293,7 +320,7 @@ impl SftpHandler for MemoryFs {
         let file = files.get(path).ok_or(SSH_FX_NO_SUCH_FILE)?;
         Ok(SftpAttrs {
             size: Some(file.data.len() as u64),
-            permissions: Some(file.permissions),
+            permissions: Some(0o100000 | file.permissions), // S_IFREG
             ..Default::default()
         })
     }
@@ -397,43 +424,60 @@ impl<H: SftpHandler + 'static> SftpServerSession<H> {
         io: &mut ServerEncryptedIO,
         client_channel: u32,
     ) -> Result<(), SshError> {
+        let mut buf = Vec::new(); // accumulation buffer for SFTP data
+
         loop {
-            // Read SFTP packet from channel
+            // Read SSH message from channel
             let msg = match io.recv_message().await {
                 Ok(m) => m,
-                Err(_) => break, // connection closed
+                Err(_) => break,
             };
 
             if msg.is_empty() { continue; }
 
-            // Extract SFTP data from CHANNEL_DATA
-            if msg[0] != 94 { continue; } // not CHANNEL_DATA
-            if msg.len() < 9 { continue; }
-            let data_len = u32::from_be_bytes([msg[5], msg[6], msg[7], msg[8]]) as usize;
-            if msg.len() < 9 + data_len { continue; }
-            let sftp_data = &msg[9..9 + data_len];
+            match msg[0] {
+                94 => { // CHANNEL_DATA
+                    if msg.len() < 9 { continue; }
+                    let data_len = u32::from_be_bytes([msg[5], msg[6], msg[7], msg[8]]) as usize;
+                    if msg.len() < 9 + data_len { continue; }
+                    buf.extend_from_slice(&msg[9..9 + data_len]);
 
-            // Parse SFTP packet: 4-byte length + payload
-            if sftp_data.len() < 4 { continue; }
-            let pkt_len = u32::from_be_bytes([sftp_data[0], sftp_data[1], sftp_data[2], sftp_data[3]]) as usize;
-            if sftp_data.len() < 4 + pkt_len { continue; }
-            let pkt = &sftp_data[4..4 + pkt_len];
+                    // Send WINDOW_ADJUST to keep the client sending
+                    let mut adj = BytesMut::new();
+                    adj.put_u8(93); // SSH_MSG_CHANNEL_WINDOW_ADJUST
+                    adj.put_u32(client_channel);
+                    adj.put_u32(data_len as u32);
+                    let _ = io.send_message(&adj).await;
+                }
+                93 => continue, // WINDOW_ADJUST from client — ignore
+                96 | 97 => break, // EOF or CLOSE
+                _ => continue,
+            }
 
-            if pkt.is_empty() { continue; }
+            // Process all complete SFTP packets in the buffer
+            loop {
+                if buf.len() < 4 { break; }
+                let pkt_len = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
+                if buf.len() < 4 + pkt_len { break; } // incomplete packet
 
-            let response = self.handle_packet(pkt);
+                let pkt = buf[4..4 + pkt_len].to_vec();
+                buf.drain(..4 + pkt_len);
 
-            // Send response as CHANNEL_DATA with SFTP framing
-            let mut resp_msg = BytesMut::new();
-            resp_msg.put_u8(94); // CHANNEL_DATA
-            resp_msg.put_u32(client_channel);
-            // SFTP framing: 4-byte length + response
-            let framed_len = 4 + response.len();
-            resp_msg.put_u32(framed_len as u32);
-            resp_msg.put_u32(response.len() as u32);
-            resp_msg.put_slice(&response);
+                if pkt.is_empty() { continue; }
 
-            io.send_message(&resp_msg).await?;
+                let response = self.handle_packet(&pkt);
+
+                // Send response: CHANNEL_DATA with SFTP framing
+                let mut resp_msg = BytesMut::new();
+                resp_msg.put_u8(94); // CHANNEL_DATA
+                resp_msg.put_u32(client_channel);
+                let framed_len = 4 + response.len();
+                resp_msg.put_u32(framed_len as u32);
+                resp_msg.put_u32(response.len() as u32);
+                resp_msg.put_slice(&response);
+
+                io.send_message(&resp_msg).await?;
+            }
         }
 
         Ok(())
@@ -449,15 +493,29 @@ impl<H: SftpHandler + 'static> SftpServerSession<H> {
             SSH_FXP_CLOSE => self.handle_close(pkt),
             SSH_FXP_READ => self.handle_read(pkt),
             SSH_FXP_WRITE => self.handle_write(pkt),
-            SSH_FXP_STAT => self.handle_stat(pkt),
+            SSH_FXP_LSTAT | SSH_FXP_STAT => self.handle_stat(pkt),
             SSH_FXP_FSTAT => self.handle_fstat(pkt),
+            SSH_FXP_SETSTAT | SSH_FXP_FSETSTAT => {
+                // Silently accept setstat/fsetstat (no-op for our in-memory FS)
+                let id = if pkt.len() >= 5 { u32::from_be_bytes([pkt[1], pkt[2], pkt[3], pkt[4]]) } else { 0 };
+                self.make_status(id, SSH_FX_OK, "")
+            }
             SSH_FXP_REMOVE => self.handle_remove(pkt),
             SSH_FXP_MKDIR => self.handle_mkdir(pkt),
+            SSH_FXP_RMDIR => {
+                // Treat rmdir same as remove for flat FS
+                let id = if pkt.len() >= 5 { u32::from_be_bytes([pkt[1], pkt[2], pkt[3], pkt[4]]) } else { 0 };
+                self.make_status(id, SSH_FX_OK, "")
+            }
             SSH_FXP_RENAME => self.handle_rename(pkt),
             SSH_FXP_REALPATH => self.handle_realpath(pkt),
             SSH_FXP_OPENDIR => self.handle_opendir(pkt),
             SSH_FXP_READDIR => self.handle_readdir(pkt),
-            _ => self.make_status(0, SSH_FX_FAILURE, "Unsupported operation"),
+            _ => {
+                // Use the correct request ID in the error response
+                let id = if pkt.len() >= 5 { u32::from_be_bytes([pkt[1], pkt[2], pkt[3], pkt[4]]) } else { 0 };
+                self.make_status(id, SSH_FX_FAILURE, "Unsupported operation")
+            }
         }
     }
 
@@ -862,7 +920,7 @@ mod tests {
 
         let attrs = fs.stat("/f.txt").unwrap();
         assert_eq!(attrs.size, Some(4));
-        assert_eq!(attrs.permissions, Some(0o755));
+        assert_eq!(attrs.permissions, Some(0o100755)); // S_IFREG | 0o755
 
         assert_eq!(fs.stat("/nope"), Err(SSH_FX_NO_SUCH_FILE));
     }

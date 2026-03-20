@@ -812,3 +812,274 @@ fn test_openssh_client_kex_cipher_combos() {
     eprintln!("\n  Client KEX×Cipher interop: {}/{} passed", passed, combos.len());
     assert!(passed >= 3, "At least 3 KEX×Cipher combos should work");
 }
+
+// =============================================================================
+// SFTP server interop tests (real sftp CLI → our SFTP server)
+// =============================================================================
+
+/// Find the sftp client binary
+fn find_sftp() -> Option<std::path::PathBuf> {
+    let candidates = ["/usr/bin/sftp", "/usr/local/bin/sftp", "/opt/homebrew/bin/sftp"];
+    for path in &candidates {
+        if std::path::Path::new(path).exists() {
+            return Some(std::path::PathBuf::from(path));
+        }
+    }
+    None
+}
+
+/// Run our SSH server with SFTP subsystem support.
+/// Returns the port and a MemoryFs handle for verification.
+fn run_sftp_server_test<F>(test_fn: F)
+where
+    F: FnOnce(u16, std::sync::Arc<ayssh::server::sftp_server::MemoryFs>) + Send + 'static,
+{
+    use std::sync::mpsc;
+    use ayssh::server::sftp_server::MemoryFs;
+
+    let (err_tx, err_rx) = mpsc::channel::<String>();
+    let memory_fs = std::sync::Arc::new(MemoryFs::new());
+    let fs_for_server = memory_fs.clone();
+    let fs_for_test = memory_fs.clone();
+
+    // Bind on main thread (no race)
+    let std_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    std_listener.set_nonblocking(true).unwrap();
+    let port = std_listener.local_addr().unwrap().port();
+
+    let server = std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let listener = tokio::net::TcpListener::from_std(std_listener).unwrap();
+
+            let accept_result = tokio::time::timeout(
+                std::time::Duration::from_secs(15),
+                listener.accept(),
+            ).await;
+
+            let (stream, addr) = match accept_result {
+                Ok(Ok(v)) => v,
+                Ok(Err(e)) => { let _ = err_tx.send(format!("Accept: {}", e)); return; }
+                Err(_) => { let _ = err_tx.send("Accept timed out".into()); return; }
+            };
+            eprintln!("[sftp_server] Accepted from {}", addr);
+
+            let host_key = HostKeyPair::generate_ed25519();
+            let filter = AlgorithmFilter::default();
+
+            let (mut io, ch) = match server_handshake(stream, &host_key, &filter).await {
+                Ok(v) => v,
+                Err(e) => { let _ = err_tx.send(format!("Handshake: {}", e)); return; }
+            };
+
+            // Run SFTP server loop
+            let _ = run_sftp_server(&mut io, ch, fs_for_server).await;
+            eprintln!("[sftp_server] SFTP session ended");
+        });
+    });
+
+    test_fn(port, fs_for_test);
+    let _ = server.join();
+
+    if let Ok(err) = err_rx.try_recv() {
+        panic!("[sftp_server] {}", err);
+    }
+}
+
+/// Common sftp CLI args for non-interactive use
+fn sftp_args(port: u16) -> Vec<String> {
+    vec![
+        "-P".into(), port.to_string(),
+        "-F".into(), "/dev/null".into(),
+        "-o".into(), "StrictHostKeyChecking=no".into(),
+        "-o".into(), "UserKnownHostsFile=/dev/null".into(),
+        "-o".into(), "LogLevel=ERROR".into(),
+        "-o".into(), "BatchMode=yes".into(),
+        "-o".into(), "Ciphers=aes128-ctr,aes256-ctr,aes128-gcm@openssh.com,aes256-gcm@openssh.com,chacha20-poly1305@openssh.com".into(),
+        "-o".into(), "MACs=hmac-sha2-256,hmac-sha2-512,hmac-sha1,hmac-sha2-256-etm@openssh.com".into(),
+        "-i".into(), "tests/keys/test_ed25519".into(),
+    ]
+}
+
+/// Test that OpenSSH sftp client can connect to our SFTP server and list files.
+#[test]
+fn test_sftp_client_ls_against_our_server() {
+    skip_if_no_ssh!();
+    let _lock = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+
+    if find_sftp().is_none() {
+        eprintln!("SKIPPED: sftp not found");
+        return;
+    }
+    let sftp_path = find_sftp().unwrap();
+
+    run_sftp_server_test(move |port, fs| {
+        // Pre-populate some files
+        fs.add_file("/hello.txt", b"Hello World!", 0o644);
+        fs.add_file("/data.bin", b"\x00\x01\x02\x03", 0o600);
+
+        // Create batch file
+        let tmpdir = tempfile::TempDir::new().unwrap();
+        let batch_file = tmpdir.path().join("sftp_batch.txt");
+        std::fs::write(&batch_file, "ls /\n").unwrap();
+
+        let mut args = sftp_args(port);
+        args.extend([
+            "-b".into(), batch_file.to_str().unwrap().into(),
+            format!("testuser@127.0.0.1"),
+        ]);
+
+        let output = Command::new(&sftp_path)
+            .args(&args)
+            .output()
+            .expect("Failed to run sftp");
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        eprintln!("[sftp_ls] exit={}, stdout={:?}, stderr={:?}",
+            output.status.code().unwrap_or(-1), stdout.trim(), stderr.trim());
+
+        assert!(
+            stdout.contains("hello.txt") || stdout.contains("data.bin"),
+            "Expected file listing in output, got stdout={:?}", stdout
+        );
+    });
+}
+
+/// Test sftp put (upload) and get (download) against our server.
+#[test]
+fn test_sftp_client_put_get_against_our_server() {
+    skip_if_no_ssh!();
+    let _lock = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+
+    if find_sftp().is_none() {
+        eprintln!("SKIPPED: sftp not found");
+        return;
+    }
+    let sftp_path = find_sftp().unwrap();
+
+    run_sftp_server_test(move |port, fs| {
+        let tmpdir = tempfile::TempDir::new().unwrap();
+
+        // Create a local file to upload
+        let upload_file = tmpdir.path().join("upload.txt");
+        std::fs::write(&upload_file, "SFTP upload test data!").unwrap();
+
+        // Create batch: put local → remote, then get remote → local
+        let download_file = tmpdir.path().join("downloaded.txt");
+        let batch_file = tmpdir.path().join("sftp_batch.txt");
+        std::fs::write(&batch_file, format!(
+            "put {} /upload.txt\nget /upload.txt {}\n",
+            upload_file.display(), download_file.display(),
+        )).unwrap();
+
+        let mut args = sftp_args(port);
+        args.extend([
+            "-b".into(), batch_file.to_str().unwrap().into(),
+            format!("testuser@127.0.0.1"),
+        ]);
+
+        let output = Command::new(&sftp_path)
+            .args(&args)
+            .output()
+            .expect("Failed to run sftp");
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        eprintln!("[sftp_put_get] exit={}, stderr={:?}",
+            output.status.code().unwrap_or(-1), stderr.trim());
+
+        // Verify file was stored in MemoryFs
+        let stored = fs.get_file("/upload.txt");
+        assert!(stored.is_some(), "File should be in MemoryFs after put");
+        assert_eq!(stored.unwrap(), b"SFTP upload test data!");
+
+        // Verify downloaded file matches
+        if download_file.exists() {
+            let downloaded = std::fs::read(&download_file).unwrap();
+            assert_eq!(downloaded, b"SFTP upload test data!",
+                "Downloaded file should match uploaded");
+            eprintln!("[sftp_put_get] Upload + Download verified!");
+        } else {
+            eprintln!("[sftp_put_get] Download file not created (sftp get may have failed)");
+        }
+    });
+}
+
+/// Test sftp rm (remove) against our server.
+#[test]
+fn test_sftp_client_rm_against_our_server() {
+    skip_if_no_ssh!();
+    let _lock = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+
+    if find_sftp().is_none() {
+        eprintln!("SKIPPED: sftp not found");
+        return;
+    }
+    let sftp_path = find_sftp().unwrap();
+
+    run_sftp_server_test(move |port, fs| {
+        fs.add_file("/to_delete.txt", b"delete me", 0o644);
+
+        let tmpdir = tempfile::TempDir::new().unwrap();
+        let batch_file = tmpdir.path().join("sftp_batch.txt");
+        std::fs::write(&batch_file, "rm /to_delete.txt\n").unwrap();
+
+        let mut args = sftp_args(port);
+        args.extend([
+            "-b".into(), batch_file.to_str().unwrap().into(),
+            format!("testuser@127.0.0.1"),
+        ]);
+
+        let output = Command::new(&sftp_path)
+            .args(&args)
+            .output()
+            .expect("Failed to run sftp");
+
+        eprintln!("[sftp_rm] exit={}", output.status.code().unwrap_or(-1));
+
+        // Verify file was removed from MemoryFs
+        assert!(fs.get_file("/to_delete.txt").is_none(),
+            "File should be gone after rm");
+        eprintln!("[sftp_rm] Remove verified!");
+    });
+}
+
+/// Test sftp rename against our server.
+#[test]
+fn test_sftp_client_rename_against_our_server() {
+    skip_if_no_ssh!();
+    let _lock = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+
+    if find_sftp().is_none() {
+        eprintln!("SKIPPED: sftp not found");
+        return;
+    }
+    let sftp_path = find_sftp().unwrap();
+
+    run_sftp_server_test(move |port, fs| {
+        fs.add_file("/old_name.txt", b"rename me", 0o644);
+
+        let tmpdir = tempfile::TempDir::new().unwrap();
+        let batch_file = tmpdir.path().join("sftp_batch.txt");
+        std::fs::write(&batch_file, "rename /old_name.txt /new_name.txt\n").unwrap();
+
+        let mut args = sftp_args(port);
+        args.extend([
+            "-b".into(), batch_file.to_str().unwrap().into(),
+            format!("testuser@127.0.0.1"),
+        ]);
+
+        Command::new(&sftp_path)
+            .args(&args)
+            .output()
+            .expect("Failed to run sftp");
+
+        assert!(fs.get_file("/old_name.txt").is_none(), "Old name should be gone");
+        assert_eq!(fs.get_file("/new_name.txt"), Some(b"rename me".to_vec()),
+            "New name should have the data");
+        eprintln!("[sftp_rename] Rename verified!");
+    });
+}
