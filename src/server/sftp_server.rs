@@ -222,7 +222,12 @@ impl SftpHandler for MemoryFs {
             return Err(SSH_FX_EOF);
         }
 
-        let end = (start + length as usize).min(file.data.len());
+        // Cap at 30KB to ensure the SFTP response (with headers) fits in a single
+        // SSH CHANNEL_DATA message. This prevents TCP write blocking during large
+        // transfers when the server can't interleave reads and writes.
+        let max_read = 30000;
+        let effective_length = (length as usize).min(max_read);
+        let end = (start + effective_length).min(file.data.len());
         Ok(file.data[start..end].to_vec())
     }
 
@@ -427,7 +432,7 @@ impl<H: SftpHandler + 'static> SftpServerSession<H> {
         let mut buf = Vec::new(); // accumulation buffer for SFTP data
 
         loop {
-            // Read SSH message from channel
+            // Read next SSH message
             let msg = match io.recv_message().await {
                 Ok(m) => m,
                 Err(_) => break,
@@ -437,28 +442,31 @@ impl<H: SftpHandler + 'static> SftpServerSession<H> {
 
             match msg[0] {
                 94 => { // CHANNEL_DATA
-                    if msg.len() < 9 { continue; }
-                    let data_len = u32::from_be_bytes([msg[5], msg[6], msg[7], msg[8]]) as usize;
-                    if msg.len() < 9 + data_len { continue; }
-                    buf.extend_from_slice(&msg[9..9 + data_len]);
+                    if msg.len() >= 9 {
+                        let data_len = u32::from_be_bytes([msg[5], msg[6], msg[7], msg[8]]) as usize;
+                        if msg.len() >= 9 + data_len {
+                            buf.extend_from_slice(&msg[9..9 + data_len]);
 
-                    // Send WINDOW_ADJUST to keep the client sending
-                    let mut adj = BytesMut::new();
-                    adj.put_u8(93); // SSH_MSG_CHANNEL_WINDOW_ADJUST
-                    adj.put_u32(client_channel);
-                    adj.put_u32(data_len as u32);
-                    let _ = io.send_message(&adj).await;
+                            // Send WINDOW_ADJUST to keep the client sending
+                            let mut adj = BytesMut::new();
+                            adj.put_u8(93);
+                            adj.put_u32(client_channel);
+                            adj.put_u32(data_len as u32);
+                            let _ = io.send_message(&adj).await;
+                        }
+                    }
                 }
-                93 => continue, // WINDOW_ADJUST from client — ignore
+                93 => continue, // WINDOW_ADJUST from client
                 96 | 97 => break, // EOF or CLOSE
                 _ => continue,
             }
 
-            // Process all complete SFTP packets in the buffer
+            // Process all complete SFTP packets in the buffer.
+            // The client may pack multiple requests into one CHANNEL_DATA.
             loop {
                 if buf.len() < 4 { break; }
                 let pkt_len = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
-                if buf.len() < 4 + pkt_len { break; } // incomplete packet
+                if buf.len() < 4 + pkt_len { break; }
 
                 let pkt = buf[4..4 + pkt_len].to_vec();
                 buf.drain(..4 + pkt_len);
@@ -466,20 +474,41 @@ impl<H: SftpHandler + 'static> SftpServerSession<H> {
                 if pkt.is_empty() { continue; }
 
                 let response = self.handle_packet(&pkt);
-
-                // Send response: CHANNEL_DATA with SFTP framing
-                let mut resp_msg = BytesMut::new();
-                resp_msg.put_u8(94); // CHANNEL_DATA
-                resp_msg.put_u32(client_channel);
-                let framed_len = 4 + response.len();
-                resp_msg.put_u32(framed_len as u32);
-                resp_msg.put_u32(response.len() as u32);
-                resp_msg.put_slice(&response);
-
-                io.send_message(&resp_msg).await?;
+                self.send_response(io, client_channel, &response).await?;
             }
         }
 
+        Ok(())
+    }
+
+    /// Send an SFTP response as CHANNEL_DATA, chunked if large.
+    async fn send_response(
+        &self,
+        io: &mut ServerEncryptedIO,
+        client_channel: u32,
+        response: &[u8],
+    ) -> Result<(), SshError> {
+        // Frame the SFTP response: 4-byte length + payload
+        let mut framed = BytesMut::with_capacity(4 + response.len());
+        framed.put_u32(response.len() as u32);
+        framed.put_slice(response);
+
+        // Send in chunks that fit SSH max packet size
+        let max_chunk = 32000;
+        let mut offset = 0;
+        while offset < framed.len() {
+            let end = (offset + max_chunk).min(framed.len());
+            let chunk = &framed[offset..end];
+
+            let mut msg = BytesMut::new();
+            msg.put_u8(94); // CHANNEL_DATA
+            msg.put_u32(client_channel);
+            msg.put_u32(chunk.len() as u32);
+            msg.put_slice(chunk);
+
+            io.send_message(&msg).await?;
+            offset = end;
+        }
         Ok(())
     }
 
