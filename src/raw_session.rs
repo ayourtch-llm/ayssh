@@ -265,7 +265,7 @@ impl RawSshSession {
     }
 
     /// Open session channel, request PTY and shell.
-    async fn open_pty_shell(mut transport: Transport) -> Result<Self, SshError> {
+    pub(crate) async fn open_pty_shell(mut transport: Transport) -> Result<Self, SshError> {
         let session = crate::session::Session::open(&mut transport).await?;
         let channel_id = session.remote_channel_id();
         info!("Session channel opened (remote_id={})", channel_id);
