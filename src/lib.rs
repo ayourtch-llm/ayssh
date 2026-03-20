@@ -29,6 +29,7 @@ pub mod config;
 pub mod connection;
 pub mod crypto;
 pub mod error;
+pub mod host_key_verify;
 pub mod known_hosts;
 pub mod multiplex;
 pub mod raw_session;
