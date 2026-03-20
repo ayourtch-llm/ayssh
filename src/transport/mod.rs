@@ -67,6 +67,10 @@ pub struct Transport {
     /// Whether kex-strict (CVE-2023-48795 / Terrapin mitigation) is active.
     /// When true, sequence numbers reset to 0 after NEWKEYS.
     kex_strict: bool,
+    /// Remote host name (for host key verification)
+    remote_host: Option<String>,
+    /// Remote port (for host key verification)
+    remote_port: u16,
     /// Next channel ID to allocate (incremented on each allocation)
     next_channel_id: u32,
     /// Rekey threshold in bytes (default: 1 GB). When bytes_encrypted exceeds
@@ -128,6 +132,8 @@ impl Transport {
             preferred_cipher: None,
             preferred_mac: None,
             kex_strict: false,
+            remote_host: None,
+            remote_port: 22,
             next_channel_id: 0,
             rekey_threshold: 1 << 30, // 1 GB default
         }
@@ -156,6 +162,12 @@ impl Transport {
     /// Get the session ID from key exchange (needed for public key auth signatures)
     pub fn session_id(&self) -> Option<&[u8]> {
         self.session_id.as_deref()
+    }
+
+    /// Set the remote host name (used for host key verification).
+    pub fn set_remote_host(&mut self, host: &str, port: u16) {
+        self.remote_host = Some(host.to_string());
+        self.remote_port = port;
     }
 
     /// Set the preferred KEX algorithm
@@ -267,7 +279,29 @@ impl Transport {
     ///
     /// * `Ok(())` - Handshake completed successfully
     /// * `Err(SshError)` - Handshake failed
+    /// Perform SSH handshake with host key verification.
+    ///
+    /// The verifier is called with the server's host key during KEXDH_REPLY
+    /// processing. If the verifier rejects the key, the handshake fails
+    /// with `SshError::AuthenticationFailed`.
+    pub async fn handshake_with_verifier(
+        &mut self,
+        verifier: &dyn crate::host_key_verify::HostKeyVerifier,
+    ) -> Result<(), crate::error::SshError> {
+        self.host_key_verifier_impl(Some(verifier)).await
+    }
+
+    /// Perform SSH handshake without host key verification.
+    /// Equivalent to `handshake_with_verifier(&AcceptAll)`.
     pub async fn handshake(&mut self) -> Result<(), crate::error::SshError> {
+        self.host_key_verifier_impl(None).await
+    }
+
+    /// Internal handshake implementation.
+    async fn host_key_verifier_impl(
+        &mut self,
+        verifier: Option<&dyn crate::host_key_verify::HostKeyVerifier>,
+    ) -> Result<(), crate::error::SshError> {
         use crate::transport::handshake::{send_version, recv_version, parse_version_string, generate_client_kexinit_with_prefs, parse_server_kexinit, negotiate_algorithms};
         use crate::transport::kex::KexContext;
         use crate::protocol::KexAlgorithm;
@@ -473,6 +507,37 @@ impl Transport {
                 let server_host_key = &reply_data[4..4+host_key_len];
                 debug!("Server host key length: {} bytes", host_key_len);
                 kex_context.set_server_host_key(server_host_key);
+
+                // Host key verification
+                if let Some(verifier) = verifier {
+                    // Extract key type from the blob (first string)
+                    let key_type = if server_host_key.len() >= 4 {
+                        let algo_len = u32::from_be_bytes([
+                            server_host_key[0], server_host_key[1],
+                            server_host_key[2], server_host_key[3],
+                        ]) as usize;
+                        if server_host_key.len() >= 4 + algo_len {
+                            String::from_utf8_lossy(&server_host_key[4..4+algo_len]).to_string()
+                        } else {
+                            "unknown".to_string()
+                        }
+                    } else {
+                        "unknown".to_string()
+                    };
+
+                    let host = self.remote_host.as_deref().unwrap_or("unknown");
+                    let port = self.remote_port;
+
+                    let action = verifier.verify(host, port, &key_type, server_host_key).await;
+                    debug!("Host key verification: {:?}", action);
+
+                    if !action.is_accepted() {
+                        return Err(crate::error::SshError::AuthenticationFailed(format!(
+                            "Host key verification failed for {}:{} — {:?}",
+                            host, port, action
+                        )));
+                    }
+                }
             }
         }
         

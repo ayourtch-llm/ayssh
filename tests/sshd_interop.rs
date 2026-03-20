@@ -1743,6 +1743,67 @@ fn test_kex_cipher_cross_product() {
     assert!(passed >= 4, "At least 4 KEX×Cipher combos should work");
 }
 
+/// Test host key verification with TOFU store against real sshd.
+#[test]
+fn test_host_key_tofu_against_real_sshd() {
+    skip_if_no_sshd!();
+    let _lock = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+
+    let sshd = SshdInstance::start().expect("Failed to start sshd");
+    let tofu = ayssh::host_key_verify::TofuStore::new();
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all().build().unwrap();
+
+    // First connection — should be AcceptNew (TOFU)
+    let result = rt.block_on(async {
+        let stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", sshd.port)).await?;
+        let mut transport = ayssh::transport::Transport::new(stream);
+        transport.set_remote_host("127.0.0.1", sshd.port);
+        transport.handshake_with_verifier(&tofu).await?;
+        transport.send_service_request("ssh-userauth").await?;
+        transport.recv_service_accept().await?;
+        Ok::<(), ayssh::error::SshError>(())
+    });
+    assert!(result.is_ok(), "First TOFU connection should succeed: {:?}", result);
+    eprintln!("[tofu_test] First connection (TOFU) succeeded");
+
+    // Second connection — same key, should Accept
+    let result = rt.block_on(async {
+        let stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", sshd.port)).await?;
+        let mut transport = ayssh::transport::Transport::new(stream);
+        transport.set_remote_host("127.0.0.1", sshd.port);
+        transport.handshake_with_verifier(&tofu).await?;
+        Ok::<(), ayssh::error::SshError>(())
+    });
+    assert!(result.is_ok(), "Second connection (same key) should succeed");
+    eprintln!("[tofu_test] Second connection (verify) succeeded");
+}
+
+/// Test host key verification with RejectAll against real sshd.
+#[test]
+fn test_host_key_reject_against_real_sshd() {
+    skip_if_no_sshd!();
+    let _lock = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+
+    let sshd = SshdInstance::start().expect("Failed to start sshd");
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all().build().unwrap();
+
+    let result = rt.block_on(async {
+        let stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", sshd.port)).await?;
+        let mut transport = ayssh::transport::Transport::new(stream);
+        transport.set_remote_host("127.0.0.1", sshd.port);
+        transport.handshake_with_verifier(&ayssh::host_key_verify::RejectAll).await?;
+        Ok::<(), ayssh::error::SshError>(())
+    });
+    assert!(result.is_err(), "RejectAll should fail the handshake");
+    let err = result.unwrap_err().to_string();
+    assert!(err.contains("verification failed"), "Error should mention verification: {}", err);
+    eprintln!("[reject_test] RejectAll correctly rejected connection");
+}
+
 /// Test SCP large file download (2MB) against real sshd.
 /// This tests the WINDOW_ADJUST download fix with a real OpenSSH server.
 #[test]

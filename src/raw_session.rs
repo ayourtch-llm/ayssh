@@ -187,6 +187,7 @@ impl RawSshSession {
             .map_err(|e| SshError::ConnectionError(format!("TCP connect to {}: {}", addr, e)))?;
 
         let mut transport = Transport::new(stream);
+        transport.set_remote_host(host, port);
         transport.handshake().await?;
         debug!("SSH handshake complete");
 
