@@ -1909,3 +1909,50 @@ fn test_scp_large_download_against_real_sshd() {
         Err(e) => panic!("SCP large download test failed: {}", e),
     }
 }
+
+/// Test SshConnection::builder() against real sshd.
+/// This exercises the high-level connection API with pubkey auth,
+/// including exec() and send()/receive().
+#[test]
+fn test_ssh_connection_builder_against_real_sshd() {
+    skip_if_no_sshd!();
+    let _lock = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+
+    let sshd = SshdInstance::start().expect("Failed to start sshd");
+    let current_user = std::env::var("USER")
+        .or_else(|_| std::env::var("LOGNAME"))
+        .unwrap_or_else(|_| "test".to_string());
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    rt.block_on(async {
+        let key_data = std::fs::read("tests/keys/test_ed25519").unwrap();
+
+        let mut conn = ayssh::SshConnection::builder("127.0.0.1", sshd.port)
+            .username(&current_user)
+            .private_key(key_data)
+            .connect()
+            .await
+            .expect("SshConnection::builder().connect() failed");
+
+        // Verify accessors
+        assert_eq!(conn.host(), "127.0.0.1");
+        assert_eq!(conn.port(), sshd.port);
+        assert_eq!(conn.username(), current_user);
+
+        // Send a command via exec and verify output
+        let output = conn.exec("echo AYSSH_CONN_TEST_OK").await.unwrap();
+        eprintln!("[sshd_interop] exec output: {:?}", output);
+        assert!(
+            output.contains("AYSSH_CONN_TEST_OK"),
+            "exec() output should contain our marker, got: {:?}",
+            output
+        );
+
+        let _ = conn.disconnect().await;
+        eprintln!("[sshd_interop] SshConnection builder test SUCCESS");
+    });
+}

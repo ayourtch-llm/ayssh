@@ -783,4 +783,72 @@ mod tests {
         let result = read_u32(&[0, 0], 0);
         assert!(result.is_err());
     }
+
+    /// Test LocalForward::stop() with active shutdown_tx and listener_handle.
+    /// This exercises the uncovered lines 294, 297, 298 in the stop() method.
+    #[tokio::test]
+    async fn test_local_forward_stop_with_active_handles() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (client, _server) = tokio::join!(
+            tokio::net::TcpStream::connect(addr),
+            listener.accept()
+        );
+        let transport = Transport::new(client.unwrap());
+        let shared = Arc::new(Mutex::new(transport));
+
+        let mut fwd = LocalForward::start(
+            shared,
+            0,
+            "10.0.0.1",
+            80,
+        )
+        .await
+        .unwrap();
+
+        // Simulate what would happen when a background listener is spawned:
+        // set up the shutdown_tx and listener_handle fields manually.
+        let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
+        fwd.shutdown_tx = Some(shutdown_tx);
+
+        let listener_handle = tokio::spawn(async move {
+            // Simulate a background listener that watches for shutdown
+            loop {
+                shutdown_rx.changed().await.ok();
+                if *shutdown_rx.borrow() {
+                    break;
+                }
+            }
+        });
+        fwd.listener_handle = Some(listener_handle);
+
+        // Now call stop() — this should send true on shutdown_tx and abort the handle
+        fwd.stop().await.unwrap();
+
+        // Verify the fields are consumed (taken)
+        assert!(fwd.shutdown_tx.is_none());
+        assert!(fwd.listener_handle.is_none());
+    }
+
+    /// Test LocalForward::stop() when called twice (no-op second time).
+    #[tokio::test]
+    async fn test_local_forward_stop_idempotent() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (client, _server) = tokio::join!(
+            tokio::net::TcpStream::connect(addr),
+            listener.accept()
+        );
+        let transport = Transport::new(client.unwrap());
+        let shared = Arc::new(Mutex::new(transport));
+
+        let mut fwd = LocalForward::start(shared, 0, "10.0.0.1", 80)
+            .await
+            .unwrap();
+
+        // First stop (no handles set, still should work)
+        fwd.stop().await.unwrap();
+        // Second stop (idempotent)
+        fwd.stop().await.unwrap();
+    }
 }
