@@ -47,6 +47,7 @@ const SSH_FXP_ATTRS: u8 = 105;
 const SSH_FX_OK: u32 = 0;
 const SSH_FX_EOF: u32 = 1;
 const SSH_FX_NO_SUCH_FILE: u32 = 2;
+#[allow(dead_code)]
 const SSH_FX_PERMISSION_DENIED: u32 = 3;
 const SSH_FX_FAILURE: u32 = 4;
 
@@ -79,17 +80,17 @@ pub trait SftpHandler: Send + Sync {
     fn remove(&self, path: &str) -> Result<(), u32>;
 
     /// Create a directory.
-    fn mkdir(&self, path: &str, _attrs: &SftpAttrs) -> Result<(), u32> {
+    fn mkdir(&self, _path: &str, _attrs: &SftpAttrs) -> Result<(), u32> {
         Err(SSH_FX_FAILURE) // default: not implemented
     }
 
     /// Rename a file.
-    fn rename(&self, old_path: &str, new_path: &str) -> Result<(), u32> {
+    fn rename(&self, _old_path: &str, _new_path: &str) -> Result<(), u32> {
         Err(SSH_FX_FAILURE)
     }
 
     /// Stat an open file handle (FSTAT).
-    fn fstat(&self, handle: &[u8]) -> Result<SftpAttrs, u32> {
+    fn fstat(&self, _handle: &[u8]) -> Result<SftpAttrs, u32> {
         Err(SSH_FX_FAILURE)
     }
 
@@ -100,14 +101,14 @@ pub trait SftpHandler: Send + Sync {
     }
 
     /// Open a directory for reading. Returns a handle.
-    fn opendir(&self, path: &str) -> Result<Vec<u8>, u32> {
+    fn opendir(&self, _path: &str) -> Result<Vec<u8>, u32> {
         Err(SSH_FX_FAILURE)
     }
 
     /// Read directory entries from an open directory handle.
     /// Returns a list of (filename, longname, attrs) entries.
     /// Return Err(SSH_FX_EOF) when all entries have been returned.
-    fn readdir(&self, handle: &[u8]) -> Result<Vec<(String, String, SftpAttrs)>, u32> {
+    fn readdir(&self, _handle: &[u8]) -> Result<Vec<(String, String, SftpAttrs)>, u32> {
         Err(SSH_FX_EOF)
     }
 }

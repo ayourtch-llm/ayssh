@@ -279,7 +279,7 @@ impl<'a> Authenticator<'a> {
                     );
                     match ki_auth.authenticate(handler).await {
                         Ok(()) => AuthenticationResult::Success,
-                        Err(e) => AuthenticationResult::Failure {
+                        Err(_e) => AuthenticationResult::Failure {
                             partial_success: Vec::new(),
                             available_methods: vec![],
                         },
@@ -293,7 +293,7 @@ impl<'a> Authenticator<'a> {
 
             match result {
                 AuthenticationResult::Success => return Ok(AuthenticationResult::Success),
-                AuthenticationResult::Failure { ref partial_success, ref available_methods } => {
+                AuthenticationResult::Failure { partial_success: ref _partial_success, ref available_methods } => {
                     // Update server's accepted methods for filtering
                     if !available_methods.is_empty() {
                         server_accepted_methods = Some(available_methods.clone());

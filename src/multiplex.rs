@@ -821,7 +821,6 @@ mod tests {
     fn test_multiplexed_close_session_with_test_server() {
         use crate::server::test_server::*;
         use crate::server::host_key::HostKeyPair;
-        use bytes::BufMut;
 
         let (port_tx, port_rx) = std::sync::mpsc::channel::<u16>();
 
@@ -834,7 +833,7 @@ mod tests {
                 let host_key = HostKeyPair::generate_ed25519();
                 let filter = AlgorithmFilter::default();
                 let (stream, _) = listener.accept().await.unwrap();
-                let (mut io, ch) = server_handshake(stream, &host_key, &filter).await
+                let (mut io, _ch) = server_handshake(stream, &host_key, &filter).await
                     .expect("Server handshake failed");
 
                 // Wait for channel close from client, then close our side
@@ -891,7 +890,6 @@ mod tests {
     fn test_multiplexed_session_close_open_with_test_server() {
         use crate::server::test_server::*;
         use crate::server::host_key::HostKeyPair;
-        use bytes::BufMut;
 
         let (port_tx, port_rx) = std::sync::mpsc::channel::<u16>();
 

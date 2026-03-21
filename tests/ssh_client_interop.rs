@@ -10,7 +10,6 @@
 //! - Works on macOS and Linux
 //! - User config is fully isolated via `-F /dev/null`
 
-use ayssh::server::encrypted_io::build_unencrypted_packet;
 use ayssh::server::host_key::HostKeyPair;
 use ayssh::server::test_server::*;
 
@@ -44,6 +43,7 @@ fn find_ssh() -> Option<PathBuf> {
     None
 }
 
+#[allow(dead_code)]
 fn find_free_port() -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.local_addr().unwrap().port()

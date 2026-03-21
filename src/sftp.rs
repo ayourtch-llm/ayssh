@@ -235,6 +235,7 @@ impl std::fmt::Debug for SshChannelReader {
 ///
 /// Implements the SCP protocol for single-file upload and download.
 pub struct ScpSession {
+    #[allow(dead_code)]
     session: crate::raw_session::RawSshSession,
 }
 
@@ -648,14 +649,19 @@ const SSH_FXP_CLOSE: u8 = 4;
 const SSH_FXP_READ: u8 = 5;
 const SSH_FXP_WRITE: u8 = 6;
 const SSH_FXP_STAT: u8 = 7;
+#[allow(dead_code)]
 const SSH_FXP_OPENDIR: u8 = 11;
+#[allow(dead_code)]
 const SSH_FXP_READDIR: u8 = 12;
 const SSH_FXP_REMOVE: u8 = 13;
+#[allow(dead_code)]
 const SSH_FXP_MKDIR: u8 = 14;
+#[allow(dead_code)]
 const SSH_FXP_RENAME: u8 = 18;
 const SSH_FXP_STATUS: u8 = 101;
 const SSH_FXP_HANDLE: u8 = 102;
 const SSH_FXP_DATA: u8 = 103;
+#[allow(dead_code)]
 const SSH_FXP_NAME: u8 = 104;
 const SSH_FXP_ATTRS: u8 = 105;
 

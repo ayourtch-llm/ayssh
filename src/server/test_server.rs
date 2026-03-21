@@ -679,7 +679,7 @@ pub async fn handle_scp_download(
     mode: u32,
 ) -> Result<(), SshError> {
     // Wait for initial ready signal (\0) from client
-    let ready_msg = recv_channel_data(io).await?;
+    let _ready_msg = recv_channel_data(io).await?;
 
     // Send file header: "C<mode> <size> <filename>\n"
     let header = format!("C{:04o} {} {}\n", mode, data.len(), filename);

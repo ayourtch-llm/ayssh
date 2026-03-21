@@ -207,6 +207,7 @@ impl DirectTcpipParams {
 /// caller.
 #[derive(Debug)]
 pub struct LocalForward {
+    #[allow(dead_code)]
     transport: Arc<Mutex<Transport>>,
     local_port: u16,
     remote_host: String,
