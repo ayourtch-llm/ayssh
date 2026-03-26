@@ -127,6 +127,8 @@ pub enum AuthBehavior {
     RejectFirstThenAccept { available_methods: String },
     /// Accept public key authentication (send PK_OK then SUCCESS)
     AcceptPublicKey,
+    /// Send UserauthBanner before accepting (RFC 4252 §5.4)
+    SendBannerThenAccept { banner: String },
 }
 
 /// Perform SSH handshake + auth on a connection.
@@ -505,6 +507,20 @@ pub async fn server_handshake_with_auth(
             // Accept unconditionally (don't verify signature)
             io.send_message(&[52]).await?; // USERAUTH_SUCCESS
             debug!("Sent USERAUTH_SUCCESS for public key auth");
+        }
+        AuthBehavior::SendBannerThenAccept { banner } => {
+            // Send SSH_MSG_USERAUTH_BANNER (53) before accepting
+            let mut banner_msg = BytesMut::new();
+            banner_msg.put_u8(53); // SSH_MSG_USERAUTH_BANNER
+            banner_msg.put_u32(banner.len() as u32);
+            banner_msg.put_slice(banner.as_bytes());
+            banner_msg.put_u32(0); // language tag (empty)
+            io.send_message(&banner_msg).await?;
+            debug!("Sent USERAUTH_BANNER: {}", banner);
+
+            // Then accept
+            io.send_message(&[52]).await?; // USERAUTH_SUCCESS
+            debug!("Sent USERAUTH_SUCCESS after banner");
         }
     }
 

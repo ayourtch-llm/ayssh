@@ -117,6 +117,8 @@ pub struct Authenticator<'a> {
     fallback_handler: Option<Box<dyn Fn(&AuthFallbackContext) -> AuthFallbackVerdict + Send + Sync>>,
     /// SSH agent client for agent-based pubkey auth
     agent: Option<crate::agent::AgentClient>,
+    /// Banner messages received during authentication (RFC 4252 §5.4)
+    banners: Vec<String>,
 }
 
 impl<'a> Authenticator<'a> {
@@ -133,6 +135,7 @@ impl<'a> Authenticator<'a> {
             keyboard_interactive_handler: None,
             fallback_handler: None,
             agent: None,
+            banners: Vec::new(),
         }
     }
 
@@ -364,10 +367,7 @@ impl<'a> Authenticator<'a> {
         msg.write_string(password.as_bytes());
 
         self.transport.send_message(&msg.as_bytes()).await?;
-
-        let response = self.transport.recv_message().await?;
-        let msg = Message::from(response);
-        self.process_auth_response(msg)
+        self.recv_auth_response().await
     }
 
     /// Tries public key authentication.
@@ -462,10 +462,7 @@ impl<'a> Authenticator<'a> {
         msg.write_string(&signature.encode());
 
         self.transport.send_message(&msg.as_bytes()).await?;
-
-        let response = self.transport.recv_message().await?;
-        let msg = Message::from(response);
-        self.process_auth_response(msg)
+        self.recv_auth_response().await
     }
 
     /// Try public key authentication using the SSH agent.
@@ -512,8 +509,18 @@ impl<'a> Authenticator<'a> {
             msg.write_string(&identity.key_blob);
 
             self.transport.send_message(&msg.as_bytes()).await?;
-            let response = self.transport.recv_message().await?;
-            let resp_msg = Message::from(response);
+            let resp_msg = loop {
+                let response = self.transport.recv_message().await?;
+                let m = Message::from(response);
+                if m.msg_type() == Some(MessageType::UserauthBanner) {
+                    if let Some(banner) = m.parse_userauth_banner() {
+                        debug!("Received auth banner: {}", banner);
+                        self.banners.push(banner);
+                    }
+                    continue;
+                }
+                break m;
+            };
 
             match resp_msg.msg_type() {
                 Some(MessageType::UserauthInfoRequest) => {
@@ -553,9 +560,7 @@ impl<'a> Authenticator<'a> {
                     msg.write_string(&sig.signature_blob);
 
                     self.transport.send_message(&msg.as_bytes()).await?;
-                    let response = self.transport.recv_message().await?;
-                    let resp_msg = Message::from(response);
-                    return self.process_auth_response(resp_msg);
+                    return self.recv_auth_response().await;
                 }
                 Some(MessageType::UserauthSuccess) => {
                     return Ok(AuthenticationResult::Success);
@@ -574,24 +579,40 @@ impl<'a> Authenticator<'a> {
         })
     }
 
-    /// Processes authentication response
-    fn process_auth_response(&self, response: Message) -> Result<AuthenticationResult, SshError> {
-        match response.msg_type() {
-            Some(MessageType::UserauthSuccess) => Ok(AuthenticationResult::Success),
-            Some(MessageType::UserauthFailure) => {
-                let (partial_success, available_methods) = response.parse_userauth_failure()
-                    .unwrap_or((Vec::new(), Vec::new()));
-                
-                Ok(AuthenticationResult::Failure {
-                    partial_success,
-                    available_methods,
-                })
+    /// Receive the next auth response, consuming any UserauthBanner messages
+    /// that arrive first (RFC 4252 §5.4: banner can appear at any time during auth).
+    async fn recv_auth_response(&mut self) -> Result<AuthenticationResult, SshError> {
+        loop {
+            let response = self.transport.recv_message().await?;
+            let msg = Message::from(response);
+            match msg.msg_type() {
+                Some(MessageType::UserauthSuccess) => return Ok(AuthenticationResult::Success),
+                Some(MessageType::UserauthFailure) => {
+                    let (partial_success, available_methods) = msg.parse_userauth_failure()
+                        .unwrap_or((Vec::new(), Vec::new()));
+                    return Ok(AuthenticationResult::Failure {
+                        partial_success,
+                        available_methods,
+                    });
+                }
+                Some(MessageType::UserauthBanner) => {
+                    if let Some(banner) = msg.parse_userauth_banner() {
+                        debug!("Received auth banner: {}", banner);
+                        self.banners.push(banner);
+                    }
+                    continue;
+                }
+                _ => return Err(SshError::ProtocolError(format!(
+                    "Unexpected authentication response: {:?}",
+                    msg.msg_type()
+                ))),
             }
-            _ => Err(SshError::ProtocolError(format!(
-                "Unexpected authentication response: {:?}",
-                response.msg_type()
-            ))),
         }
+    }
+
+    /// Get banners received during authentication
+    pub fn banners(&self) -> &[String] {
+        &self.banners
     }
 }
 

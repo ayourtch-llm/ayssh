@@ -44,6 +44,8 @@ pub struct RawSshSession {
     /// Bytes consumed from the SSH window but not yet reported back via WINDOW_ADJUST.
     /// We batch adjustments to avoid flooding the server with tiny control messages.
     window_consumed: u32,
+    /// Banner messages received during authentication (RFC 4252 §5.4)
+    banners: Vec<String>,
 }
 
 impl RawSshSession {
@@ -62,8 +64,10 @@ impl RawSshSession {
         password: &str,
     ) -> Result<Self, SshError> {
         let mut transport = Self::connect_and_handshake(host, port).await?;
-        Self::authenticate_password(&mut transport, username, password).await?;
-        Self::open_pty_shell(transport).await
+        let banners = Self::authenticate_password(&mut transport, username, password).await?;
+        let mut session = Self::open_pty_shell(transport).await?;
+        session.banners = banners;
+        Ok(session)
     }
 
     /// Connect with public key authentication, open PTY + shell.
@@ -74,8 +78,10 @@ impl RawSshSession {
         private_key: &[u8],
     ) -> Result<Self, SshError> {
         let mut transport = Self::connect_and_handshake(host, port).await?;
-        Self::authenticate_publickey(&mut transport, username, private_key).await?;
-        Self::open_pty_shell(transport).await
+        let banners = Self::authenticate_publickey(&mut transport, username, private_key).await?;
+        let mut session = Self::open_pty_shell(transport).await?;
+        session.banners = banners;
+        Ok(session)
     }
 
     /// Connect with keyboard-interactive authentication, open PTY + shell.
@@ -92,8 +98,10 @@ impl RawSshSession {
         F: Fn(&crate::auth::keyboard::Challenge) -> Result<Vec<String>, SshError> + Send + Sync + 'static,
     {
         let mut transport = Self::connect_and_handshake(host, port).await?;
-        Self::authenticate_keyboard_interactive(&mut transport, username, response_handler).await?;
-        Self::open_pty_shell(transport).await
+        let banners = Self::authenticate_keyboard_interactive(&mut transport, username, response_handler).await?;
+        let mut session = Self::open_pty_shell(transport).await?;
+        session.banners = banners;
+        Ok(session)
     }
 
     /// Create from an already-authenticated transport and channel.
@@ -101,7 +109,7 @@ impl RawSshSession {
     /// `channel_id` must be the REMOTE channel ID (the one used when sending
     /// messages to the server, from CHANNEL_OPEN_CONFIRMATION).
     pub fn from_parts(transport: Transport, channel_id: u32) -> Self {
-        Self { transport, channel_id, window_consumed: 0 }
+        Self { transport, channel_id, window_consumed: 0, banners: Vec::new() }
     }
 
     /// Send raw bytes to the remote shell.
@@ -173,6 +181,11 @@ impl RawSshSession {
         self.transport.send_channel_close(self.channel_id).await
     }
 
+    /// Get banner messages received during authentication (RFC 4252 §5.4).
+    pub fn banners(&self) -> &[String] {
+        &self.banners
+    }
+
     /// Get a reference to the underlying transport.
     pub fn transport(&self) -> &Transport {
         &self.transport
@@ -210,12 +223,12 @@ impl RawSshSession {
         Ok(transport)
     }
 
-    /// Authenticate with password.
+    /// Authenticate with password. Returns banners received during auth.
     pub(crate) async fn authenticate_password(
         transport: &mut Transport,
         username: &str,
         password: &str,
-    ) -> Result<(), SshError> {
+    ) -> Result<Vec<String>, SshError> {
         let mut auth = crate::auth::Authenticator::new(transport, username.to_string())
             .with_password(password.to_string())
             .with_method_order(vec!["password".to_string()]);
@@ -223,7 +236,7 @@ impl RawSshSession {
         match auth.authenticate().await? {
             crate::auth::AuthenticationResult::Success => {
                 info!("Password authentication successful");
-                Ok(())
+                Ok(auth.banners().to_vec())
             }
             crate::auth::AuthenticationResult::Failure { .. } => {
                 Err(SshError::AuthenticationFailed("Password authentication failed".to_string()))
@@ -231,12 +244,12 @@ impl RawSshSession {
         }
     }
 
-    /// Authenticate with public key.
+    /// Authenticate with public key. Returns banners received during auth.
     pub(crate) async fn authenticate_publickey(
         transport: &mut Transport,
         username: &str,
         private_key: &[u8],
-    ) -> Result<(), SshError> {
+    ) -> Result<Vec<String>, SshError> {
         let mut auth = crate::auth::Authenticator::new(transport, username.to_string())
             .with_private_key(private_key.to_vec())
             .with_method_order(vec!["publickey".to_string()]);
@@ -244,7 +257,7 @@ impl RawSshSession {
         match auth.authenticate().await? {
             crate::auth::AuthenticationResult::Success => {
                 info!("Public key authentication successful");
-                Ok(())
+                Ok(auth.banners().to_vec())
             }
             crate::auth::AuthenticationResult::Failure { .. } => {
                 Err(SshError::AuthenticationFailed("Public key authentication failed".to_string()))
@@ -252,12 +265,12 @@ impl RawSshSession {
         }
     }
 
-    /// Authenticate with keyboard-interactive.
+    /// Authenticate with keyboard-interactive. Returns banners received during auth.
     async fn authenticate_keyboard_interactive<F>(
         transport: &mut Transport,
         username: &str,
         response_handler: F,
-    ) -> Result<(), SshError>
+    ) -> Result<Vec<String>, SshError>
     where
         F: Fn(&crate::auth::keyboard::Challenge) -> Result<Vec<String>, SshError> + Send + Sync + 'static,
     {
@@ -268,7 +281,7 @@ impl RawSshSession {
         match auth.authenticate().await? {
             crate::auth::AuthenticationResult::Success => {
                 info!("Keyboard-interactive authentication successful");
-                Ok(())
+                Ok(auth.banners().to_vec())
             }
             crate::auth::AuthenticationResult::Failure { .. } => {
                 Err(SshError::AuthenticationFailed("Keyboard-interactive authentication failed".to_string()))
@@ -309,7 +322,7 @@ impl RawSshSession {
         let _shell_response = transport.recv_message().await?;
         debug!("Shell started");
 
-        Ok(Self { transport, channel_id, window_consumed: 0 })
+        Ok(Self { transport, channel_id, window_consumed: 0, banners: Vec::new() })
     }
 
     /// Open a new connection, authenticate, and execute a command (exec channel).
@@ -743,6 +756,73 @@ mod tests {
                 let bogus_key = b"not-a-real-private-key";
                 let result = RawSshSession::authenticate_publickey(&mut transport, "baduser", bogus_key).await;
                 assert!(result.is_err(), "Expected auth failure, got Ok");
+            });
+        });
+
+        server.join().expect("Server panicked");
+        client.join().expect("Client panicked");
+    }
+
+    /// Test that UserauthBanner is handled during password auth (RFC 4252 §5.4)
+    #[test]
+    fn test_userauth_banner_during_password_auth() {
+        use crate::server::test_server::*;
+        use crate::server::host_key::HostKeyPair;
+        use bytes::BufMut;
+
+        let (port_tx, port_rx) = std::sync::mpsc::channel::<u16>();
+
+        let server = std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all().build().unwrap();
+            rt.block_on(async {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                port_tx.send(listener.local_addr().unwrap().port()).unwrap();
+                let host_key = HostKeyPair::generate_ed25519();
+                let filter = AlgorithmFilter::default();
+                let auth = AuthBehavior::SendBannerThenAccept {
+                    banner: "Authorized users only. All activity is monitored.".to_string(),
+                };
+                let (stream, _) = listener.accept().await.unwrap();
+                let (mut io, ch) = server_handshake_with_auth(stream, &host_key, &filter, &auth).await
+                    .expect("Server handshake failed");
+
+                // Send test data so client can verify the session works
+                let mut msg = bytes::BytesMut::new();
+                msg.put_u8(94); msg.put_u32(ch);
+                let data = b"BANNER_TEST_OK\n";
+                msg.put_u32(data.len() as u32); msg.put_slice(data);
+                io.send_message(&msg).await.unwrap();
+
+                let mut eof = bytes::BytesMut::new();
+                eof.put_u8(96); eof.put_u32(ch);
+                let _ = io.send_message(&eof).await;
+            });
+        });
+
+        let client = std::thread::spawn(move || {
+            let port = port_rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all().build().unwrap();
+            rt.block_on(async {
+                let mut transport = RawSshSession::connect_and_handshake("127.0.0.1", port).await.unwrap();
+                let banners = RawSshSession::authenticate_password(&mut transport, "test", "test").await
+                    .expect("Auth should succeed despite banner");
+
+                // Verify banner was captured
+                assert_eq!(banners.len(), 1, "Expected 1 banner, got {:?}", banners);
+                assert!(banners[0].contains("Authorized users only"), "Banner text: {:?}", banners[0]);
+
+                // Verify session works after banner
+                let mut session = RawSshSession::open_pty_shell(transport).await.unwrap();
+                session.banners = banners;
+                assert_eq!(session.banners().len(), 1);
+
+                let data = session.receive(Duration::from_secs(5)).await.unwrap();
+                let text = String::from_utf8_lossy(&data);
+                assert!(text.contains("BANNER_TEST_OK"), "Got: {:?}", text);
+
+                let _ = session.disconnect().await;
             });
         });
 
