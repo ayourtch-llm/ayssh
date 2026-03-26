@@ -412,6 +412,14 @@ pub async fn recv_version<T: AsyncReadExt + Unpin>(stream: &mut T) -> Result<Str
     }
 
     debug!("Cleaned version string: {:?}", version);
+
+    // Validate SSH version prefix (RFC 4253 §4.2)
+    if !version.starts_with("SSH-") {
+        return Err(crate::error::SshError::ProtocolError(format!(
+            "Invalid SSH identification string: {:?}", version
+        )));
+    }
+
     Ok(version)
 }
 
@@ -837,6 +845,24 @@ mod tests {
         let mut cursor = std::io::Cursor::new(data);
         let result = recv_version(&mut cursor).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_recv_version_rejects_non_ssh_string() {
+        // Simulates a telnet client pressing Enter — just "\r\n"
+        let data = b"\r\n";
+        let mut cursor = std::io::Cursor::new(data.to_vec());
+        let result = recv_version(&mut cursor).await;
+        assert!(result.is_err(), "Empty line should be rejected");
+        assert!(result.unwrap_err().to_string().contains("Invalid SSH identification string"));
+    }
+
+    #[tokio::test]
+    async fn test_recv_version_rejects_http_request() {
+        let data = b"GET / HTTP/1.1\r\n";
+        let mut cursor = std::io::Cursor::new(data.to_vec());
+        let result = recv_version(&mut cursor).await;
+        assert!(result.is_err(), "HTTP request should be rejected");
     }
 
     // --- constants ---
