@@ -104,6 +104,8 @@ pub struct UnixConn {
     config: UnixConnConfig,
     transport: crate::transport::Transport,
     channel_id: u32,
+    /// Bytes consumed from the SSH window but not yet reported via WINDOW_ADJUST.
+    window_consumed: u32,
 }
 
 impl std::fmt::Debug for UnixConn {
@@ -116,6 +118,9 @@ impl std::fmt::Debug for UnixConn {
 }
 
 impl UnixConn {
+    /// Send WINDOW_ADJUST after this many bytes have been consumed.
+    const WINDOW_ADJUST_THRESHOLD: u32 = 32768;
+
     /// Create a new UnixConn with password authentication and default timeouts
     pub async fn new(
         target: &str,
@@ -331,6 +336,7 @@ impl UnixConn {
             },
             transport,
             channel_id,
+            window_consumed: 0,
         };
 
         // Wait for initial shell prompt
@@ -356,10 +362,14 @@ impl UnixConn {
                         if msg.len() > 9 {
                             let data_len = u32::from_be_bytes([msg[5], msg[6], msg[7], msg[8]]) as usize;
                             if msg.len() >= 9 + data_len {
-                                // Send WINDOW_ADJUST to replenish the server's send window
-                                let _ = self.transport.send_channel_window_adjust(
-                                    self.channel_id, data_len as u32,
-                                ).await;
+                                self.window_consumed += data_len as u32;
+                                if self.window_consumed >= Self::WINDOW_ADJUST_THRESHOLD {
+                                    let adjust = self.window_consumed;
+                                    self.window_consumed = 0;
+                                    let _ = self.transport.send_channel_window_adjust(
+                                        self.channel_id, adjust,
+                                    ).await;
+                                }
                                 output.extend_from_slice(&msg[9..9 + data_len]);
                             }
                         }

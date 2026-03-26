@@ -41,9 +41,16 @@ use tracing::{debug, info};
 pub struct RawSshSession {
     transport: Transport,
     channel_id: u32, // remote channel ID (for sending to server)
+    /// Bytes consumed from the SSH window but not yet reported back via WINDOW_ADJUST.
+    /// We batch adjustments to avoid flooding the server with tiny control messages.
+    window_consumed: u32,
 }
 
 impl RawSshSession {
+    /// Send WINDOW_ADJUST after this many bytes have been consumed.
+    /// Large enough to avoid flooding, small enough to not stall the sender.
+    const WINDOW_ADJUST_THRESHOLD: u32 = 32768;
+
     /// Connect with password authentication, open PTY + shell.
     ///
     /// After this returns, the caller has a raw byte stream to the remote shell.
@@ -94,7 +101,7 @@ impl RawSshSession {
     /// `channel_id` must be the REMOTE channel ID (the one used when sending
     /// messages to the server, from CHANNEL_OPEN_CONFIRMATION).
     pub fn from_parts(transport: Transport, channel_id: u32) -> Self {
-        Self { transport, channel_id }
+        Self { transport, channel_id, window_consumed: 0 }
     }
 
     /// Send raw bytes to the remote shell.
@@ -131,13 +138,18 @@ impl RawSshSession {
                                     [msg[5], msg[6], msg[7], msg[8]]
                                 ) as usize;
                                 if msg.len() >= 9 + data_len {
-                                    // Send WINDOW_ADJUST to replenish the server's send window.
-                                    // Without this, the server stops sending after the initial
-                                    // window (~1MB) is consumed — causing large file transfers
-                                    // to truncate.
-                                    let _ = self.transport.send_channel_window_adjust(
-                                        self.channel_id, data_len as u32,
-                                    ).await;
+                                    // Batch window adjustments: accumulate consumed bytes and
+                                    // send WINDOW_ADJUST only when the threshold is reached.
+                                    // Sending per-byte adjusts floods old SSH servers (e.g.
+                                    // Cisco SSH-2.0-Cisco-1.25) with control messages.
+                                    self.window_consumed += data_len as u32;
+                                    if self.window_consumed >= Self::WINDOW_ADJUST_THRESHOLD {
+                                        let adjust = self.window_consumed;
+                                        self.window_consumed = 0;
+                                        let _ = self.transport.send_channel_window_adjust(
+                                            self.channel_id, adjust,
+                                        ).await;
+                                    }
                                     return Ok(msg[9..9 + data_len].to_vec());
                                 }
                             }
@@ -297,7 +309,7 @@ impl RawSshSession {
         let _shell_response = transport.recv_message().await?;
         debug!("Shell started");
 
-        Ok(Self { transport, channel_id })
+        Ok(Self { transport, channel_id, window_consumed: 0 })
     }
 
     /// Open a new connection, authenticate, and execute a command (exec channel).
